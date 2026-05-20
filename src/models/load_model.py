@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+@dataclass
+class ModelBundle:
+    model: AutoModelForCausalLM
+    tokenizer: AutoTokenizer
+    device: torch.device
+
+
+def load_model_bundle(config: dict[str, Any]) -> ModelBundle:
+    model_name = config["name_or_path"]
+    dtype_name = config.get("dtype", "auto")
+    dtype = "auto"
+    if dtype_name == "float16":
+        dtype = torch.float16
+    elif dtype_name == "bfloat16":
+        dtype = torch.bfloat16
+    elif dtype_name == "float32":
+        dtype = torch.float32
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=config.get("trust_remote_code", True))
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=dtype,
+        device_map=config.get("device_map", "auto"),
+        trust_remote_code=config.get("trust_remote_code", True),
+    )
+    model.eval()
+    device = next(model.parameters()).device
+    return ModelBundle(model=model, tokenizer=tokenizer, device=device)

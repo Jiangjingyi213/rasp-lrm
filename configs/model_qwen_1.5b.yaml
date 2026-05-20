@@ -1,0 +1,5 @@
+model:
+  name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+  dtype: bfloat16
+  device_map: auto
+  trust_remote_code: true
