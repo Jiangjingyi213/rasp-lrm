@@ -3,8 +3,9 @@ from __future__ import annotations
 import re
 
 
-STEP_RE = re.compile(
-    r"(?im)(?:^|\n)\s*(?:step\s+\d+|#{1,6}|\d+[\).]|[-*])\s+"
+EXPLICIT_STEP_RE = re.compile(r"(?im)(?:^|\n)\s*step\s+\d+\s*[:.)-]?\s+")
+BROAD_STEP_RE = re.compile(
+    r"(?im)(?:^|\n)\s*(?:step\s+\d+\s*[:.)-]?|#{1,6}|\d+[\).]|[-*])\s+"
 )
 
 
@@ -12,7 +13,8 @@ def segment_text(text: str, min_chars: int = 20) -> list[dict[str, int | str]]:
     text = text.strip()
     if not text:
         return []
-    starts = [m.start() for m in STEP_RE.finditer(text)]
+    explicit_starts = [m.start() for m in EXPLICIT_STEP_RE.finditer(text)]
+    starts = explicit_starts if len(explicit_starts) >= 2 else [m.start() for m in BROAD_STEP_RE.finditer(text)]
     if not starts:
         parts = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
         if len(parts) == 1:

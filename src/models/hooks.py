@@ -29,10 +29,11 @@ def get_decoder_layers(model) -> list[torch.nn.Module]:
     raise ValueError("Could not locate decoder layers for this model architecture")
 
 
-def _zero_like_output(output):
+def _identity_layer_output(inputs, output):
+    hidden_states = inputs[0]
     if isinstance(output, tuple):
-        return (torch.zeros_like(output[0]), *output[1:])
-    return torch.zeros_like(output)
+        return (hidden_states, *output[1:])
+    return hidden_states
 
 
 @contextmanager
@@ -41,7 +42,7 @@ def skip_layers(model, layer_ids: list[int]) -> Iterator[None]:
     handles = []
     for layer_id in layer_ids:
         layer = layers[layer_id]
-        handles.append(layer.register_forward_hook(lambda _m, _inp, out: _zero_like_output(out)))
+        handles.append(layer.register_forward_hook(lambda _m, inp, out: _identity_layer_output(inp, out)))
     try:
         yield
     finally:
