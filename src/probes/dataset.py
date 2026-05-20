@@ -20,4 +20,4 @@ class HiddenStateRiskDataset(Dataset):
 
     def __getitem__(self, idx: int):
         row = self.rows[idx]
-        return self.hidden[idx].float(), torch.tensor(float(row["flipped"]), dtype=torch.float32)
+        return self.hidden[idx].float(), torch.tensor(float(row["flipped"]), dtype=torch.float32), idx

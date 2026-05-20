@@ -8,7 +8,7 @@ from typing import Any
 import torch
 from tqdm import tqdm
 
-from src.data.format_prompt import prompt_with_prefix
+from src.data.format_prompt import build_prompt
 from src.main_generate import generate_text
 from src.metrics.answer_match import extract_answer
 from src.metrics.flip_rate import answer_flipped
@@ -102,7 +102,7 @@ def main() -> None:
         segments = item["segments"][:max_segments] if max_segments else item["segments"]
         for segment in segments:
             prefix = segment_prefix(baseline, segment, boundary)
-            conditioned_prompt = prompt_with_prefix(item["question"], prefix)
+            conditioned_prompt = build_prompt(item["question"], bundle.tokenizer, cfg.get("prompt", {}), prefix=prefix)
             entropy = next_token_entropy(
                 bundle.model,
                 bundle.tokenizer,

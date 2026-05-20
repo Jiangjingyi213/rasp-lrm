@@ -5,7 +5,7 @@ import argparse
 import torch
 from tqdm import tqdm
 
-from src.data.format_prompt import reasoning_prompt
+from src.data.format_prompt import build_prompt
 from src.data.load_gsm8k import load_tasks
 from src.metrics.answer_match import answer_match, extract_answer
 from src.models.hooks import model_device
@@ -71,7 +71,7 @@ def main() -> None:
     tasks = load_tasks(cfg["data"])
 
     for task in tqdm(tasks, desc="generate"):
-        prompt = reasoning_prompt(task["question"])
+        prompt = build_prompt(task["question"], bundle.tokenizer, cfg.get("prompt", {}))
         completion = generate_text(bundle, prompt, cfg.get("generation", {}))
         row = {
             **task,

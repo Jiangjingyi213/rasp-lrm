@@ -21,6 +21,7 @@ def main() -> None:
         lr=probe_cfg.get("lr", 1e-3),
         val_fraction=probe_cfg.get("val_fraction", 0.2),
         seed=cfg.get("seed", 1),
+        split=probe_cfg.get("split", "problem"),
     )
     write_json(cfg["paths"]["probe_metrics"], best)
 

@@ -10,8 +10,9 @@ This repository contains a minimal closed-loop experiment for motivating reasoni
 4. Compare static, prompt, and step oracle flip rates.
 5. Measure entropy vs pruning risk ROC/PR AUC.
 6. Train a linear hidden-state pruning-risk probe.
+7. Summarize layer/segment heatmaps for motivation plots.
 
-The first implementation uses layer/attention/MLP zeroing as the structured pruning intervention. This is intentionally coarse so the first pass is easy to validate; head/neuron/group pruning can be added behind the same output schema.
+The first implementation uses layer skip plus optional attention/MLP block ablations as structured pruning interventions. This is intentionally coarse so the first pass is easy to validate; head/neuron/group pruning can be added behind the same output schema.
 
 ## Quick Start
 
@@ -25,9 +26,23 @@ bash scripts/02_segment_trajectories.sh
 bash scripts/03_counterfactual_prune.sh
 bash scripts/04_entropy_auc.sh
 bash scripts/05_train_probe.sh
+bash scripts/06_heatmap_summary.sh
+```
+
+For the Qwen3 motivation pipeline:
+
+```bash
+CONFIG=configs/exp_motivation_qwen3_gsm8k.yaml
+bash scripts/01_generate_trajectories.sh "$CONFIG"
+bash scripts/02_segment_trajectories.sh "$CONFIG"
+bash scripts/03_counterfactual_prune.sh "$CONFIG"
+bash scripts/04_entropy_auc.sh "$CONFIG"
+bash scripts/05_train_probe.sh "$CONFIG"
+bash scripts/06_heatmap_summary.sh "$CONFIG"
 ```
 
 The default config is `configs/exp_minimal_gsm8k.yaml` and writes all artifacts under `runs/minimal_gsm8k_qwen1_5b/`.
+The Qwen3 motivation config is `configs/exp_motivation_qwen3_gsm8k.yaml` and writes under `runs/motivation_qwen3_gsm8k_l8_no_l0/`.
 
 ## Key Outputs
 
@@ -37,3 +52,4 @@ The default config is `configs/exp_minimal_gsm8k.yaml` and writes all artifacts 
 - `03_counterfactuals.oracles.json`: static/prompt/step oracle summary.
 - `04_entropy_auc.json`: entropy as a pruning-risk predictor.
 - `05_probe_metrics.json`: hidden-state probe validation metrics.
+- `06_heatmap_summary.json`: layer/segment flip-rate summaries for motivation plots.

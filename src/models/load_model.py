@@ -29,12 +29,14 @@ def load_model_bundle(config: dict[str, Any]) -> ModelBundle:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=dtype,
-        device_map=config.get("device_map", "auto"),
-        trust_remote_code=config.get("trust_remote_code", True),
-    )
+    model_kwargs = {
+        "torch_dtype": dtype,
+        "device_map": config.get("device_map", "auto"),
+        "trust_remote_code": config.get("trust_remote_code", True),
+    }
+    if config.get("attn_implementation"):
+        model_kwargs["attn_implementation"] = config["attn_implementation"]
+    model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
     model.eval()
     device = next(model.parameters()).device
     return ModelBundle(model=model, tokenizer=tokenizer, device=device)
