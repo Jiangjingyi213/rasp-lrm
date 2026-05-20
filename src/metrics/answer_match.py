@@ -9,6 +9,7 @@ FINAL_PATTERNS = [
     re.compile(r"####\s*([^\n]+)"),
 ]
 NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
+ANSWER_STOP_MARKERS = ("Human:", "User:", "Assistant:", "Problem:")
 
 
 def extract_answer(text: str) -> str:
@@ -16,11 +17,22 @@ def extract_answer(text: str) -> str:
     for pattern in FINAL_PATTERNS:
         match = pattern.search(text)
         if match:
-            return clean_answer(match.group(1))
+            return normalize_answer_span(match.group(1))
     numbers = NUMBER_RE.findall(text)
     if numbers:
         return clean_answer(numbers[-1])
     return clean_answer(text.strip().splitlines()[-1] if text.strip() else "")
+
+
+def normalize_answer_span(answer: str) -> str:
+    for marker in ANSWER_STOP_MARKERS:
+        if marker in answer:
+            answer = answer.split(marker, 1)[0]
+    answer = clean_answer(answer)
+    numbers = NUMBER_RE.findall(answer)
+    if numbers:
+        return clean_answer(numbers[-1])
+    return answer
 
 
 def clean_answer(answer: str) -> str:

@@ -14,22 +14,47 @@ from src.utils.io import append_jsonl, ensure_dir, read_yaml
 from src.utils.seed import set_seed
 
 
+DEFAULT_STOP_STRINGS = (
+    "\nHuman:",
+    "\nUser:",
+    "\nAssistant:",
+    "\nProblem:",
+    "Human:",
+    "User:",
+)
+
+
+def truncate_completion(text: str, stop_strings: list[str] | tuple[str, ...] = DEFAULT_STOP_STRINGS) -> str:
+    cut = len(text)
+    for stop in stop_strings:
+        idx = text.find(stop)
+        if idx != -1:
+            cut = min(cut, idx)
+    return text[:cut].strip()
+
+
 @torch.no_grad()
 def generate_text(bundle, prompt: str, generation_config: dict) -> str:
     tokenizer = bundle.tokenizer
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=generation_config.get("max_input_tokens", 2048))
     inputs = inputs.to(model_device(bundle.model))
+    do_sample = generation_config.get("temperature", 0.0) > 0
+    generate_kwargs = {
+        "max_new_tokens": generation_config.get("max_new_tokens", 512),
+        "do_sample": do_sample,
+        "pad_token_id": tokenizer.pad_token_id,
+        "eos_token_id": tokenizer.eos_token_id,
+    }
+    if do_sample:
+        generate_kwargs["temperature"] = generation_config.get("temperature", 0.7)
+        generate_kwargs["top_p"] = generation_config.get("top_p", 1.0)
     out = bundle.model.generate(
         **inputs,
-        max_new_tokens=generation_config.get("max_new_tokens", 512),
-        do_sample=generation_config.get("temperature", 0.0) > 0,
-        temperature=max(generation_config.get("temperature", 0.0), 1e-5),
-        top_p=generation_config.get("top_p", 1.0),
-        pad_token_id=tokenizer.pad_token_id,
-        eos_token_id=tokenizer.eos_token_id,
+        **generate_kwargs,
     )
     gen_ids = out[0, inputs["input_ids"].shape[1] :]
-    return tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+    completion = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+    return truncate_completion(completion, generation_config.get("stop_strings", DEFAULT_STOP_STRINGS))
 
 
 def main() -> None:
