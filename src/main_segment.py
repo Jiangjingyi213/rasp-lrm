@@ -16,9 +16,13 @@ def main() -> None:
     cfg = read_yaml(args.config)
     in_path = args.input or cfg["paths"]["trajectories"]
     out_path = args.output or cfg["paths"]["segments"]
-    min_chars = cfg.get("segmentation", {}).get("min_chars", 20)
+    seg_cfg = cfg.get("segmentation", {})
+    min_chars = seg_cfg.get("min_chars", 20)
+    filter_correct = seg_cfg.get("filter_correct", False)
     rows = []
     for item in read_jsonl(in_path):
+        if filter_correct and not item.get("correct", False):
+            continue
         rows.append(
             {
                 "id": item["id"],

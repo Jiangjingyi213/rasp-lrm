@@ -5,15 +5,19 @@ from decimal import Decimal, InvalidOperation
 
 
 FINAL_PATTERNS = [
-    re.compile(r"final answer\s*[:：]\s*([^\n]+)", re.IGNORECASE),
+    re.compile(r"final answer\s*[:：]?\s*(.*)", re.IGNORECASE | re.DOTALL),
     re.compile(r"####\s*([^\n]+)"),
 ]
 NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
+BOXED_RE = re.compile(r"\\boxed\{([^{}]+)\}")
 ANSWER_STOP_MARKERS = ("Human:", "User:", "Assistant:", "Problem:")
 
 
 def extract_answer(text: str) -> str:
     text = text or ""
+    boxed = BOXED_RE.findall(text)
+    if boxed:
+        return normalize_answer_span(boxed[-1])
     for pattern in FINAL_PATTERNS:
         match = pattern.search(text)
         if match:
@@ -39,6 +43,9 @@ def clean_answer(answer: str) -> str:
     answer = answer.strip()
     answer = answer.replace("$", "").replace(",", "")
     answer = re.sub(r"\\boxed\{([^{}]+)\}", r"\1", answer)
+    answer = answer.replace("\\", " ")
+    answer = re.sub(r"\b(text|mathrm)\s*\{([^{}]+)\}", r"\2", answer)
+    answer = re.sub(r"[*_`#]", "", answer)
     answer = answer.strip().rstrip(".")
     return answer
 

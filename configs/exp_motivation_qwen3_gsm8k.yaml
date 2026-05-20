@@ -19,12 +19,13 @@ data:
 
 generation:
   max_input_tokens: 2048
-  max_new_tokens: 384
+  max_new_tokens: 768
   temperature: 0.0
   top_p: 1.0
 
 segmentation:
   min_chars: 24
+  filter_correct: true
 
 counterfactual:
   unit: layer
@@ -34,7 +35,7 @@ counterfactual:
   hidden_layer: -1
   collect_hidden: true
   generation:
-    max_new_tokens: 160
+    max_new_tokens: 256
     temperature: 0.0
     top_p: 1.0
 
