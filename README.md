@@ -44,7 +44,7 @@ bash scripts/06_heatmap_summary.sh "$CONFIG"
 The default config is `configs/exp_minimal_gsm8k.yaml` and writes all artifacts under `runs/minimal_gsm8k_qwen1_5b/`.
 The Qwen3 motivation config is `configs/exp_motivation_qwen3_gsm8k.yaml` and writes under `runs/motivation_qwen3_gsm8k_l8_no_l0/`.
 The larger Qwen3 overnight config is `configs/exp_motivation_qwen3_gsm8k_l32.yaml`.
-No-layer-20 configs are available for `gsm8k` and `math500`; run them separately, then combine summaries with `scripts/07_collect_results.sh`.
+No-layer-20 configs are available for `gsm8k`, `math500`, and `aime2024`; run them separately, then combine summaries with `scripts/07_collect_results.sh`.
 
 ## Key Outputs
 

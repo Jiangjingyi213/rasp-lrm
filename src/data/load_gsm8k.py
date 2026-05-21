@@ -56,6 +56,40 @@ def load_math500_hf(config: dict[str, Any]) -> list[dict[str, Any]]:
     return rows[:limit] if limit else rows
 
 
+def _normalize_aime(row: dict[str, Any], idx: int, split: str) -> dict[str, Any]:
+    question = row.get("problem") or row.get("question") or row.get("prompt")
+    answer = row.get("answer") or row.get("final_answer") or row.get("target")
+    solution = row.get("solution") or row.get("rationale") or ""
+    if not question:
+        raise ValueError(f"AIME row {idx} is missing a problem/question field")
+    return {
+        "id": row.get("id") or row.get("unique_id") or f"aime2024-{split}-{idx}",
+        "dataset": "aime2024",
+        "question": question,
+        "gold": str(answer if answer is not None else solution),
+        "solution": solution,
+    }
+
+
+def load_aime2024_hf(config: dict[str, Any]) -> list[dict[str, Any]]:
+    name_or_path = config.get("name_or_path", "HuggingFaceH4/aime_2024")
+    split = config.get("split", "train")
+    limit = config.get("limit")
+    dataset = load_dataset(name_or_path, split=split)
+    rows = [_normalize_aime(dict(row), i, split) for i, row in enumerate(dataset)]
+    return rows[:limit] if limit else rows
+
+
+def load_aime2024_local(path: str | Path, limit: int | None = None) -> list[dict[str, Any]]:
+    path = Path(path)
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            item = json.loads(line)
+            rows.append(_normalize_aime(item, i, "local"))
+    return rows[:limit] if limit else rows
+
+
 def load_tasks(config: dict[str, Any]) -> list[dict[str, Any]]:
     name = config.get("dataset", "gsm8k").lower()
     limit = config.get("limit")
@@ -65,4 +99,8 @@ def load_tasks(config: dict[str, Any]) -> list[dict[str, Any]]:
         if config.get("path"):
             return load_math500_local(config["path"], limit)
         return load_math500_hf(config)
+    if name in {"aime", "aime2024"}:
+        if config.get("path"):
+            return load_aime2024_local(config["path"], limit)
+        return load_aime2024_hf(config)
     raise ValueError(f"Unsupported dataset: {name}")
