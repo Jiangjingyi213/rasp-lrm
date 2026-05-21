@@ -16,7 +16,7 @@ data:
   dataset: math500
   name_or_path: HuggingFaceH4/MATH-500
   split: test
-  limit:
+  limit: 500
 
 generation:
   max_input_tokens: 2048
