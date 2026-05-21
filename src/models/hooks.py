@@ -65,3 +65,59 @@ def next_token_entropy(model, tokenizer, text: str, max_length: int = 2048) -> f
     probs = torch.softmax(logits.float(), dim=-1)
     entropy = -(probs * torch.log(probs.clamp_min(1e-12))).sum(dim=-1)
     return float(entropy.item())
+
+
+@torch.no_grad()
+def next_token_stats(model, tokenizer, text: str, max_length: int = 2048) -> dict[str, float]:
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length).to(model_device(model))
+    logits = model(**inputs, use_cache=False).logits[:, -1, :]
+    probs = torch.softmax(logits.float(), dim=-1)
+    entropy = -(probs * torch.log(probs.clamp_min(1e-12))).sum(dim=-1)
+    confidence = probs.max(dim=-1).values
+    return {"entropy": float(entropy.item()), "confidence": float(confidence.item())}
+
+
+@torch.no_grad()
+def activation_summary(
+    model,
+    tokenizer,
+    text: str,
+    layer_ids: list[int],
+    max_length: int = 2048,
+) -> list[float]:
+    layers = get_decoder_layers(model)
+    captured: dict[int, torch.Tensor] = {}
+    handles = []
+
+    def make_hook(layer_id: int):
+        def hook(_module, _inputs, output):
+            tensor = output[0] if isinstance(output, tuple) else output
+            captured[layer_id] = tensor.detach().float().cpu()
+
+        return hook
+
+    for layer_id in layer_ids:
+        handles.append(layers[layer_id].register_forward_hook(make_hook(layer_id)))
+    try:
+        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length).to(model_device(model))
+        model(**inputs, use_cache=False)
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    features: list[float] = []
+    for layer_id in layer_ids:
+        tensor = captured.get(layer_id)
+        if tensor is None:
+            features.extend([0.0, 0.0, 0.0, 0.0])
+            continue
+        last = tensor[0, -1]
+        features.extend(
+            [
+                float(last.norm().item()),
+                float(last.mean().item()),
+                float(last.std().item()),
+                float(last.abs().max().item()),
+            ]
+        )
+    return features

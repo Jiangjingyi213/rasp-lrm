@@ -18,9 +18,13 @@ def main() -> None:
     out_path = args.output or cfg["paths"]["entropy_auc"]
     rows = read_jsonl(in_path)
     labels = [int(row["flipped"]) for row in rows]
-    scores = [float(row["entropy"]) for row in rows]
-    result = safe_auc(labels, scores)
-    result["spearman"] = spearman(scores, labels)
+    entropy_scores = [float(row["entropy"]) for row in rows]
+    result = {
+        "entropy": safe_auc(labels, entropy_scores),
+        "confidence": safe_auc(labels, [float(row.get("confidence", 0.0)) for row in rows]),
+    }
+    result["entropy"]["spearman"] = spearman(entropy_scores, labels)
+    result["confidence"]["spearman"] = spearman([float(row.get("confidence", 0.0)) for row in rows], labels)
     result["n"] = len(rows)
     result["positive_rate"] = sum(labels) / len(labels) if labels else None
     write_json(out_path, result)

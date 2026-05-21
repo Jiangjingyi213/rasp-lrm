@@ -22,18 +22,32 @@ def grouped_rates(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     out = []
     for value, group in groups.items():
         out.append({key: value, "flip_rate": rate(group), "n": len(group)})
-    return sorted(out, key=lambda x: x[key])
+    return sorted(out, key=lambda x: str(x[key]))
 
 
 def segment_layer_matrix(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    groups: dict[tuple[int, str], list[dict[str, Any]]] = {}
     for row in rows:
-        key = (int(row["segment_id"]), int(row["layer_id"]))
+        layer_key = ",".join(str(x) for x in row.get("pruned_layers") or [row.get("layer_id")])
+        key = (int(row["segment_id"]), layer_key)
         groups.setdefault(key, []).append(row)
     return [
-        {"segment_id": segment_id, "layer_id": layer_id, "flip_rate": rate(group), "n": len(group)}
-        for (segment_id, layer_id), group in sorted(groups.items())
+        {"segment_id": segment_id, "layer_key": layer_key, "flip_rate": rate(group), "n": len(group)}
+        for (segment_id, layer_key), group in sorted(groups.items())
     ]
+
+
+def grouped_rates_multi(rows: list[dict[str, Any]], keys: list[str]) -> list[dict[str, Any]]:
+    groups: dict[tuple, list[dict[str, Any]]] = {}
+    for row in rows:
+        groups.setdefault(tuple(row.get(key) for key in keys), []).append(row)
+    out = []
+    for values, group in groups.items():
+        record = {key: value for key, value in zip(keys, values)}
+        record["flip_rate"] = rate(group)
+        record["n"] = len(group)
+        out.append(record)
+    return sorted(out, key=lambda x: tuple(str(x[key]) for key in keys))
 
 
 def write_csv(path: str | Path, rows: list[dict[str, Any]]) -> None:
@@ -66,6 +80,11 @@ def main() -> None:
     layer_rates = grouped_rates(rows, "layer_id")
     segment_rates = grouped_rates(rows, "segment_id")
     problem_rates = grouped_rates(rows, "id")
+    module_rates = grouped_rates(rows, "module")
+    ratio_rates = grouped_rates(rows, "ratio")
+    segment_type_rates = grouped_rates(rows, "segment_type")
+    module_ratio_rates = grouped_rates_multi(rows, ["module", "ratio"])
+    segment_type_module_ratio_rates = grouped_rates_multi(rows, ["segment_type", "module", "ratio"])
     matrix = segment_layer_matrix(rows)
     summary = {
         "n": len(rows),
@@ -73,6 +92,11 @@ def main() -> None:
         "layer_flip_rates": layer_rates,
         "segment_flip_rates": segment_rates,
         "problem_flip_rates": problem_rates,
+        "module_flip_rates": module_rates,
+        "ratio_flip_rates": ratio_rates,
+        "segment_type_flip_rates": segment_type_rates,
+        "module_ratio_flip_rates": module_ratio_rates,
+        "segment_type_module_ratio_flip_rates": segment_type_module_ratio_rates,
         "segment_layer_heatmap": matrix,
         "oracles": summarize_oracles(rows),
     }

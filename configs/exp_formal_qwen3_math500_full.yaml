@@ -1,0 +1,66 @@
+seed: 1
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float32
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  use_chat_template: true
+  enable_thinking: false
+  system: You are a careful math reasoning assistant.
+
+data:
+  dataset: math500
+  name_or_path: HuggingFaceH4/MATH-500
+  split: test
+  limit:
+
+generation:
+  max_input_tokens: 2048
+  max_new_tokens: 1024
+  temperature: 0.0
+  top_p: 1.0
+
+segmentation:
+  min_chars: 24
+  filter_correct: true
+
+counterfactual:
+  modules: [layer, attention_block, mlp_block, attention_heads, mlp_channels]
+  ratios: [0.2, 0.4, 0.6]
+  layers: [4, 8, 12, 16, 24]
+  max_segments_per_example: 6
+  prefix_boundary: end
+  hidden_layer: -1
+  collect_hidden: true
+  collect_activation: true
+  generation:
+    max_new_tokens: 320
+    temperature: 0.0
+    top_p: 1.0
+
+probe:
+  split: problem
+  feature_sets: [entropy, confidence, hidden, activation, combined]
+  epochs: 20
+  batch_size: 64
+  lr: 0.001
+  val_fraction: 0.25
+
+paths:
+  run_dir: runs/formal_qwen3_math500_full
+  trajectories: runs/formal_qwen3_math500_full/01_trajectories.jsonl
+  segments: runs/formal_qwen3_math500_full/02_segments.jsonl
+  counterfactuals: runs/formal_qwen3_math500_full/03_counterfactuals.jsonl
+  entropy_auc: runs/formal_qwen3_math500_full/04_entropy_auc.json
+  probe_dataset: runs/formal_qwen3_math500_full/05_probe_dataset.jsonl
+  probe_hidden_states: runs/formal_qwen3_math500_full/05_probe_hidden_states.pt
+  probe_activation_features: runs/formal_qwen3_math500_full/05_probe_activation_features.pt
+  probe_model: runs/formal_qwen3_math500_full/05_probe.pt
+  probe_metrics: runs/formal_qwen3_math500_full/05_probe_metrics.json
+  heatmap_summary: runs/formal_qwen3_math500_full/06_heatmap_summary.json
+  layer_flip_rates: runs/formal_qwen3_math500_full/06_layer_flip_rates.csv
+  segment_layer_heatmap: runs/formal_qwen3_math500_full/06_segment_layer_heatmap.csv

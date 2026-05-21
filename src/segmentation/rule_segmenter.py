@@ -38,4 +38,19 @@ def segment_text(text: str, min_chars: int = 20) -> list[dict[str, int | str]]:
         start = text.find(buffer, cursor)
         end = start + len(buffer)
         segments.append({"segment_id": len(segments), "text": buffer, "start_char": start, "end_char": end})
+    for segment in segments:
+        segment["segment_type"] = classify_segment(str(segment["text"]), int(segment["segment_id"]), len(segments))
     return segments
+
+
+def classify_segment(text: str, segment_id: int, num_segments: int) -> str:
+    lower = text.lower()
+    if "final answer" in lower or "\\boxed" in lower or segment_id == num_segments - 1 and "answer" in lower:
+        return "final"
+    if any(word in lower for word in ("check", "verify", "therefore", "sanity", "confirm")):
+        return "verification"
+    if segment_id == 0 and any(word in lower for word in ("given", "understand", "we need", "determine", "find")):
+        return "understanding"
+    if any(word in lower for word in ("plan", "strategy", "approach", "steps", "first")) and segment_id <= 1:
+        return "planning"
+    return "derivation"

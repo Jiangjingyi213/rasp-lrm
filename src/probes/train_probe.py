@@ -51,8 +51,10 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Prob
 
 def train_probe(
     jsonl_path: str,
-    hidden_path: str,
+    hidden_path: str | None,
     output_path: str,
+    activation_path: str | None = None,
+    feature_set: str = "hidden",
     epochs: int = 20,
     batch_size: int = 64,
     lr: float = 1e-3,
@@ -60,7 +62,7 @@ def train_probe(
     seed: int = 1,
     split: str = "problem",
 ) -> dict:
-    dataset = HiddenStateRiskDataset(jsonl_path, hidden_path)
+    dataset = HiddenStateRiskDataset(jsonl_path, hidden_path, activation_path, feature_set=feature_set)
     if len(dataset) < 2:
         raise ValueError("Need at least two probe examples to train/validate")
     if split == "problem":
@@ -77,7 +79,8 @@ def train_probe(
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dim = dataset.hidden.shape[-1]
+    sample_x, _, _ = dataset[0]
+    dim = sample_x.shape[-1]
     model = LinearRiskProbe(dim).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2)
     loss_fn = nn.BCEWithLogitsLoss()
@@ -93,7 +96,12 @@ def train_probe(
             opt.step()
         result = evaluate(model, val_loader, device)
         if result.val_loss < best["val_loss"]:
-            best = {**result.__dict__, "epoch": epoch, **split_summary(dataset.rows, train_indices, val_indices, split)}
+            best = {
+                **result.__dict__,
+                "epoch": epoch,
+                "feature_set": feature_set,
+                **split_summary(dataset.rows, train_indices, val_indices, split),
+            }
             ensure_dir(Path(output_path).parent)
             torch.save({"model": model.state_dict(), "dim": dim, "best": best}, output_path)
     return best
