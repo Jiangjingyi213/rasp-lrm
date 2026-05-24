@@ -1,0 +1,32 @@
+seed: 1
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float32
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+  adapter: griffin_qwen3
+  griffin_density: 0.8
+  griffin_selection_method: topk
+  griffin_mode: gen
+
+prompt:
+  use_chat_template: true
+  enable_thinking: false
+  system: You are a careful math reasoning assistant.
+
+data:
+  dataset: gsm8k
+  split: test
+  limit: 2
+
+generation:
+  max_input_tokens: 2048
+  max_new_tokens: 384
+  temperature: 0.0
+  top_p: 1.0
+
+paths:
+  run_dir: runs/eval_griffin_qwen3_gsm8k_smoke_d08
+  trajectories: runs/eval_griffin_qwen3_gsm8k_smoke_d08/01_trajectories.jsonl
