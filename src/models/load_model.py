@@ -6,6 +6,8 @@ from typing import Any
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from src.baselines.griffin_qwen3 import apply_griffin_qwen3
+
 
 @dataclass
 class ModelBundle:
@@ -37,6 +39,16 @@ def load_model_bundle(config: dict[str, Any]) -> ModelBundle:
     if config.get("attn_implementation"):
         model_kwargs["attn_implementation"] = config["attn_implementation"]
     model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+    adapter = config.get("adapter")
+    if adapter:
+        if adapter != "griffin_qwen3":
+            raise ValueError(f"Unsupported model adapter: {adapter}")
+        model = apply_griffin_qwen3(
+            model,
+            density=float(config.get("griffin_density", 0.5)),
+            selection_method=config.get("griffin_selection_method", "topk"),
+            mode=config.get("griffin_mode", "gen"),
+        )
     model.eval()
     device = next(model.parameters()).device
     return ModelBundle(model=model, tokenizer=tokenizer, device=device)
