@@ -1,0 +1,25 @@
+external_repos:
+  flap:
+    name: FLAP
+    repo: https://github.com/CASIA-LMC-Lab/FLAP.git
+    local_dir: external_repos/FLAP
+    status: pending_smoke
+    notes: Zero-shot structured pruning baseline; Qwen3 support must be verified.
+  llm_pruner:
+    name: LLM-Pruner
+    repo: https://github.com/horseee/LLM-Pruner.git
+    local_dir: external_repos/LLM-Pruner
+    status: pending_smoke
+    notes: Static structured pruning baseline; Qwen3 support is not assumed.
+  griffin:
+    name: GRIFFIN
+    repo: https://github.com/hdong920/GRIFFIN.git
+    local_dir: external_repos/GRIFFIN
+    status: pending_smoke
+    notes: Prompt-conditioned dynamic FFN pruning baseline candidate.
+  ifpruning:
+    name: IFPruning
+    repo:
+    local_dir:
+    status: repo_not_confirmed
+    notes: Requires exact public repository or paper implementation before smoke testing.

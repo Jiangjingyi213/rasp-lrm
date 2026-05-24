@@ -25,6 +25,9 @@ runs/
 data/raw/
 data/processed/
 data/trajectories/
+external_repos/
+external_outputs/
+external_envs/
 
 # HuggingFace / cache
 .cache/
