@@ -3,14 +3,16 @@ from __future__ import annotations
 import argparse
 
 import torch
+from datasets import load_dataset
 from tqdm import tqdm
 
+from src.baselines.flap_mlp_qwen3 import apply_flap_mlp_pruning_qwen3, summary_to_dict
 from src.data.format_prompt import build_prompt
 from src.data.load_gsm8k import load_tasks
 from src.metrics.answer_match import answer_match, extract_answer
 from src.models.hooks import model_device
 from src.models.load_model import load_model_bundle
-from src.utils.io import append_jsonl, ensure_dir, read_yaml
+from src.utils.io import append_jsonl, ensure_dir, read_yaml, write_json
 from src.utils.seed import set_seed
 
 
@@ -31,6 +33,19 @@ def truncate_completion(text: str, stop_strings: list[str] | tuple[str, ...] = D
         if idx != -1:
             cut = min(cut, idx)
     return text[:cut].strip()
+
+
+def build_flap_calibration_texts(bundle, tasks: list[dict], cfg: dict) -> list[str]:
+    model_cfg = cfg["model"]
+    source = model_cfg.get("flap_calibration_dataset", "wikitext2")
+    n = int(model_cfg.get("flap_calibration_samples", 32))
+    if source == "task":
+        return [build_prompt(task["question"], bundle.tokenizer, cfg.get("prompt", {})) for task in tasks[:n]]
+    if source == "wikitext2":
+        dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+        texts = [row["text"].strip() for row in dataset if row.get("text", "").strip()]
+        return texts[:n]
+    raise ValueError(f"Unsupported FLAP calibration dataset: {source}")
 
 
 @torch.no_grad()
@@ -69,6 +84,25 @@ def main() -> None:
     ensure_dir(cfg["paths"]["run_dir"])
     bundle = load_model_bundle(cfg["model"])
     tasks = load_tasks(cfg["data"])
+    if cfg["model"].get("adapter") == "flap_mlp_qwen3":
+        calibration_texts = build_flap_calibration_texts(bundle, tasks, cfg)
+        summary = apply_flap_mlp_pruning_qwen3(
+            model=bundle.model,
+            tokenizer=bundle.tokenizer,
+            calibration_texts=calibration_texts,
+            ratio=float(cfg["model"].get("flap_pruning_ratio", cfg["model"].get("pruning_ratio", 0.2))),
+            calibration_dataset=cfg["model"].get("flap_calibration_dataset", "wikitext2"),
+            metric=cfg["model"].get("flap_metric", "WIFV"),
+            structure=cfg["model"].get("flap_structure", "AL-AM"),
+            calibration_samples=int(cfg["model"].get("flap_calibration_samples", 32)),
+            max_input_tokens=int(cfg.get("generation", {}).get("max_input_tokens", 2048)),
+            layers=cfg["model"].get("flap_layers") or cfg["model"].get("pruning_layers"),
+            bias_compensation=bool(cfg["model"].get("flap_bias_compensation", True)),
+        )
+        write_json(
+            cfg["paths"].get("flap_mlp_summary", f'{cfg["paths"]["run_dir"]}/00_flap_mlp_summary.json'),
+            summary_to_dict(summary),
+        )
 
     for task in tqdm(tasks, desc="generate"):
         prompt = build_prompt(task["question"], bundle.tokenizer, cfg.get("prompt", {}))
