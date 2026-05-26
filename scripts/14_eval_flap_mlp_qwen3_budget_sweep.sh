@@ -10,6 +10,7 @@ GSM8K_LIMIT="${GSM8K_LIMIT:-1319}"
 MATH500_LIMIT="${MATH500_LIMIT:-500}"
 DATASETS="${DATASETS:-gsm8k math500}"
 TAGS="${TAGS:-flap_mlp_p20 flap_mlp_p40 flap_mlp_p60}"
+RUN_ROOT="${RUN_ROOT:-runs}"
 CLEAN_RUN_DIR="${CLEAN_RUN_DIR:-1}"
 FLAP_METRIC="${FLAP_METRIC:-WIFV}"
 FLAP_STRUCTURE="${FLAP_STRUCTURE:-AL-AM}"
@@ -19,18 +20,19 @@ FLAP_BIAS_COMPENSATION="${FLAP_BIAS_COMPENSATION:-true}"
 
 mkdir -p "$CONFIG_DIR"
 
-"$PYTHON" - "$CONFIG_DIR" "$GSM8K_LIMIT" "$MATH500_LIMIT" "$FLAP_METRIC" "$FLAP_STRUCTURE" "$FLAP_CALIBRATION_DATASET" "$FLAP_CALIBRATION_SAMPLES" "$FLAP_BIAS_COMPENSATION" <<'PY'
+"$PYTHON" - "$CONFIG_DIR" "$RUN_ROOT" "$GSM8K_LIMIT" "$MATH500_LIMIT" "$FLAP_METRIC" "$FLAP_STRUCTURE" "$FLAP_CALIBRATION_DATASET" "$FLAP_CALIBRATION_SAMPLES" "$FLAP_BIAS_COMPENSATION" <<'PY'
 from pathlib import Path
 import sys
 
 config_dir = Path(sys.argv[1])
-gsm8k_limit = int(sys.argv[2])
-math500_limit = int(sys.argv[3])
-flap_metric = sys.argv[4]
-flap_structure = sys.argv[5]
-flap_calibration_dataset = sys.argv[6]
-flap_calibration_samples = int(sys.argv[7])
-flap_bias_compensation = sys.argv[8].lower() in {"1", "true", "yes", "y"}
+run_root = sys.argv[2].rstrip("/")
+gsm8k_limit = int(sys.argv[3])
+math500_limit = int(sys.argv[4])
+flap_metric = sys.argv[5]
+flap_structure = sys.argv[6]
+flap_calibration_dataset = sys.argv[7]
+flap_calibration_samples = int(sys.argv[8])
+flap_bias_compensation = sys.argv[9].lower() in {"1", "true", "yes", "y"}
 config_dir.mkdir(parents=True, exist_ok=True)
 
 base_model = """\
@@ -49,6 +51,8 @@ prompt:
 """
 
 budgets = {
+    "p05": 0.05,
+    "p10": 0.10,
     "p20": 0.20,
     "p40": 0.40,
     "p60": 0.60,
@@ -58,7 +62,8 @@ def write_config(dataset: str, tag: str, ratio: float) -> None:
     metric_tag = flap_metric.lower()
     structure_tag = flap_structure.lower().replace("-", "")
     calib_tag = flap_calibration_dataset.lower().replace("-", "")
-    run_dir = f"runs/eval_flap_mlp_{metric_tag}_{structure_tag}_{calib_tag}_{tag}_qwen3_{dataset}_budget"
+    bias_tag = "bias" if flap_bias_compensation else "nobias"
+    run_dir = f"{run_root}/eval_flap_mlp_{metric_tag}_{structure_tag}_{calib_tag}_{bias_tag}_{tag}_qwen3_{dataset}_budget"
     model = base_model + f"""\
   adapter: flap_mlp_qwen3
   flap_pruning_ratio: {ratio}
