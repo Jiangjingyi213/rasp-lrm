@@ -55,7 +55,10 @@ budgets = {
 }
 
 def write_config(dataset: str, tag: str, ratio: float) -> None:
-    run_dir = f"runs/eval_flap_mlp_{tag}_qwen3_{dataset}_budget"
+    metric_tag = flap_metric.lower()
+    structure_tag = flap_structure.lower().replace("-", "")
+    calib_tag = flap_calibration_dataset.lower().replace("-", "")
+    run_dir = f"runs/eval_flap_mlp_{metric_tag}_{structure_tag}_{calib_tag}_{tag}_qwen3_{dataset}_budget"
     model = base_model + f"""\
   adapter: flap_mlp_qwen3
   flap_pruning_ratio: {ratio}

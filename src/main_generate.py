@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import random
 
 import torch
 from datasets import load_dataset
@@ -39,12 +40,22 @@ def build_flap_calibration_texts(bundle, tasks: list[dict], cfg: dict) -> list[s
     model_cfg = cfg["model"]
     source = model_cfg.get("flap_calibration_dataset", "wikitext2")
     n = int(model_cfg.get("flap_calibration_samples", 32))
+    max_input_tokens = int(cfg.get("generation", {}).get("max_input_tokens", 2048))
     if source == "task":
         return [build_prompt(task["question"], bundle.tokenizer, cfg.get("prompt", {})) for task in tasks[:n]]
     if source == "wikitext2":
         dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
-        texts = [row["text"].strip() for row in dataset if row.get("text", "").strip()]
-        return texts[:n]
+        text = " ".join(row["text"].strip() for row in dataset if row.get("text", "").strip())
+        token_ids = bundle.tokenizer(text, return_tensors="pt", add_special_tokens=False).input_ids[0]
+        if token_ids.numel() <= max_input_tokens:
+            return [text]
+        rng = random.Random(int(cfg.get("seed", 1)))
+        chunks = []
+        for _ in range(n):
+            start = rng.randint(0, int(token_ids.numel()) - max_input_tokens - 1)
+            chunk_ids = token_ids[start : start + max_input_tokens]
+            chunks.append(bundle.tokenizer.decode(chunk_ids, skip_special_tokens=True))
+        return chunks
     raise ValueError(f"Unsupported FLAP calibration dataset: {source}")
 
 
