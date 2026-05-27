@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import random
+from pathlib import Path
 
 import torch
 from datasets import load_dataset
@@ -41,20 +43,42 @@ def build_flap_calibration_texts(bundle, tasks: list[dict], cfg: dict) -> list[s
     source = model_cfg.get("flap_calibration_dataset", "wikitext2")
     n = int(model_cfg.get("flap_calibration_samples", 32))
     max_input_tokens = int(cfg.get("generation", {}).get("max_input_tokens", 2048))
+    cache_path = model_cfg.get(
+        "flap_calibration_cache",
+        f"runs/cache/flap_{source}_seed{int(cfg.get('seed', 1))}_n{n}_len{max_input_tokens}.json",
+    )
+    cache_file = Path(cache_path)
+    if cache_file.exists():
+        with cache_file.open("r", encoding="utf-8") as f:
+            cached = json.load(f)
+        if isinstance(cached, list) and cached:
+            return [str(text) for text in cached[:n]]
+
     if source == "task":
-        return [build_prompt(task["question"], bundle.tokenizer, cfg.get("prompt", {})) for task in tasks[:n]]
+        texts = [build_prompt(task["question"], bundle.tokenizer, cfg.get("prompt", {})) for task in tasks[:n]]
+        ensure_dir(cache_file.parent)
+        with cache_file.open("w", encoding="utf-8") as f:
+            json.dump(texts, f, ensure_ascii=False, indent=2)
+        return texts
     if source == "wikitext2":
         dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
         text = " ".join(row["text"].strip() for row in dataset if row.get("text", "").strip())
         token_ids = bundle.tokenizer(text, return_tensors="pt", add_special_tokens=False).input_ids[0]
         if token_ids.numel() <= max_input_tokens:
-            return [text]
+            texts = [text]
+            ensure_dir(cache_file.parent)
+            with cache_file.open("w", encoding="utf-8") as f:
+                json.dump(texts, f, ensure_ascii=False, indent=2)
+            return texts
         rng = random.Random(int(cfg.get("seed", 1)))
         chunks = []
         for _ in range(n):
             start = rng.randint(0, int(token_ids.numel()) - max_input_tokens - 1)
             chunk_ids = token_ids[start : start + max_input_tokens]
             chunks.append(bundle.tokenizer.decode(chunk_ids, skip_special_tokens=True))
+        ensure_dir(cache_file.parent)
+        with cache_file.open("w", encoding="utf-8") as f:
+            json.dump(chunks, f, ensure_ascii=False, indent=2)
         return chunks
     raise ValueError(f"Unsupported FLAP calibration dataset: {source}")
 
