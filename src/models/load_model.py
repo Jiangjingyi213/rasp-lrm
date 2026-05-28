@@ -41,7 +41,7 @@ def load_model_bundle(config: dict[str, Any]) -> ModelBundle:
     model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
     adapter = config.get("adapter")
     if adapter:
-        if adapter == "flap_mlp_qwen3":
+        if adapter in {"flap_mlp_qwen3", "llm_pruner_mlp_qwen3"}:
             pass
         elif adapter != "griffin_qwen3":
             raise ValueError(f"Unsupported model adapter: {adapter}")

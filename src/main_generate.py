@@ -9,7 +9,11 @@ import torch
 from datasets import load_dataset
 from tqdm import tqdm
 
-from src.baselines.flap_mlp_qwen3 import apply_flap_mlp_pruning_qwen3, summary_to_dict
+from src.baselines.flap_mlp_qwen3 import apply_flap_mlp_pruning_qwen3, summary_to_dict as flap_summary_to_dict
+from src.baselines.llm_pruner_mlp_qwen3 import (
+    apply_llm_pruner_mlp_pruning_qwen3,
+    summary_to_dict as llm_pruner_summary_to_dict,
+)
 from src.data.format_prompt import build_prompt
 from src.data.load_gsm8k import load_tasks
 from src.metrics.answer_match import answer_match, extract_answer
@@ -136,7 +140,19 @@ def main() -> None:
         )
         write_json(
             cfg["paths"].get("flap_mlp_summary", f'{cfg["paths"]["run_dir"]}/00_flap_mlp_summary.json'),
-            summary_to_dict(summary),
+            flap_summary_to_dict(summary),
+        )
+    if cfg["model"].get("adapter") == "llm_pruner_mlp_qwen3":
+        summary = apply_llm_pruner_mlp_pruning_qwen3(
+            model=bundle.model,
+            ratio=float(cfg["model"].get("llm_pruner_pruning_ratio", cfg["model"].get("pruning_ratio", 0.2))),
+            importance=cfg["model"].get("llm_pruner_importance", "l2"),
+            structure=cfg["model"].get("llm_pruner_structure", "UL-UM"),
+            layers=cfg["model"].get("llm_pruner_layers") or cfg["model"].get("pruning_layers"),
+        )
+        write_json(
+            cfg["paths"].get("llm_pruner_mlp_summary", f'{cfg["paths"]["run_dir"]}/00_llm_pruner_mlp_summary.json'),
+            llm_pruner_summary_to_dict(summary),
         )
 
     for task in tqdm(tasks, desc="generate"):
