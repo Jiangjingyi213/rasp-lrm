@@ -14,10 +14,12 @@ RUN_ROOT="${RUN_ROOT:-runs/llm_pruner_mlp_formal}"
 CLEAN_RUN_DIR="${CLEAN_RUN_DIR:-1}"
 LLM_PRUNER_IMPORTANCE="${LLM_PRUNER_IMPORTANCE:-l2}"
 LLM_PRUNER_STRUCTURE="${LLM_PRUNER_STRUCTURE:-UL-UM}"
+LLM_PRUNER_LAYERS="${LLM_PRUNER_LAYERS:-}"
+LLM_PRUNER_PHYSICAL_PRUNING="${LLM_PRUNER_PHYSICAL_PRUNING:-true}"
 
 mkdir -p "$CONFIG_DIR"
 
-"$PYTHON" - "$CONFIG_DIR" "$RUN_ROOT" "$GSM8K_LIMIT" "$MATH500_LIMIT" "$LLM_PRUNER_IMPORTANCE" "$LLM_PRUNER_STRUCTURE" <<'PY'
+"$PYTHON" - "$CONFIG_DIR" "$RUN_ROOT" "$GSM8K_LIMIT" "$MATH500_LIMIT" "$LLM_PRUNER_IMPORTANCE" "$LLM_PRUNER_STRUCTURE" "$LLM_PRUNER_LAYERS" "$LLM_PRUNER_PHYSICAL_PRUNING" <<'PY'
 from pathlib import Path
 import sys
 
@@ -27,6 +29,8 @@ gsm8k_limit = int(sys.argv[3])
 math500_limit = int(sys.argv[4])
 importance = sys.argv[5]
 structure = sys.argv[6]
+layers = sys.argv[7].strip()
+physical_pruning = sys.argv[8].lower() in {"1", "true", "yes", "y"}
 config_dir.mkdir(parents=True, exist_ok=True)
 
 base_model = """\
@@ -54,13 +58,20 @@ budgets = {
 def write_config(dataset: str, tag: str, ratio: float) -> None:
     importance_tag = importance.lower()
     structure_tag = structure.lower().replace("-", "")
-    run_dir = f"{run_root}/eval_llm_pruner_mlp_{importance_tag}_{structure_tag}_{tag}_qwen3_{dataset}_budget"
+    mode_tag = "physical" if physical_pruning else "mask"
+    layer_tag = "all" if not layers else "layers" + layers.replace(",", "-").replace(" ", "")
+    run_dir = f"{run_root}/eval_llm_pruner_mlp_{importance_tag}_{structure_tag}_{mode_tag}_{layer_tag}_{tag}_qwen3_{dataset}_budget"
+    layers_yaml = ""
+    if layers:
+        parsed_layers = [int(x) for x in layers.split(",") if x.strip()]
+        layers_yaml = "  llm_pruner_layers: [" + ", ".join(str(x) for x in parsed_layers) + "]\n"
     model = base_model + f"""\
   adapter: llm_pruner_mlp_qwen3
   llm_pruner_pruning_ratio: {ratio}
   llm_pruner_importance: {importance}
   llm_pruner_structure: {structure}
-"""
+  llm_pruner_physical_pruning: {str(physical_pruning).lower()}
+{layers_yaml}"""
 
     if dataset == "gsm8k":
         data = f"""\

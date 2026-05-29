@@ -109,12 +109,21 @@ def _prune_mlp_channels(mlp: nn.Module, keep_mask: torch.Tensor) -> None:
 
 
 @torch.no_grad()
+def _mask_mlp_channels(mlp: nn.Module, keep_mask: torch.Tensor) -> None:
+    remove_idx = torch.where(~keep_mask)[0].to(mlp.gate_proj.weight.device)
+    mlp.gate_proj.weight.data.index_fill_(0, remove_idx, 0)
+    mlp.up_proj.weight.data.index_fill_(0, remove_idx, 0)
+    mlp.down_proj.weight.data.index_fill_(1, remove_idx, 0)
+
+
+@torch.no_grad()
 def apply_llm_pruner_mlp_pruning_qwen3(
     model: nn.Module,
     ratio: float,
     importance: str = "l2",
     structure: str = "UL-UM",
     layers: Iterable[int] | None = None,
+    physical_pruning: bool = True,
 ) -> LlmPrunerMlpSummary:
     """Apply an LLM-Pruner-style static MLP-width baseline to Qwen3.
 
@@ -143,7 +152,10 @@ def apply_llm_pruner_mlp_pruning_qwen3(
         keep_mask = masks[layer_id]
         kept[str(layer_id)] = int(keep_mask.sum().item())
         pruned[str(layer_id)] = int((~keep_mask).sum().item())
-        _prune_mlp_channels(_qwen3_mlp(decoder_layers[layer_id]), keep_mask)
+        if physical_pruning:
+            _prune_mlp_channels(_qwen3_mlp(decoder_layers[layer_id]), keep_mask)
+        else:
+            _mask_mlp_channels(_qwen3_mlp(decoder_layers[layer_id]), keep_mask)
 
     return LlmPrunerMlpSummary(
         method="llm_pruner_mlp_qwen3",
@@ -152,7 +164,7 @@ def apply_llm_pruner_mlp_pruning_qwen3(
         structure=structure,
         ratio=float(ratio),
         target="mlp.intermediate_channels",
-        physical_pruning=True,
+        physical_pruning=bool(physical_pruning),
         total_layers=len(decoder_layers),
         pruned_layers=selected_layers,
         original_intermediate_size=original_intermediate_size,

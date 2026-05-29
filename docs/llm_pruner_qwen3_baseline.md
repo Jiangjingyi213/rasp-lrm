@@ -10,7 +10,7 @@ pruning baseline for GSM8K/MATH500 evaluation.
 - Target module: MLP intermediate channels
 - Pruned group: one matched intermediate channel across `gate_proj`,
   `up_proj`, and `down_proj`
-- Physical pruning: yes
+- Physical pruning: configurable
 - Recovery/LoRA: no
 - Attention pruning: no
 
@@ -39,6 +39,18 @@ The current implementation supports:
 
 Default: `UL-UM`.
 
+## Diagnostic Options
+
+Because Qwen3 can be fragile under all-layer physical MLP width pruning, the
+sweep script exposes two diagnostics:
+
+- `LLM_PRUNER_PHYSICAL_PRUNING=false`: zero the selected MLP channels while
+  keeping tensor shapes unchanged. This distinguishes pruning-policy failure
+  from physical-shape/export issues.
+- `LLM_PRUNER_LAYERS=4,5,...`: prune only selected layers. This mirrors the
+  common LLM-Pruner practice of avoiding the earliest layers during block-wise
+  pruning.
+
 ## Formal Sweep
 
 Use:
@@ -47,6 +59,8 @@ Use:
 export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
 export TOKENIZERS_PARALLELISM=false
 export CUDA_VISIBLE_DEVICES=0
+export LLM_PRUNER_PHYSICAL_PRUNING=false
+export LLM_PRUNER_LAYERS=4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27
 
 nohup bash scripts/18_eval_llm_pruner_mlp_qwen3_budget_sweep.sh \
   > logs/llm_pruner_mlp_qwen3_gpu0.log 2>&1 &

@@ -149,6 +149,7 @@ def main() -> None:
             importance=cfg["model"].get("llm_pruner_importance", "l2"),
             structure=cfg["model"].get("llm_pruner_structure", "UL-UM"),
             layers=cfg["model"].get("llm_pruner_layers") or cfg["model"].get("pruning_layers"),
+            physical_pruning=bool(cfg["model"].get("llm_pruner_physical_pruning", True)),
         )
         write_json(
             cfg["paths"].get("llm_pruner_mlp_summary", f'{cfg["paths"]["run_dir"]}/00_llm_pruner_mlp_summary.json'),
