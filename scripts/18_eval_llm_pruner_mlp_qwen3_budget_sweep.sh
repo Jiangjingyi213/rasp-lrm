@@ -16,6 +16,19 @@ LLM_PRUNER_IMPORTANCE="${LLM_PRUNER_IMPORTANCE:-l2}"
 LLM_PRUNER_STRUCTURE="${LLM_PRUNER_STRUCTURE:-UL-UM}"
 LLM_PRUNER_LAYERS="${LLM_PRUNER_LAYERS:-}"
 LLM_PRUNER_PHYSICAL_PRUNING="${LLM_PRUNER_PHYSICAL_PRUNING:-true}"
+ALLOW_UNSTABLE_LLM_PRUNER_MLP="${ALLOW_UNSTABLE_LLM_PRUNER_MLP:-0}"
+
+if [[ "$ALLOW_UNSTABLE_LLM_PRUNER_MLP" != "1" ]]; then
+  cat >&2 <<'EOF'
+This LLM-Pruner-style Qwen3 MLP baseline is currently marked unstable.
+Observed p05 runs collapsed into repeated-token generations, so it should not
+be used as a formal baseline unless you are explicitly running diagnostics.
+
+To run anyway, set:
+  export ALLOW_UNSTABLE_LLM_PRUNER_MLP=1
+EOF
+  exit 2
+fi
 
 mkdir -p "$CONFIG_DIR"
 

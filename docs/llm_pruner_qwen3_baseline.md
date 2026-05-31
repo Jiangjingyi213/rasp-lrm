@@ -1,8 +1,16 @@
 # LLM-Pruner-Style Qwen3 MLP Baseline
 
 This baseline is a Qwen3 MLP-only static width-pruning port inspired by
-`horseee/LLM-Pruner`. It is intended as a conservative static structured
-pruning baseline for GSM8K/MATH500 evaluation.
+`horseee/LLM-Pruner`.
+
+## Current Status
+
+**Unstable / diagnostic only. Do not use as a formal baseline yet.**
+
+Initial `p05` runs collapsed into repeated-token generations on GSM8K and
+MATH500, despite pruning only 5% of MLP intermediate channels. This indicates
+that the naive Qwen3 MLP-only port is not equivalent to the official
+LLM-Pruner method and should not be reported as an LLM-Pruner result.
 
 ## Scope
 
@@ -64,6 +72,12 @@ export LLM_PRUNER_LAYERS=4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,2
 
 nohup bash scripts/18_eval_llm_pruner_mlp_qwen3_budget_sweep.sh \
   > logs/llm_pruner_mlp_qwen3_gpu0.log 2>&1 &
+```
+
+The script now requires an explicit diagnostic opt-in:
+
+```bash
+export ALLOW_UNSTABLE_LLM_PRUNER_MLP=1
 ```
 
 Default budgets:

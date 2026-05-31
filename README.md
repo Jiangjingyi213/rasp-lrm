@@ -39,6 +39,17 @@ python3 -m src.main_offline_baselines \
   --summary-csv runs/formal_qwen3_math500_offline_baselines.csv
 ```
 
+For the first reasoning-aware policy simulation over the completed GSM8K and
+MATH500 counterfactual tables, run:
+
+```bash
+bash scripts/19_rasp_zero_offline.sh
+```
+
+This generates problem-level out-of-fold hidden-state risk scores and evaluates
+budget-matched static, entropy-only, confidence-only, probe-only, and
+stage-aware RASP-Zero policies. See `docs/rasp_zero_offline.md`.
+
 See `docs/baseline_evaluation.md` for the distinction between offline policy baselines and external pruned-model baselines such as LLM-Pruner/FLAP.
 
 External pruning repositories are cloned on the remote server, not committed here:
