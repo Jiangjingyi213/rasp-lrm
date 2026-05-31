@@ -12,7 +12,11 @@ def main() -> None:
     parser.add_argument("--run-dirs", nargs="+", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--summary-output", default=None)
-    parser.add_argument("--feature-set", default="hidden", choices=["hidden", "activation", "entropy", "confidence", "combined"])
+    parser.add_argument(
+        "--feature-set",
+        default="hidden",
+        choices=["hidden", "activation", "entropy", "confidence", "combined", "action_hidden", "action_hidden_stage"],
+    )
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=128)

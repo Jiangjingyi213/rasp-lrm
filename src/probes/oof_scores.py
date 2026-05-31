@@ -11,7 +11,9 @@ from torch import nn
 from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
 
 from src.probes.dataset import HiddenStateRiskDataset
+from src.probes.action_conditioned_dataset import ActionConditionedRiskDataset
 from src.probes.train_probe import LinearRiskProbe
+from src.utils.io import read_jsonl
 
 
 def _problem_key(row: dict[str, Any]) -> tuple[str, str]:
@@ -63,16 +65,36 @@ def generate_oof_scores(
     seed: int = 1,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     datasets = []
+    action_layer_dim = None
+    if feature_set in {"action_hidden", "action_hidden_stage"}:
+        action_rows = [
+            row
+            for run_dir in run_dirs
+            for row in read_jsonl(Path(run_dir) / "05_probe_dataset.jsonl")
+        ]
+        action_layer_dim = max(
+            [int(layer) for row in action_rows for layer in row.get("pruned_layers", []) if layer is not None] + [0]
+        ) + 1
     for run_dir in run_dirs:
         root = Path(run_dir)
-        datasets.append(
-            HiddenStateRiskDataset(
-                root / "05_probe_dataset.jsonl",
-                root / "05_probe_hidden_states.pt" if feature_set in {"hidden", "combined"} else None,
-                root / "05_probe_activation_features.pt" if feature_set in {"activation", "combined"} else None,
-                feature_set=feature_set,
+        if feature_set in {"action_hidden", "action_hidden_stage"}:
+            datasets.append(
+                ActionConditionedRiskDataset(
+                    root / "05_probe_dataset.jsonl",
+                    root / "05_probe_hidden_states.pt",
+                    include_stage=feature_set == "action_hidden_stage",
+                    layer_dim=action_layer_dim,
+                )
             )
-        )
+        else:
+            datasets.append(
+                HiddenStateRiskDataset(
+                    root / "05_probe_dataset.jsonl",
+                    root / "05_probe_hidden_states.pt" if feature_set in {"hidden", "combined"} else None,
+                    root / "05_probe_activation_features.pt" if feature_set in {"activation", "combined"} else None,
+                    feature_set=feature_set,
+                )
+            )
     dataset = ConcatDataset(datasets)
     rows = [row for shard in datasets for row in shard.rows]
     val_folds = _problem_folds(rows, folds=folds, seed=seed)
@@ -140,6 +162,7 @@ def generate_oof_scores(
         "rows": len(rows),
         "problem_count": len({_problem_key(row) for row in rows}),
         "positive_rate": sum(labels) / len(labels),
+        "feature_dim": dim,
         **_evaluate_scores(labels, score_values),
         "fold_summaries": fold_summaries,
     }

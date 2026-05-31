@@ -50,6 +50,16 @@ This generates problem-level out-of-fold hidden-state risk scores and evaluates
 budget-matched static, entropy-only, confidence-only, probe-only, and
 stage-aware RASP-Zero policies. See `docs/rasp_zero_offline.md`.
 
+The second offline stage adds action-conditioned risk prediction and a
+multi-module router:
+
+```bash
+bash scripts/21_rasp_zero_offline_v2.sh
+```
+
+See `docs/rasp_zero_offline_v2_zh.md` for the detailed Chinese experiment
+record and interpretation guide.
+
 See `docs/baseline_evaluation.md` for the distinction between offline policy baselines and external pruned-model baselines such as LLM-Pruner/FLAP.
 
 External pruning repositories are cloned on the remote server, not committed here:
