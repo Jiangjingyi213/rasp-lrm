@@ -239,15 +239,19 @@ counterfactual 标签
 mlp_intermediate_channels
 ```
 
-在每个 reasoning prefix 上执行：
+在每个 reasoning segment 的起点执行：
 
 ```text
-1. Dense prefill 建立 neuron ranking
-2. 使用 5% mask 继续生成答案
-3. 使用 10% mask 继续生成答案
-4. 使用 20% mask 继续生成答案
-5. 分别记录是否导致答案翻转
+1. 将已经生成的 assistant prefix 直接附加到原始 prompt
+2. Dense prefill 建立 neuron ranking
+3. 使用 5% mask 继续生成答案
+4. 使用 10% mask 继续生成答案
+5. 使用 20% mask 继续生成答案
+6. 分别记录是否导致答案翻转
 ```
+
+这里不能把 reasoning prefix 重新塞回 user 消息。Runtime bank 必须模拟真实
+autoregressive continuation：动作在当前历史状态上生效，并影响即将生成的推理步骤。
 
 每一条 probe row 将包含：
 
@@ -365,6 +369,9 @@ export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
 
 bash scripts/23_collect_runtime_counterfactuals.sh
 ```
+
+默认 smoke 脚本会清理自己的旧输出目录，避免 `main_generate` 的增量写入行为将两次
+smoke 混在一起。
 
 结果：
 

@@ -3,7 +3,9 @@ from __future__ import annotations
 import re
 
 
-EXPLICIT_STEP_RE = re.compile(r"(?im)(?:^|\n)\s*step\s+\d+\s*[:.)-]?\s+")
+EXPLICIT_STEP_RE = re.compile(
+    r"(?im)(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*{1,2}|_{1,2})?\s*step\s+\d+\s*[:.)-]?\s*(?:\*{1,2}|_{1,2})?\s*"
+)
 BROAD_STEP_RE = re.compile(
     r"(?im)(?:^|\n)\s*(?:step\s+\d+\s*[:.)-]?|#{1,6}|\d+[\).]|[-*])\s+"
 )

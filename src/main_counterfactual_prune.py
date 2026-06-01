@@ -7,7 +7,7 @@ from typing import Any
 import torch
 from tqdm import tqdm
 
-from src.data.format_prompt import build_prompt
+from src.data.format_prompt import build_assistant_continuation_prompt, build_prompt
 from src.main_generate import generate_text
 from src.metrics.answer_match import extract_answer
 from src.metrics.flip_rate import answer_flipped
@@ -47,6 +47,7 @@ def main() -> None:
     ratios = cf_cfg.get("ratios") or [cf_cfg.get("ratio", 1.0)]
     max_segments = cf_cfg.get("max_segments_per_example")
     boundary = cf_cfg.get("prefix_boundary", "end")
+    continuation_prompt_mode = cf_cfg.get("continuation_prompt_mode", "user_reasoning_so_far")
     generation_cfg = {**cfg.get("generation", {}), **cf_cfg.get("generation", {})}
     hidden_layer = cf_cfg.get("hidden_layer", -1)
     collect_hidden = cf_cfg.get("collect_hidden", True)
@@ -62,7 +63,17 @@ def main() -> None:
         segments = item["segments"][:max_segments] if max_segments else item["segments"]
         for segment in segments:
             prefix = segment_prefix(baseline, segment, boundary)
-            conditioned_prompt = build_prompt(item["question"], bundle.tokenizer, cfg.get("prompt", {}), prefix=prefix)
+            if continuation_prompt_mode == "assistant_prefix":
+                conditioned_prompt = build_assistant_continuation_prompt(
+                    item["question"],
+                    prefix,
+                    bundle.tokenizer,
+                    cfg.get("prompt", {}),
+                )
+            elif continuation_prompt_mode == "user_reasoning_so_far":
+                conditioned_prompt = build_prompt(item["question"], bundle.tokenizer, cfg.get("prompt", {}), prefix=prefix)
+            else:
+                raise ValueError(f"Unsupported counterfactual continuation_prompt_mode: {continuation_prompt_mode}")
             stats = next_token_stats(
                 bundle.model,
                 bundle.tokenizer,

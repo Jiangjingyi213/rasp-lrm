@@ -15,6 +15,25 @@ def prompt_with_prefix(question: str, prefix: str) -> str:
     return reasoning_prompt(question) + prefix.strip() + "\n"
 
 
+def build_assistant_continuation_prompt(
+    question: str,
+    prefix: str,
+    tokenizer=None,
+    prompt_config: dict[str, Any] | None = None,
+) -> str:
+    """Build the original assistant prompt followed by its generated prefix.
+
+    This differs from `build_prompt(..., prefix=...)`, which asks the model to
+    reconsider a reasoning prefix inside a new user message. Runtime
+    counterfactual collection needs the faithful autoregressive form: keep the
+    original user prompt and continue directly from the assistant tokens that
+    have already been generated.
+    """
+
+    base = build_prompt(question, tokenizer, prompt_config)
+    return base + prefix.strip()
+
+
 def build_prompt(
     question: str,
     tokenizer=None,

@@ -5,9 +5,11 @@ import unittest
 import torch
 from torch import nn
 
+from src.data.format_prompt import build_assistant_continuation_prompt
 from src.pruning.mlp_pruner import mlp_intermediate_channel_mask
 from src.rasp.activation_ranker import keep_mask_from_ranking, rank_intermediate_neurons
 from src.rasp.mlp_runtime import RuntimeMaskedQwen3MLP
+from src.segmentation.rule_segmenter import segment_text
 
 
 class FakeMlp(nn.Module):
@@ -45,6 +47,23 @@ class FakeModel(nn.Module):
 
 
 class RaspZeroRuntimeTest(unittest.TestCase):
+    def test_assistant_continuation_prompt_appends_prefix_directly(self) -> None:
+        prompt = build_assistant_continuation_prompt("What is 1 + 1?", "Step 1: add the values.")
+        self.assertTrue(prompt.endswith("Reasoning:\nStep 1: add the values."))
+        self.assertNotIn("Reasoning so far", prompt)
+
+    def test_segmenter_recognizes_markdown_step_headings(self) -> None:
+        text = (
+            "We need to calculate the result.\n\n"
+            "### **Step 1: First calculation**\n\nCompute one value.\n\n"
+            "**Step 2: Final calculation**\n\nCompute the answer.\n\n"
+            "**Final answer:** 3"
+        )
+        segments = segment_text(text, min_chars=10)
+        self.assertGreaterEqual(len(segments), 2)
+        self.assertIn("Step 1", segments[0]["text"])
+        self.assertTrue(any("Step 2" in str(segment["text"]) for segment in segments))
+
     def test_activation_ranker_builds_nested_masks(self) -> None:
         states = torch.tensor([[[4.0, 3.0, 2.0, 1.0], [4.0, 3.0, 2.0, 1.0]]])
         ranking = rank_intermediate_neurons(states)
