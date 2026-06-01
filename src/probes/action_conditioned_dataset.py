@@ -10,7 +10,7 @@ from src.main_offline_baselines import MODULE_STRENGTH
 from src.utils.io import read_jsonl
 
 
-MODULES = ["attention_heads", "attention_block", "mlp_channels", "mlp_block", "layer"]
+MODULES = ["attention_heads", "attention_block", "mlp_channels", "mlp_intermediate_channels", "mlp_block", "layer"]
 STAGES = ["understanding", "planning", "derivation", "verification", "final", "unknown"]
 DATASETS = ["gsm8k", "math500", "unknown"]
 

@@ -93,7 +93,13 @@ def main() -> None:
                 )
             for module in modules:
                 for ratio in ratios:
-                    pruned_layers = select_layers([int(layer) for layer in layers], float(ratio))
+                    if str(module) == "mlp_intermediate_channels":
+                        # Here ratio controls FFN neurons, not the number of
+                        # layers. Apply the deployment action to every
+                        # configured runtime layer.
+                        pruned_layers = [int(layer) for layer in layers]
+                    else:
+                        pruned_layers = select_layers([int(layer) for layer in layers], float(ratio))
                     with pruning_context(bundle.model, str(module), pruned_layers, float(ratio)):
                         cf_completion = generate_text(bundle, conditioned_prompt, generation_cfg)
                     flipped = answer_flipped(baseline, cf_completion)

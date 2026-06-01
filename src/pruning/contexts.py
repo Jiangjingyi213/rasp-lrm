@@ -5,7 +5,7 @@ from typing import Iterator
 
 from src.pruning.attention_pruner import attention_head_mask, attention_zero
 from src.pruning.layer_skipper import layer_skip
-from src.pruning.mlp_pruner import mlp_channel_mask, mlp_zero
+from src.pruning.mlp_pruner import mlp_channel_mask, mlp_intermediate_channel_mask, mlp_zero
 
 
 @contextmanager
@@ -26,6 +26,9 @@ def pruning_context(model, module: str, layer_ids: list[int], ratio: float | Non
             yield
     elif module in {"mlp_channels", "channels"}:
         with mlp_channel_mask(model, layer_ids, ratio):
+            yield
+    elif module in {"mlp_intermediate_channels", "intermediate_channels"}:
+        with mlp_intermediate_channel_mask(model, layer_ids, ratio):
             yield
     elif module == "none":
         yield

@@ -14,6 +14,7 @@ MODULE_STRENGTH = {
     "none": 0.0,
     "attention_heads": 0.25,
     "mlp_channels": 0.25,
+    "mlp_intermediate_channels": 1.0,
     "attention_block": 0.5,
     "mlp_block": 0.5,
     "layer": 1.0,
