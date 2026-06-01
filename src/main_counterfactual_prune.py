@@ -21,7 +21,7 @@ from src.utils.seed import set_seed
 
 def segment_prefix(completion: str, segment: dict[str, Any], boundary: str) -> str:
     key = "start_char" if boundary == "start" else "end_char"
-    return completion[: int(segment[key])].strip()
+    return completion[: int(segment[key])]
 
 
 def main() -> None:

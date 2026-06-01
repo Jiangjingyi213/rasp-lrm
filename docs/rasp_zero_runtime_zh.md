@@ -88,9 +88,12 @@ Runtime v0 使用 prompt-conditioned、reasoning-process-aware 的动态 MLP mas
 
 ```text
 dense
+1% intermediate-channel pruning
+2% intermediate-channel pruning
 5% intermediate-channel pruning
 10% intermediate-channel pruning
 20% intermediate-channel pruning
+40% intermediate-channel pruning
 ```
 
 默认窗口：
@@ -150,9 +153,12 @@ keep-80% ⊂ keep-90% ⊂ keep-95% ⊂ keep-100%
 例如：
 
 ```text
+1% pruning  -> 保留 top 99%
+2% pruning  -> 保留 top 98%
 5% pruning  -> 保留 top 95%
 10% pruning -> 保留 top 90%
 20% pruning -> 保留 top 80%
+40% pruning -> 保留 top 60%
 ```
 
 这样，当 controller 从 5% 升级到 10% 时，只会继续移除排名较低的神经元，不会完全更换一套不相关的 mask。
@@ -242,16 +248,27 @@ mlp_intermediate_channels
 在每个 reasoning segment 的起点执行：
 
 ```text
-1. 将已经生成的 assistant prefix 直接附加到原始 prompt
+1. 将已经生成的 assistant prefix 原样附加到原始 prompt
 2. Dense prefill 建立 neuron ranking
-3. 使用 5% mask 继续生成答案
-4. 使用 10% mask 继续生成答案
-5. 使用 20% mask 继续生成答案
-6. 分别记录是否导致答案翻转
+3. 使用 0% control 继续生成答案
+4. 使用 1% mask 继续生成答案
+5. 使用 2% mask 继续生成答案
+6. 使用 5% mask 继续生成答案
+7. 使用 10% mask 继续生成答案
+8. 使用 20% mask 继续生成答案
+9. 使用 40% mask 继续生成答案
+10. 分别记录是否导致答案翻转
 ```
 
 这里不能把 reasoning prefix 重新塞回 user 消息。Runtime bank 必须模拟真实
 autoregressive continuation：动作在当前历史状态上生效，并影响即将生成的推理步骤。
+
+其中 `ratio=0.00` 不是剪枝动作，而是 control group。它用于回答：
+
+> 在完全不剪枝时，仅从同一个 assistant prefix 重新续写，答案是否保持一致？
+
+如果 `ratio=0` 仍频繁导致答案翻转，说明 continuation 重建本身存在噪声。此时必须先
+修正 token 边界或采集方式，不能将翻转全部解释为剪枝风险。
 
 每一条 probe row 将包含：
 
@@ -269,6 +286,31 @@ flipped
 ```
 
 这批数据才适合训练 Runtime RASP-Zero 的 action-conditioned router。
+
+Counterfactual 汇总中同时保留两类 oracle：
+
+| 字段 | 含义 |
+|---|---|
+| legacy `*_oracle_*` | 选择翻转率最高的动作，用于分析结构敏感性 |
+| `*_safe_oracle_*` | 选择翻转率最低的动作，用于估计在线 Router 的安全上限 |
+
+在线策略分析应重点查看 `safe oracle`。旧字段继续保留，以免破坏此前 motivation
+实验的统计口径。
+
+当前 bank 中的 `safe oracle` 只在已执行的剪枝动作之间选择，因此表示：
+
+```text
+如果当前 step 必须剪枝，最安全的候选动作仍有多大风险？
+```
+
+真正在线 Router 还必须始终包含：
+
+```text
+dense fallback：当前 step 不执行剪枝
+```
+
+因此，当所有候选剪枝动作风险都偏高时，Router 应回退到 dense。这个安全阀是
+RASP-Zero 与统一静态剪枝之间的重要区别。
 
 ---
 
@@ -288,6 +330,7 @@ src/rasp/metrics.py
 
 ```text
 src/main_eval_rasp_zero_runtime.py
+src/main_validate_runtime_bank.py
 ```
 
 ### Counterfactual 接口
@@ -303,7 +346,10 @@ src/main_counterfactual_prune.py
 ```text
 configs/exp_rasp_zero_runtime_smoke.yaml
 configs/exp_rasp_zero_runtime_bank_gsm8k_smoke.yaml
+configs/exp_rasp_zero_runtime_bank_math500_smoke.yaml
 scripts/23_collect_runtime_counterfactuals.sh
+scripts/24_prepare_runtime_bank_l20_configs.py
+scripts/24_collect_runtime_bank_l20_four_gpu.sh
 scripts/25_eval_rasp_zero_runtime_smoke.sh
 ```
 
@@ -373,6 +419,19 @@ bash scripts/23_collect_runtime_counterfactuals.sh
 默认 smoke 脚本会清理自己的旧输出目录，避免 `main_generate` 的增量写入行为将两次
 smoke 混在一起。
 
+脚本最后会自动调用 `src.main_validate_runtime_bank`。校验内容包括：
+
+```text
+dense trajectory 是否正确
+是否可能发生截断
+Final answer 是否拆成独立 segment
+每个 segment 是否具备完整 ratio 网格
+module 是否统一为 mlp_intermediate_channels
+是否作用于配置中的全部 runtime layers
+hidden_index 是否连续
+ratio=0 flip rate 是否足够低
+```
+
 结果：
 
 ```text
@@ -394,8 +453,74 @@ wc -l runs/rasp_zero_runtime_bank_gsm8k_smoke/*.jsonl
 
 ```text
 module = mlp_intermediate_channels
-ratio in {0.05, 0.10, 0.20}
+ratio in {0.00, 0.01, 0.02, 0.05, 0.10, 0.20, 0.40}
 ```
+
+自动校验结果：
+
+```text
+runs/rasp_zero_runtime_bank_gsm8k_smoke/07_runtime_bank_validation.json
+```
+
+### 10.4 MATH500 bank smoke
+
+```bash
+bash scripts/23_collect_runtime_counterfactuals.sh \
+  configs/exp_rasp_zero_runtime_bank_math500_smoke.yaml
+```
+
+自动校验结果：
+
+```text
+runs/rasp_zero_runtime_bank_math500_smoke/07_runtime_bank_validation.json
+```
+
+### 10.5 四卡 Overnight 采集 GSM8K-20 + MATH500-20
+
+确认四张 GPU 均为空闲后执行：
+
+```bash
+cd /home/cike/jjy/rasp-lrm
+export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
+
+bash scripts/24_collect_runtime_bank_l20_four_gpu.sh
+```
+
+该 launcher 会先生成四个稳定配置：
+
+```text
+configs/generated_runtime_bank_l20/gsm8k_s0.yaml
+configs/generated_runtime_bank_l20/gsm8k_s1.yaml
+configs/generated_runtime_bank_l20/math500_s0.yaml
+configs/generated_runtime_bank_l20/math500_s1.yaml
+```
+
+任务分配：
+
+| Physical GPU | 工作流 |
+|---:|---|
+| 0 | 单元测试 -> dense-equivalence -> GSM8K-2 smoke -> GSM8K 0:10 |
+| 1 | MATH500-2 smoke -> MATH500 0:10 |
+| 2 | 等待 GSM8K smoke 通过 -> GSM8K 10:20 |
+| 3 | 等待 MATH500 smoke 通过 -> MATH500 10:20 |
+
+正式 shard 结果：
+
+```text
+runs/rasp_zero_runtime_bank_l20/gsm8k_s0
+runs/rasp_zero_runtime_bank_l20/gsm8k_s1
+runs/rasp_zero_runtime_bank_l20/math500_s0
+runs/rasp_zero_runtime_bank_l20/math500_s1
+```
+
+每个 shard 结束后都会自动生成：
+
+```text
+07_runtime_bank_validation.json
+```
+
+如果 smoke 的 validator 失败，对应 marker 不会创建，第二张 GPU 会继续等待而不会生成
+正式坏数据。
 
 ---
 

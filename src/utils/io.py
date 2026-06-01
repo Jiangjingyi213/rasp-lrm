@@ -4,9 +4,6 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-import yaml
-
-
 def ensure_dir(path: str | Path) -> Path:
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -14,6 +11,8 @@ def ensure_dir(path: str | Path) -> Path:
 
 
 def read_yaml(path: str | Path) -> dict[str, Any]:
+    import yaml
+
     with Path(path).open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return data or {}

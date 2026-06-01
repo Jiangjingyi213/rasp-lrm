@@ -48,7 +48,10 @@ def main() -> None:
     ensure_dir(run_dir)
 
     bundle = load_model_bundle(cfg["model"])
-    apply_runtime_mlp_masking_qwen3(bundle.model, ratios=runtime_cfg.get("ratios", [0.05, 0.10, 0.20]))
+    apply_runtime_mlp_masking_qwen3(
+        bundle.model,
+        ratios=runtime_cfg.get("ratios", [0.01, 0.02, 0.05, 0.10, 0.20, 0.40]),
+    )
     controller = _build_controller(runtime_cfg)
     tasks = load_tasks(cfg["data"])
     generation_cfg = cfg.get("generation", {})
@@ -84,7 +87,7 @@ def main() -> None:
         "backend": "logical_mask_v0",
         "controller": runtime_cfg.get("controller", "fixed"),
         "window_tokens": int(runtime_cfg.get("window_tokens", 16)),
-        "supported_ratios": runtime_cfg.get("ratios", [0.05, 0.10, 0.20]),
+        "supported_ratios": runtime_cfg.get("ratios", [0.01, 0.02, 0.05, 0.10, 0.20, 0.40]),
         "peak_gpu_memory_bytes": int(torch.cuda.max_memory_allocated()) if torch.cuda.is_available() else None,
         **summarize_runtime_rows(rows),
     }

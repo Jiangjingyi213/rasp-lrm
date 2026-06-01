@@ -31,7 +31,7 @@ def build_assistant_continuation_prompt(
     """
 
     base = build_prompt(question, tokenizer, prompt_config)
-    return base + prefix.strip()
+    return base + prefix
 
 
 def build_prompt(

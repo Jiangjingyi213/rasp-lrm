@@ -48,8 +48,8 @@ class FakeModel(nn.Module):
 
 class RaspZeroRuntimeTest(unittest.TestCase):
     def test_assistant_continuation_prompt_appends_prefix_directly(self) -> None:
-        prompt = build_assistant_continuation_prompt("What is 1 + 1?", "Step 1: add the values.")
-        self.assertTrue(prompt.endswith("Reasoning:\nStep 1: add the values."))
+        prompt = build_assistant_continuation_prompt("What is 1 + 1?", "\nStep 1: add the values.\n")
+        self.assertTrue(prompt.endswith("Reasoning:\n\nStep 1: add the values.\n"))
         self.assertNotIn("Reasoning so far", prompt)
 
     def test_segmenter_recognizes_markdown_step_headings(self) -> None:
@@ -60,9 +60,11 @@ class RaspZeroRuntimeTest(unittest.TestCase):
             "**Final answer:** 3"
         )
         segments = segment_text(text, min_chars=10)
-        self.assertGreaterEqual(len(segments), 2)
+        self.assertEqual(len(segments), 3)
         self.assertIn("Step 1", segments[0]["text"])
         self.assertTrue(any("Step 2" in str(segment["text"]) for segment in segments))
+        self.assertEqual(segments[-1]["segment_type"], "final")
+        self.assertTrue(str(segments[-1]["text"]).startswith("**Final answer:**"))
 
     def test_activation_ranker_builds_nested_masks(self) -> None:
         states = torch.tensor([[[4.0, 3.0, 2.0, 1.0], [4.0, 3.0, 2.0, 1.0]]])

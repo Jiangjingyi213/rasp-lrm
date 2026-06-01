@@ -22,6 +22,7 @@ Thumbs.db
 # Large outputs
 outputs/
 runs/
+configs/generated_runtime_bank_l20/
 data/raw/
 data/processed/
 data/trajectories/

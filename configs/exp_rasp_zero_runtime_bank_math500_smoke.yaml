@@ -13,7 +13,8 @@ prompt:
   system: You are a careful math reasoning assistant.
 
 data:
-  dataset: gsm8k
+  dataset: math500
+  name_or_path: HuggingFaceH4/MATH-500
   split: test
   limit: 2
 
@@ -29,7 +30,7 @@ segmentation:
 
 runtime_bank_validation:
   module: mlp_intermediate_channels
-  require_all_dense_correct: true
+  require_all_dense_correct: false
   max_ratio_zero_flip_rate: 0.05
 
 counterfactual:
@@ -48,10 +49,10 @@ counterfactual:
     top_p: 1.0
 
 paths:
-  run_dir: runs/rasp_zero_runtime_bank_gsm8k_smoke
-  trajectories: runs/rasp_zero_runtime_bank_gsm8k_smoke/01_trajectories.jsonl
-  segments: runs/rasp_zero_runtime_bank_gsm8k_smoke/02_segments.jsonl
-  counterfactuals: runs/rasp_zero_runtime_bank_gsm8k_smoke/03_counterfactuals.jsonl
-  probe_dataset: runs/rasp_zero_runtime_bank_gsm8k_smoke/05_probe_dataset.jsonl
-  probe_hidden_states: runs/rasp_zero_runtime_bank_gsm8k_smoke/05_probe_hidden_states.pt
-  runtime_bank_validation: runs/rasp_zero_runtime_bank_gsm8k_smoke/07_runtime_bank_validation.json
+  run_dir: runs/rasp_zero_runtime_bank_math500_smoke
+  trajectories: runs/rasp_zero_runtime_bank_math500_smoke/01_trajectories.jsonl
+  segments: runs/rasp_zero_runtime_bank_math500_smoke/02_segments.jsonl
+  counterfactuals: runs/rasp_zero_runtime_bank_math500_smoke/03_counterfactuals.jsonl
+  probe_dataset: runs/rasp_zero_runtime_bank_math500_smoke/05_probe_dataset.jsonl
+  probe_hidden_states: runs/rasp_zero_runtime_bank_math500_smoke/05_probe_hidden_states.pt
+  runtime_bank_validation: runs/rasp_zero_runtime_bank_math500_smoke/07_runtime_bank_validation.json

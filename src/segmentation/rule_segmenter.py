@@ -6,6 +6,9 @@ import re
 EXPLICIT_STEP_RE = re.compile(
     r"(?im)(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*{1,2}|_{1,2})?\s*step\s+\d+\s*[:.)-]?\s*(?:\*{1,2}|_{1,2})?\s*"
 )
+FINAL_ANSWER_RE = re.compile(
+    r"(?im)(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*{1,2}|_{1,2})?\s*final\s+answer\s*[:：]?\s*(?:\*{1,2}|_{1,2})?\s*"
+)
 BROAD_STEP_RE = re.compile(
     r"(?im)(?:^|\n)\s*(?:step\s+\d+\s*[:.)-]?|#{1,6}|\d+[\).]|[-*])\s+"
 )
@@ -16,7 +19,10 @@ def segment_text(text: str, min_chars: int = 20) -> list[dict[str, int | str]]:
     if not text:
         return []
     explicit_starts = [m.start() for m in EXPLICIT_STEP_RE.finditer(text)]
+    final_starts = [m.start() for m in FINAL_ANSWER_RE.finditer(text)]
     starts = explicit_starts if len(explicit_starts) >= 2 else [m.start() for m in BROAD_STEP_RE.finditer(text)]
+    if starts:
+        starts = sorted({*starts, *final_starts})
     if not starts:
         parts = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
         if len(parts) == 1:
