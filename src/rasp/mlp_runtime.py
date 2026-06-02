@@ -136,7 +136,7 @@ def summarize_runtime_mlp(model: nn.Module) -> dict[str, Any]:
 
 def apply_runtime_mlp_masking_qwen3(
     model: nn.Module,
-    ratios: Iterable[float] = (0.01, 0.02, 0.05, 0.10, 0.20, 0.40),
+    ratios: Iterable[float] = (0.02, 0.05, 0.10, 0.20, 0.30, 0.40),
 ) -> nn.Module:
     layers = get_decoder_layers(model)
     for layer in layers:

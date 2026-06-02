@@ -17,6 +17,7 @@ class RouterEvent:
     selected_ratio: float
     entropy: float
     confidence: float
+    decision: dict[str, Any] | None = None
 
 
 def _next_token_stats(logits: torch.Tensor) -> tuple[float, float]:
@@ -60,6 +61,8 @@ def greedy_decode_runtime(
         raise ValueError("window_tokens must be positive")
     device = model_device(model)
     reset_runtime_mlp_state(model)
+    if hasattr(controller, "reset"):
+        controller.reset()
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_input_tokens).to(device)
 
     _synchronize_if_cuda(device)
@@ -84,6 +87,7 @@ def greedy_decode_runtime(
             selected_ratio=selected_ratio,
             entropy=observation.entropy,
             confidence=observation.confidence,
+            decision=getattr(controller, "last_decision", None),
         )
     )
 
@@ -116,6 +120,7 @@ def greedy_decode_runtime(
                     selected_ratio=selected_ratio,
                     entropy=observation.entropy,
                     confidence=observation.confidence,
+                    decision=getattr(controller, "last_decision", None),
                 )
             )
     _synchronize_if_cuda(device)

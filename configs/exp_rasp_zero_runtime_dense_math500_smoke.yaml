@@ -13,13 +13,14 @@ prompt:
   system: You are a careful math reasoning assistant.
 
 data:
-  dataset: gsm8k
+  dataset: math500
+  name_or_path: HuggingFaceH4/MATH-500
   split: test
   limit: 2
 
 generation:
   max_input_tokens: 2048
-  max_new_tokens: 256
+  max_new_tokens: 768
   temperature: 0.0
   top_p: 1.0
 
@@ -31,6 +32,6 @@ runtime_rasp:
   window_tokens: 16
 
 paths:
-  run_dir: runs/rasp_zero_runtime_smoke_dense
-  trajectories: runs/rasp_zero_runtime_smoke_dense/01_trajectories.jsonl
-  runtime_summary: runs/rasp_zero_runtime_smoke_dense/00_runtime_summary.json
+  run_dir: runs/eval_rasp_zero_runtime_dense_math500_smoke
+  trajectories: runs/eval_rasp_zero_runtime_dense_math500_smoke/01_trajectories.jsonl
+  runtime_summary: runs/eval_rasp_zero_runtime_dense_math500_smoke/00_runtime_summary.json

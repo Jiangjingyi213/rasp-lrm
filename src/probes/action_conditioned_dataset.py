@@ -12,7 +12,7 @@ from src.utils.io import read_jsonl
 
 MODULES = ["attention_heads", "attention_block", "mlp_channels", "mlp_intermediate_channels", "mlp_block", "layer"]
 STAGES = ["understanding", "planning", "derivation", "verification", "final", "unknown"]
-DATASETS = ["gsm8k", "math500", "unknown"]
+DATASETS = ["gsm8k", "math_train", "math500", "unknown"]
 
 
 def _one_hot(value: str, vocabulary: list[str]) -> torch.Tensor:
@@ -20,6 +20,50 @@ def _one_hot(value: str, vocabulary: list[str]) -> torch.Tensor:
     if value in vocabulary:
         out[vocabulary.index(value)] = 1.0
     return out
+
+
+def _feature_dataset(dataset: str) -> str:
+    # Preserve source provenance in rows, but share one math-domain router feature.
+    return "math500" if dataset == "math_train" else dataset
+
+
+def build_action_features(
+    hidden_state: torch.Tensor,
+    *,
+    entropy: float,
+    confidence: float,
+    position: float,
+    ratio: float,
+    module: str,
+    dataset: str,
+    pruned_layers: list[int],
+    layer_dim: int,
+    stage: str = "unknown",
+    include_stage: bool = False,
+) -> torch.Tensor:
+    layer_mask = torch.zeros(layer_dim, dtype=torch.float32)
+    for layer in pruned_layers:
+        if layer is not None:
+            layer_mask[int(layer)] = 1.0
+    features = [
+        hidden_state.float().flatten(),
+        torch.tensor(
+            [
+                float(entropy),
+                float(confidence),
+                float(position),
+                float(ratio),
+                MODULE_STRENGTH.get(module, 0.5) * float(ratio),
+            ],
+            dtype=torch.float32,
+        ),
+        _one_hot(module, MODULES),
+        _one_hot(_feature_dataset(dataset), DATASETS),
+        layer_mask,
+    ]
+    if include_stage:
+        features.append(_one_hot(stage, STAGES))
+    return torch.cat(features)
 
 
 class ActionConditionedRiskDataset(Dataset):
@@ -49,29 +93,20 @@ class ActionConditionedRiskDataset(Dataset):
         row = self.rows[index]
         ratio = float(row.get("ratio", 0.0))
         module = str(row.get("module", "none"))
-        layer_mask = torch.zeros(self.layer_dim, dtype=torch.float32)
-        for layer in row.get("pruned_layers", []):
-            if layer is not None:
-                layer_mask[int(layer)] = 1.0
         num_segments = max(1, int(row.get("num_segments", 1)))
         segment_index = int(row.get("segment_index", row.get("segment_id", 0)))
         position = segment_index / max(1, num_segments - 1)
-        features = [
-            self.hidden[index].float().flatten(),
-            torch.tensor(
-                [
-                    float(row.get("entropy", 0.0)),
-                    float(row.get("confidence", 0.0)),
-                    position,
-                    ratio,
-                    MODULE_STRENGTH.get(module, 0.5) * ratio,
-                ],
-                dtype=torch.float32,
-            ),
-            _one_hot(module, MODULES),
-            _one_hot(str(row.get("dataset") or "unknown"), DATASETS),
-            layer_mask,
-        ]
-        if self.include_stage:
-            features.append(_one_hot(str(row.get("segment_type", "unknown")), STAGES))
-        return torch.cat(features), torch.tensor(float(row["flipped"]), dtype=torch.float32), index
+        features = build_action_features(
+            self.hidden[index],
+            entropy=float(row.get("entropy", 0.0)),
+            confidence=float(row.get("confidence", 0.0)),
+            position=position,
+            ratio=ratio,
+            module=module,
+            dataset=str(row.get("dataset") or "unknown"),
+            pruned_layers=[int(layer) for layer in row.get("pruned_layers", []) if layer is not None],
+            layer_dim=self.layer_dim,
+            stage=str(row.get("segment_type", "unknown")),
+            include_stage=self.include_stage,
+        )
+        return features, torch.tensor(float(row["flipped"]), dtype=torch.float32), index

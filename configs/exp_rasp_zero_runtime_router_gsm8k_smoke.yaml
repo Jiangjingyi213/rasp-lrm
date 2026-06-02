@@ -19,18 +19,20 @@ data:
 
 generation:
   max_input_tokens: 2048
-  max_new_tokens: 256
+  max_new_tokens: 768
   temperature: 0.0
   top_p: 1.0
 
 runtime_rasp:
   backend: logical_mask_v0
-  controller: fixed
-  fixed_ratio: 0.0
+  controller: action_conditioned_risk
+  router_checkpoint: runs/rasp_zero_runtime_router/router.pt
+  risk_threshold: 0.35
+  target_average_ratio: 0.20
   ratios: [0.02, 0.05, 0.10, 0.20, 0.30, 0.40]
   window_tokens: 16
 
 paths:
-  run_dir: runs/rasp_zero_runtime_smoke_dense
-  trajectories: runs/rasp_zero_runtime_smoke_dense/01_trajectories.jsonl
-  runtime_summary: runs/rasp_zero_runtime_smoke_dense/00_runtime_summary.json
+  run_dir: runs/eval_rasp_zero_runtime_router_gsm8k_smoke
+  trajectories: runs/eval_rasp_zero_runtime_router_gsm8k_smoke/01_trajectories.jsonl
+  runtime_summary: runs/eval_rasp_zero_runtime_router_gsm8k_smoke/00_runtime_summary.json

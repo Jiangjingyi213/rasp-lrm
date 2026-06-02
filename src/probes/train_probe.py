@@ -108,9 +108,10 @@ def train_probe(
 
 
 def problem_level_split(rows: list[dict], val_fraction: float, seed: int) -> tuple[list[int], list[int]]:
-    by_id: dict[str, list[int]] = {}
+    by_id: dict[tuple[str, str], list[int]] = {}
     for idx, row in enumerate(rows):
-        by_id.setdefault(str(row["id"]), []).append(idx)
+        key = (str(row.get("dataset") or "unknown"), str(row["id"]))
+        by_id.setdefault(key, []).append(idx)
     ids = list(by_id)
     random.Random(seed).shuffle(ids)
     val_problem_count = max(1, int(len(ids) * val_fraction))
@@ -118,8 +119,8 @@ def problem_level_split(rows: list[dict], val_fraction: float, seed: int) -> tup
         val_problem_count = len(ids) - 1
     val_ids = set(ids[:val_problem_count])
     train_indices, val_indices = [], []
-    for item_id, indices in by_id.items():
-        if item_id in val_ids:
+    for item_key, indices in by_id.items():
+        if item_key in val_ids:
             val_indices.extend(indices)
         else:
             train_indices.extend(indices)
@@ -133,8 +134,8 @@ def split_summary(rows: list[dict], train_indices: list[int], val_indices: list[
     val_rows = [rows[i] for i in val_indices]
     return {
         "split": split,
-        "train_problem_count": len({str(row["id"]) for row in train_rows}),
-        "val_problem_count": len({str(row["id"]) for row in val_rows}),
+        "train_problem_count": len({(str(row.get("dataset") or "unknown"), str(row["id"])) for row in train_rows}),
+        "val_problem_count": len({(str(row.get("dataset") or "unknown"), str(row["id"])) for row in val_rows}),
         "train_rows": len(train_rows),
         "val_rows": len(val_rows),
         "positive_rate_train": sum(int(row["flipped"]) for row in train_rows) / len(train_rows),

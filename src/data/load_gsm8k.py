@@ -27,15 +27,15 @@ def load_gsm8k(split: str = "test", limit: int | None = None, offset: int = 0) -
     return slice_rows(rows, limit, offset)
 
 
-def _normalize_math500(row: dict[str, Any], idx: int, split: str) -> dict[str, Any]:
+def _normalize_math500(row: dict[str, Any], idx: int, split: str, dataset_label: str = "math500") -> dict[str, Any]:
     question = row.get("problem") or row.get("question")
     answer = row.get("answer") or row.get("final_answer")
     solution = row.get("solution") or row.get("gold") or ""
     if not question:
         raise ValueError(f"MATH500 row {idx} is missing a problem/question field")
     return {
-        "id": row.get("id") or row.get("unique_id") or f"math500-{split}-{idx}",
-        "dataset": "math500",
+        "id": row.get("id") or row.get("unique_id") or f"{dataset_label}-{split}-{idx}",
+        "dataset": dataset_label,
         "question": question,
         "gold": answer or solution,
         "solution": solution,
@@ -57,8 +57,9 @@ def load_math500_hf(config: dict[str, Any]) -> list[dict[str, Any]]:
     split = config.get("split", "test")
     limit = config.get("limit")
     offset = config.get("offset", 0)
+    dataset_label = str(config.get("dataset_label", "math500"))
     dataset = load_dataset(name_or_path, split=split)
-    rows = [_normalize_math500(dict(row), i, split) for i, row in enumerate(dataset)]
+    rows = [_normalize_math500(dict(row), i, split, dataset_label) for i, row in enumerate(dataset)]
     return slice_rows(rows, limit, offset)
 
 

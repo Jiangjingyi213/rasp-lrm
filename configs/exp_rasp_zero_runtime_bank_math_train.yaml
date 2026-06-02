@@ -1,0 +1,60 @@
+seed: 1
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float32
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  use_chat_template: true
+  enable_thinking: false
+  system: You are a careful math reasoning assistant.
+
+data:
+  dataset: math500
+  dataset_label: math_train
+  name_or_path: rasbt/math_full_minus_math500
+  split: train
+  limit: 50
+
+generation:
+  max_input_tokens: 2048
+  max_new_tokens: 768
+  temperature: 0.0
+  top_p: 1.0
+
+segmentation:
+  min_chars: 24
+  filter_correct: true
+
+runtime_bank_validation:
+  module: mlp_intermediate_channels
+  require_all_dense_correct: false
+  max_ratio_zero_flip_rate: 0.05
+
+counterfactual:
+  modules: [mlp_intermediate_channels]
+  ratios: [0.00, 0.02, 0.05, 0.10, 0.20, 0.30, 0.40]
+  layers: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+  max_segments_per_example: 6
+  prefix_boundary: start
+  continuation_prompt_mode: assistant_prefix
+  hidden_layer: -1
+  collect_hidden: true
+  collect_activation: false
+  generation:
+    max_new_tokens: 768
+    temperature: 0.0
+    top_p: 1.0
+
+paths:
+  run_dir: runs/rasp_zero_runtime_bank_formal/template_math_train
+  trajectories: runs/rasp_zero_runtime_bank_formal/template_math_train/01_trajectories.jsonl
+  segments: runs/rasp_zero_runtime_bank_formal/template_math_train/02_segments.jsonl
+  counterfactuals: runs/rasp_zero_runtime_bank_formal/template_math_train/03_counterfactuals.jsonl
+  probe_dataset: runs/rasp_zero_runtime_bank_formal/template_math_train/05_probe_dataset.jsonl
+  probe_hidden_states: runs/rasp_zero_runtime_bank_formal/template_math_train/05_probe_hidden_states.pt
+  runtime_bank_validation: runs/rasp_zero_runtime_bank_formal/template_math_train/07_runtime_bank_validation.json
+
