@@ -33,19 +33,28 @@ def segment_text(text: str, min_chars: int = 20) -> list[dict[str, int | str]]:
     segments = []
     cursor = 0
     buffer = ""
+
+    def append_segment(part: str) -> None:
+        nonlocal cursor
+        if not part:
+            return
+        start = text.find(part, cursor)
+        end = start + len(part)
+        segments.append({"segment_id": len(segments), "text": part, "start_char": start, "end_char": end})
+        cursor = end
+
     for part in parts:
+        if FINAL_ANSWER_RE.match(part):
+            append_segment(buffer)
+            append_segment(part)
+            buffer = ""
+            continue
         if len(buffer) < min_chars:
             buffer = (buffer + "\n" + part).strip()
             continue
-        start = text.find(buffer, cursor)
-        end = start + len(buffer)
-        segments.append({"segment_id": len(segments), "text": buffer, "start_char": start, "end_char": end})
-        cursor = end
+        append_segment(buffer)
         buffer = part
-    if buffer:
-        start = text.find(buffer, cursor)
-        end = start + len(buffer)
-        segments.append({"segment_id": len(segments), "text": buffer, "start_char": start, "end_char": end})
+    append_segment(buffer)
     for segment in segments:
         segment["segment_type"] = classify_segment(str(segment["text"]), int(segment["segment_id"]), len(segments))
     return segments

@@ -66,6 +66,12 @@ class RaspZeroRuntimeTest(unittest.TestCase):
         self.assertEqual(segments[-1]["segment_type"], "final")
         self.assertTrue(str(segments[-1]["text"]).startswith("**Final answer:**"))
 
+    def test_short_final_answer_is_not_merged_with_short_previous_segment(self) -> None:
+        segments = segment_text("Work.\n\nFinal answer: 3", min_chars=24)
+        self.assertEqual(len(segments), 2)
+        self.assertEqual(segments[-1]["segment_type"], "final")
+        self.assertEqual(segments[-1]["text"], "Final answer: 3")
+
     def test_activation_ranker_builds_nested_masks(self) -> None:
         states = torch.tensor([[[4.0, 3.0, 2.0, 1.0], [4.0, 3.0, 2.0, 1.0]]])
         ranking = rank_intermediate_neurons(states)

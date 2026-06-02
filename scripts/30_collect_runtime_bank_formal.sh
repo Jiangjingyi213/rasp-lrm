@@ -27,7 +27,6 @@ launch_worker() {
         echo \"SKIP validated \${run_dir}\"
         continue
       fi
-      rm -rf \"\${run_dir}\"
       echo \"START \${config}\"
       bash scripts/23_collect_runtime_counterfactuals.sh \"\${config}\"
       echo \"DONE \${config}\"
