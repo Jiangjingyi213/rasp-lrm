@@ -238,11 +238,12 @@ GSM8K test                           -> 最终评估
 HuggingFaceH4/MATH-500 test          -> 最终评估
 ```
 
-正式银行默认拆成 20 个 shard，每个 50 题。四卡采集：
+正式银行默认拆成 20 个 shard，每个 50 题。GPU 数量可以配置。八卡采集：
 
 ```bash
 export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
-bash scripts/30_collect_runtime_bank_formal_four_gpu.sh
+export RASP_BANK_GPU_COUNT=8
+bash scripts/30_collect_runtime_bank_formal.sh
 ```
 
 采集结果：

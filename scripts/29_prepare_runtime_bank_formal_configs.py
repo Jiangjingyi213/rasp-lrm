@@ -51,7 +51,8 @@ def shard_config(source_name: str, source_path: str, shard: int, limit: int, off
 def main() -> None:
     total_per_source = int(os.environ.get("RASP_BANK_LIMIT_PER_SOURCE", "500"))
     shard_size = int(os.environ.get("RASP_BANK_SHARD_SIZE", "50"))
-    if total_per_source < 1 or shard_size < 1:
+    gpu_count = int(os.environ.get("RASP_BANK_GPU_COUNT", "4"))
+    if total_per_source < 1 or shard_size < 1 or gpu_count < 1:
         raise ValueError("RASP bank limits must be positive")
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     manifest = []
@@ -71,18 +72,17 @@ def main() -> None:
                     "run_dir": run_dir,
                 }
             )
-            gpu = (gpu + 1) % 4
+            gpu = (gpu + 1) % gpu_count
     with (CONFIG_DIR / "manifest.json").open("w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
-    for physical_gpu in range(4):
+    for physical_gpu in range(gpu_count):
         queue = CONFIG_DIR / f"gpu{physical_gpu}.list"
         with queue.open("w", encoding="utf-8") as f:
             for row in manifest:
                 if row["gpu_queue"] == physical_gpu:
                     f.write(row["config"] + "\n")
-    print(f"generated {len(manifest)} shards under {CONFIG_DIR.relative_to(ROOT)}")
+    print(f"generated {len(manifest)} shards across {gpu_count} GPU queues under {CONFIG_DIR.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
     main()
-
