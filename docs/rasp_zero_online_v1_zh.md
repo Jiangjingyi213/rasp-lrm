@@ -308,3 +308,318 @@ Online RASP-Zero router
 ```
 
 在线轨迹中的 `runtime.router_events` 会记录每次更新时间、候选动作风险、最终 ratio 和预算状态。
+
+## 11. 当前正式 Router Bank 与 Router 训练结果
+
+本节记录当前已经跑完的一版正式 RASP-Zero Online v1 结果，来源为：
+
+```text
+runs/rasp_zero_runtime_bank_formal/
+runs/rasp_zero_runtime_router/
+```
+
+这部分结果不是最终在线 benchmark，而是在线 RASP-Zero 前置的训练银行与第一版风险 router
+结果。它回答的问题是：
+
+> 我们是否已经有足够稳定的数据，让一个轻量 router 学会预测“当前 reasoning state 下某个剪枝
+> action 是否危险”？
+
+### 11.1 Runtime Bank 规模
+
+正式采集设定为：
+
+```text
+GSM8K train[:500]
+rasbt/math_full_minus_math500 train[:500]
+```
+
+共计 `1000` 道训练来源题目。Dense Qwen3-1.7B 在这些题上答对 `801` 道，因此只有这 `801`
+道题进入反事实训练银行。这个过滤很重要：如果 dense 本身已经错了，后续无法定义“剪枝导致答案
+翻转”，因为 baseline answer 已经不是可靠参考。
+
+最终统计为：
+
+```text
+problem_count = 801
+problem_step_count = 3479
+counterfactual_rows_with_dense_control = 24353
+action_conditioned_risk_rows = 20874
+```
+
+解释如下：
+
+- `problem_count`：进入训练银行的 dense-correct 题目数。
+- `problem_step_count`：这些题自动切分出的 reasoning steps 数。
+- `counterfactual_rows_with_dense_control`：包含 `ratio=0.00` 控制组的所有反事实 rows。
+- `action_conditioned_risk_rows`：去掉 `ratio=0.00` 后真正用于训练 risk router 的 rows。
+
+由于每个 step 有 6 个非零候选剪枝率：
+
+```text
+0.02, 0.05, 0.10, 0.20, 0.30, 0.40
+```
+
+所以：
+
+```text
+3479 steps x 6 actions = 20874 risk rows
+```
+
+### 11.2 ratio=0 不稳定 step 的过滤
+
+采集过程中发现：
+
+```text
+unstable_ratio_zero_step_count = 58
+rows_filtered_by_unstable_ratio_zero = 406
+```
+
+这里的 `ratio=0.00` 表示不施加剪枝，仅从当前 reasoning prefix 继续生成。如果 `ratio=0.00`
+也导致最终答案翻转，说明问题不在剪枝，而在 continuation protocol 本身：模型从这个中间前缀
+重新续写时已经不稳定。
+
+因此这些 step 不能用来训练剪枝风险模型。否则 router 会把“无剪枝也错”的现象误学成“剪枝导致
+错误”。当前流程会整组删除这些 step。过滤后，`ratio=0.00` 的翻转率被清零：
+
+```text
+ratio=0.00 flip rate = 0.0
+```
+
+这个处理让后续风险标签更干净。
+
+### 11.3 剪枝率与答案翻转风险
+
+过滤后，不同剪枝率对应的答案翻转率为：
+
+```text
+ratio=0.02  flip rate = 0.0325
+ratio=0.05  flip rate = 0.0512
+ratio=0.10  flip rate = 0.0960
+ratio=0.20  flip rate = 0.2084
+ratio=0.30  flip rate = 0.3352
+ratio=0.40  flip rate = 0.4544
+```
+
+这是一个很重要的健康信号：随着剪枝率增大，答案翻转风险整体单调上升。它说明训练银行不是随机
+噪声，而是包含明确的 action-risk 关系。
+
+这也支持 RASP-Zero 的基本假设：
+
+> 剪枝动作的风险不是固定的，但剪枝强度越高，整体风险越大；router 需要在具体 reasoning state
+> 下选择尽可能大的安全剪枝率。
+
+### 11.4 不同 reasoning stage 的风险差异
+
+按自动 stage assignment 统计，当前 risk rows 的正例率为：
+
+```text
+understanding  flip rate = 0.3974
+planning       flip rate = 0.3680
+derivation     flip rate = 0.2248
+verification   flip rate = 0.2056
+final          flip rate = 0.0159
+```
+
+这个结果有两个含义。
+
+第一，早期阶段非常敏感。`understanding` 和 `planning` 的翻转率最高，说明题意理解和解题规划
+阶段一旦被扰动，后续整条推理链容易发生 drift。
+
+第二，`final` 阶段风险最低。这可能是因为到 final step 时，答案已经在前文中基本确定，模型更多
+是在输出格式化答案。因此在当前 setup 下，final segment 对 MLP channel mask 的敏感性反而较低。
+
+需要注意：这里的 stage 是 rule-based heuristic，不是人工标注，也不是 LLM classifier。因此
+它适合作为 motivation 和诊断信号，但论文中应明确说明“automatic stage assignment”，并最好
+抽样人工检查 20-50 条。
+
+### 11.5 Safe Oracle 说明了动态剪枝空间
+
+Safe oracle 对每个 reasoning step 统计：
+
+```text
+max_safe_ratio = 在不翻转答案的前提下，该 step 可承受的最大剪枝率
+```
+
+当前 `max_safe_ratio` 分布为：
+
+```text
+0.00: 34
+0.02: 55
+0.05: 125
+0.10: 356
+0.20: 470
+0.30: 541
+0.40: 1898
+```
+
+这说明在 `3479` 个 step 中，有 `1898` 个 step 在离线观察中可以安全剪到 `40%`，但也有少数
+step 几乎不能剪。这正是动态剪枝的空间：
+
+> 固定剪枝率无法同时照顾“可大胆剪”的 step 和“必须保守”的 step。
+
+更保守的 `monotonic_safe_ratio` 分布为：
+
+```text
+0.00: 113
+0.02: 116
+0.05: 193
+0.10: 420
+0.20: 489
+0.30: 430
+0.40: 1718
+```
+
+`monotonic_safe_ratio` 要求从 `0.00` 到该 ratio 的所有更小 ratio 都安全，因此比
+`max_safe_ratio` 更严格。即便在这个严格口径下，仍有大量 step 能承受 `0.30` 或 `0.40`。
+
+### 11.6 Budget-aware Safe Oracle
+
+Budget-aware safe oracle 在给定平均剪枝预算 `B` 的前提下，为每个 step 选择安全动作，并尽量
+用满预算。
+
+当前结果显示，三个预算都几乎被精确利用：
+
+```text
+B=0.05  utilization ≈ 1.000
+B=0.10  utilization ≈ 1.000
+B=0.20  utilization ≈ 1.000
+```
+
+例如在 `max_safe_ratio` 口径下，`B=0.20` 时的选择分布为：
+
+```text
+0.00: 34
+0.02: 55
+0.05: 125
+0.10: 356
+0.20: 2199
+0.30: 710
+```
+
+这说明，如果存在一个理想 router，它可以在平均 `20%` 剪枝预算下，把大量 step 分配到较高剪枝率，
+同时对少数风险 step 保持低剪枝。这给在线 RASP-Zero 提供了上限参考。
+
+### 11.7 第一版 Action-conditioned Risk Router
+
+第一版 router 使用 problem-level split 训练。训练/验证划分为：
+
+```text
+train_problem_count = 601
+val_problem_count = 200
+train_rows = 15702
+val_rows = 5172
+```
+
+验证集正例率为：
+
+```text
+positive_rate_val = 0.2071
+```
+
+Router 指标为：
+
+```text
+ROC-AUC = 0.8172
+PR-AUC  = 0.5357
+val_loss = 0.4092
+```
+
+解释：
+
+- `ROC-AUC = 0.8172` 表示 router 能较好地区分高风险 action 和低风险 action。
+- `PR-AUC = 0.5357` 明显高于验证集正例率 `0.2071`，说明它不是随机猜测。
+- `problem-level split` 表明同一道题的所有 segment/action rows 不会同时出现在训练和验证中，
+  因此验证指标比 row-level split 更可信。
+
+这个结果说明第一版 router 已经学到了可用的风险信号，可以进入在线 smoke evaluation。
+
+### 11.8 当前阶段结论
+
+当前已经完成：
+
+```text
+RASP-Zero runtime bank 构造
+ratio=0 不稳定 step 过滤
+action-conditioned risk dataset 构造
+problem-level risk router 训练
+safe oracle / budget-aware oracle 分析
+```
+
+当前结果支持下一步：
+
+```text
+在线 RASP-Zero smoke evaluation
+```
+
+也就是让 router 在真实生成过程中每隔一段 token 观察当前 state，预测候选剪枝 action 的风险，
+并动态选择当前可接受的最大剪枝率。
+
+建议下一步先运行：
+
+```bash
+export CUDA_VISIBLE_DEVICES=0
+bash scripts/28_eval_rasp_zero_runtime_router_smoke.sh
+```
+
+如果 GSM8K-2 和 MATH500-2 的 dense control 与 router 输出都正常，再扩大到：
+
+```text
+GSM8K-100 + MATH500-100
+```
+
+最后再考虑完整测试集。
+
+### 11.9 Online policy calibration
+
+第一次在线 smoke 使用：
+
+```text
+risk_threshold = 0.35
+target_average_ratio = 0.20
+ratios = [0.02, 0.05, 0.10, 0.20, 0.30, 0.40]
+```
+
+这证明在线闭环已经跑通，但在 GSM8K Janet 样例中出现了 dense-correct 转 router-wrong：
+
+```text
+dense:  16 - 3 - 4 = 9, 9 * 2 = 18
+router: 16 - 3 = 13, 13 * 2 = 26
+```
+
+这说明当前策略对部分关键推理窗口偏激进。一个直接做法是降低最大 ratio，但这样会削弱方法的效率
+空间。更合理的校准方式是：
+
+```text
+保留 0.40 候选动作
+降低 risk_threshold 或 target_average_ratio
+让 router 只在预测风险足够低、预算足够宽裕时才使用高 ratio
+```
+
+当前准备先做四组校准：
+
+```text
+A: threshold=0.25, target=0.10, ratios=[0.02,0.05,0.10,0.20,0.30,0.40]
+B: threshold=0.30, target=0.10, ratios=[0.02,0.05,0.10,0.20,0.30,0.40]
+C: threshold=0.30, target=0.15, ratios=[0.02,0.05,0.10,0.20,0.30,0.40]
+D: threshold=0.35, target=0.15, ratios=[0.02,0.05,0.10,0.20,0.30,0.40]
+```
+
+运行：
+
+```bash
+export CUDA_VISIBLE_DEVICES=0
+bash scripts/31_eval_rasp_zero_online_calibration.sh
+```
+
+该脚本会生成 `GSM8K-20 + MATH500-20` 的小型 calibration，并输出：
+
+```text
+runs/rasp_zero_online_calibration/summary.csv
+```
+
+主要观察：
+
+- accuracy 是否接近 dense control；
+- average pruning ratio 是否达到可见幅度；
+- 是否仍出现明显 dense-correct 到 router-wrong 的逻辑遗漏；
+- `0.40` 是否被少量、合理地使用，而不是频繁压到关键推理窗口。
