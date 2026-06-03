@@ -77,6 +77,14 @@ class ValidateRuntimeBankTest(unittest.TestCase):
         self.assertEqual(summary["status"], "failed")
         self.assertTrue(any("ratio=0" in error for error in summary["errors"]))
 
+    def test_ratio_zero_flip_can_be_allowed_for_later_filtering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(Path(tmp), ratio_zero_flipped=True)
+            cfg["runtime_bank_validation"]["allow_ratio_zero_filtering"] = True
+            summary = validate_runtime_bank(cfg)
+        self.assertEqual(summary["status"], "ok")
+        self.assertTrue(any("ratio=0" in warning for warning in summary["warnings"]))
+
 
 if __name__ == "__main__":
     unittest.main()

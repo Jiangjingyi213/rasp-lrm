@@ -31,6 +31,7 @@ runtime_bank_validation:
   module: mlp_intermediate_channels
   require_all_dense_correct: false
   max_ratio_zero_flip_rate: 0.05
+  allow_ratio_zero_filtering: true
 
 counterfactual:
   modules: [mlp_intermediate_channels]
@@ -55,4 +56,3 @@ paths:
   probe_dataset: runs/rasp_zero_runtime_bank_formal/template_gsm8k_train/05_probe_dataset.jsonl
   probe_hidden_states: runs/rasp_zero_runtime_bank_formal/template_gsm8k_train/05_probe_hidden_states.pt
   runtime_bank_validation: runs/rasp_zero_runtime_bank_formal/template_gsm8k_train/07_runtime_bank_validation.json
-

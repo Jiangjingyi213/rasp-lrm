@@ -32,6 +32,7 @@ def validate_runtime_bank(config: dict[str, Any]) -> dict[str, Any]:
     expected_layers = [int(layer) for layer in cf_cfg.get("layers", [])]
     require_all_dense_correct = bool(val_cfg.get("require_all_dense_correct", False))
     max_ratio_zero_flip_rate = float(val_cfg.get("max_ratio_zero_flip_rate", 0.05))
+    allow_ratio_zero_filtering = bool(val_cfg.get("allow_ratio_zero_filtering", False))
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -99,9 +100,14 @@ def validate_runtime_bank(config: dict[str, Any]) -> dict[str, Any]:
     if ratio_zero_flip_rate is None:
         errors.append("Missing ratio=0 control rows")
     elif ratio_zero_flip_rate > max_ratio_zero_flip_rate:
-        errors.append(
-            f"ratio=0 control flip rate is too high: {ratio_zero_flip_rate:.4f} > {max_ratio_zero_flip_rate:.4f}"
+        message = (
+            f"ratio=0 control flip rate is high: {ratio_zero_flip_rate:.4f} > {max_ratio_zero_flip_rate:.4f}; "
+            "unstable continuation steps should be filtered before router training"
         )
+        if allow_ratio_zero_filtering:
+            warnings.append(message)
+        else:
+            errors.append(message)
 
     return {
         "status": "ok" if not errors else "failed",

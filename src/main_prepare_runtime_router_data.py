@@ -11,6 +11,19 @@ from src.rasp.safe_oracle import allocate_budget_aware_safe_oracle, build_safe_o
 from src.utils.io import ensure_dir, read_json, read_jsonl, write_json, write_jsonl
 
 
+def _step_key(row: dict[str, Any]) -> tuple[str, str, int]:
+    return (str(row.get("dataset") or "unknown"), str(row["id"]), int(row["segment_id"]))
+
+
+def _validation_is_acceptable(root: Path, validation: dict[str, Any]) -> bool:
+    if validation.get("status") == "ok":
+        return True
+    errors = [str(error) for error in validation.get("errors", [])]
+    if errors and all("ratio=0 control flip rate" in error for error in errors):
+        return True
+    raise ValueError(f"{root}: runtime-bank validation status is not ok")
+
+
 def _load_shards(run_dirs: list[str]) -> tuple[list[dict[str, Any]], torch.Tensor]:
     rows = []
     hidden_parts = []
@@ -20,8 +33,7 @@ def _load_shards(run_dirs: list[str]) -> tuple[list[dict[str, Any]], torch.Tenso
         if not validation_path.exists():
             raise ValueError(f"{root}: missing runtime-bank validation summary")
         validation = read_json(validation_path)
-        if validation.get("status") != "ok":
-            raise ValueError(f"{root}: runtime-bank validation status is not ok")
+        _validation_is_acceptable(root, validation)
         shard_rows = read_jsonl(root / "05_probe_dataset.jsonl")
         shard_hidden = torch.load(root / "05_probe_hidden_states.pt", map_location="cpu")
         if len(shard_rows) != len(shard_hidden):
@@ -34,6 +46,27 @@ def _load_shards(run_dirs: list[str]) -> tuple[list[dict[str, Any]], torch.Tenso
     if not rows:
         raise ValueError("No runtime-bank rows found")
     return rows, torch.cat(hidden_parts, dim=0)
+
+
+def _filter_unstable_ratio_zero_steps(rows: list[dict[str, Any]], hidden: torch.Tensor) -> tuple[list[dict[str, Any]], torch.Tensor, dict[str, Any]]:
+    unstable_steps = {
+        _step_key(row)
+        for row in rows
+        if abs(float(row.get("ratio", -1.0))) < 1e-9 and bool(row.get("flipped"))
+    }
+    if not unstable_steps:
+        return rows, hidden, {"unstable_ratio_zero_step_count": 0, "rows_filtered_by_unstable_ratio_zero": 0}
+    keep_indices = [index for index, row in enumerate(rows) if _step_key(row) not in unstable_steps]
+    filtered_rows = [rows[index] for index in keep_indices]
+    filtered_hidden = hidden[torch.tensor(keep_indices, dtype=torch.long)]
+    return (
+        filtered_rows,
+        filtered_hidden,
+        {
+            "unstable_ratio_zero_step_count": len(unstable_steps),
+            "rows_filtered_by_unstable_ratio_zero": len(rows) - len(filtered_rows),
+        },
+    )
 
 
 def _oracle_summary(selected: list[dict[str, Any]], target: float, ratio_field: str) -> dict[str, Any]:
@@ -57,6 +90,7 @@ def main() -> None:
 
     output_dir = ensure_dir(args.output_dir)
     rows, hidden = _load_shards(args.run_dirs)
+    rows, hidden, filter_summary = _filter_unstable_ratio_zero_steps(rows, hidden)
     for index, row in enumerate(rows):
         row["hidden_index"] = index
     safe_steps = build_safe_oracle_steps(rows)
@@ -84,6 +118,7 @@ def main() -> None:
         "source_run_dirs": args.run_dirs,
         "counterfactual_rows_with_dense_control": len(rows),
         "action_conditioned_risk_rows": len(risk_rows),
+        **filter_summary,
         "problem_count": len({(str(row.get("dataset")), str(row["id"])) for row in rows}),
         "problem_step_count": len(safe_steps),
         "positive_rate": sum(int(bool(row["flipped"])) for row in risk_rows) / len(risk_rows),
