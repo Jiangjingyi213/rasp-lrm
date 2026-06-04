@@ -623,3 +623,62 @@ runs/rasp_zero_online_calibration/summary.csv
 - average pruning ratio 是否达到可见幅度；
 - 是否仍出现明显 dense-correct 到 router-wrong 的逻辑遗漏；
 - `0.40` 是否被少量、合理地使用，而不是频繁压到关键推理窗口。
+
+### 11.10 Conservative RASP-Zero v1
+
+当前选择继续路线 A：把 RASP-Zero Online v1 做成一个更安全的在线策略，而不是立刻跳到
+RASP-Train。
+
+核心思想是：
+
+```text
+保留 0.40 的动作空间
+但在早期推理和不确定状态中限制最大 ratio
+```
+
+也就是说，`0.40` 仍然可以被使用，但不能在所有窗口中自由使用。当前新增三类 cap：
+
+```text
+early_tokens / early_max_ratio
+    前若干 generated tokens 的最大剪枝率。
+
+high_entropy_threshold / high_entropy_max_ratio
+    下一 token 分布不确定时的最大剪枝率。
+
+low_confidence_threshold / low_confidence_max_ratio
+    最大 token 概率较低时的最大剪枝率。
+```
+
+一个候选 ratio 在线被选中，必须同时满足：
+
+```text
+ratio <= available_budget
+ratio <= conservative_cap
+predicted_risk <= risk_threshold
+```
+
+下一轮 conservative calibration 包含：
+
+```text
+e64cap010_thr025_tgt010
+e96cap010_thr025_tgt010
+e96cap020_thr025_tgt010
+e96cap010_uncertain_thr025_tgt010
+```
+
+运行：
+
+```bash
+export CUDA_VISIBLE_DEVICES=0
+bash scripts/33_eval_rasp_zero_online_conservative_calibration.sh
+```
+
+输出：
+
+```text
+runs/rasp_zero_online_conservative_calibration/summary.csv
+```
+
+如果这一轮能让 GSM8K-20 的 accuracy 明显接近 dense，同时保留约 `5%-10%` 的理论 MLP reduction，
+则可以扩大到 `GSM8K-100 + MATH500-100`。如果仍然不稳，则 RASP-Zero 更适合定位为分析型
+prototype，后续应转向 RASP-Train。

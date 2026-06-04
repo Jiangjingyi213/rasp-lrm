@@ -9,7 +9,7 @@ import torch
 
 from src.probes.action_conditioned_dataset import build_action_features
 from src.probes.train_probe import LinearRiskProbe
-from src.rasp.budget_controller import RuntimeObservation
+from src.rasp.budget_controller import RuntimeObservation, conservative_ratio_cap
 
 
 @dataclass
@@ -23,6 +23,13 @@ class ActionConditionedRiskController:
     max_new_tokens: int = 512
     window_tokens: int = 16
     module: str = "mlp_intermediate_channels"
+    default_max_ratio: float | None = None
+    early_tokens: int = 0
+    early_max_ratio: float | None = None
+    high_entropy_threshold: float | None = None
+    high_entropy_max_ratio: float | None = None
+    low_confidence_threshold: float | None = None
+    low_confidence_max_ratio: float | None = None
     _model: LinearRiskProbe = field(init=False, repr=False)
     _metadata: dict[str, Any] = field(init=False, repr=False)
     _selected_ratios: list[float] = field(default_factory=list, init=False, repr=False)
@@ -45,6 +52,8 @@ class ActionConditionedRiskController:
         if trained_module != self.module:
             raise ValueError(f"Router checkpoint expects module={trained_module}, got {self.module}")
         self.ratios = sorted({0.0, *(float(ratio) for ratio in self.ratios)})
+        if self.default_max_ratio is None:
+            self.default_max_ratio = max(self.ratios)
 
     @property
     def total_decisions(self) -> int:
@@ -81,12 +90,27 @@ class ActionConditionedRiskController:
         scored = []
         selected_ratio = 0.0
         selected_risk = 0.0
+        ratio_cap, cap_reasons = conservative_ratio_cap(
+            observation,
+            default_max_ratio=float(self.default_max_ratio),
+            early_tokens=int(self.early_tokens),
+            early_max_ratio=self.early_max_ratio,
+            high_entropy_threshold=self.high_entropy_threshold,
+            high_entropy_max_ratio=self.high_entropy_max_ratio,
+            low_confidence_threshold=self.low_confidence_threshold,
+            low_confidence_max_ratio=self.low_confidence_max_ratio,
+        )
         for ratio in sorted(self.ratios, reverse=True):
             if ratio <= 0.0:
                 continue
             risk = self._score(observation, ratio)
             scored.append({"ratio": ratio, "predicted_risk": risk})
-            if selected_ratio <= 0.0 and ratio <= available_budget + 1e-9 and risk <= self.risk_threshold:
+            if (
+                selected_ratio <= 0.0
+                and ratio <= available_budget + 1e-9
+                and ratio <= ratio_cap + 1e-9
+                and risk <= self.risk_threshold
+            ):
                 selected_ratio = ratio
                 selected_risk = risk
         self._selected_ratios.append(selected_ratio)
@@ -95,6 +119,8 @@ class ActionConditionedRiskController:
             "risk_threshold": self.risk_threshold,
             "available_budget_before_selection": available_budget,
             "target_average_ratio": self.target_average_ratio,
+            "ratio_cap": ratio_cap,
+            "cap_reasons": cap_reasons,
             "candidate_scores": scored,
         }
         return selected_ratio

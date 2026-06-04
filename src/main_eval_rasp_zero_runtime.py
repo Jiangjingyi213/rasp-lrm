@@ -43,6 +43,13 @@ def _build_controller(config: dict, generation_config: dict, runtime_layers: lis
             target_average_ratio=float(config.get("target_average_ratio", 0.20)),
             max_new_tokens=int(generation_config.get("max_new_tokens", 512)),
             window_tokens=int(config.get("window_tokens", 16)),
+            default_max_ratio=float(config.get("default_max_ratio", max(config.get("ratios", [0.40])))),
+            early_tokens=int(config.get("early_tokens", 0)),
+            early_max_ratio=config.get("early_max_ratio"),
+            high_entropy_threshold=config.get("high_entropy_threshold"),
+            high_entropy_max_ratio=config.get("high_entropy_max_ratio"),
+            low_confidence_threshold=config.get("low_confidence_threshold"),
+            low_confidence_max_ratio=config.get("low_confidence_max_ratio"),
         )
     raise ValueError(f"Unsupported runtime controller: {controller}")
 
@@ -103,6 +110,13 @@ def main() -> None:
         "router_checkpoint": runtime_cfg.get("router_checkpoint"),
         "risk_threshold": runtime_cfg.get("risk_threshold"),
         "target_average_ratio": runtime_cfg.get("target_average_ratio"),
+        "default_max_ratio": runtime_cfg.get("default_max_ratio"),
+        "early_tokens": runtime_cfg.get("early_tokens"),
+        "early_max_ratio": runtime_cfg.get("early_max_ratio"),
+        "high_entropy_threshold": runtime_cfg.get("high_entropy_threshold"),
+        "high_entropy_max_ratio": runtime_cfg.get("high_entropy_max_ratio"),
+        "low_confidence_threshold": runtime_cfg.get("low_confidence_threshold"),
+        "low_confidence_max_ratio": runtime_cfg.get("low_confidence_max_ratio"),
         "window_tokens": int(runtime_cfg.get("window_tokens", 16)),
         "supported_ratios": runtime_cfg.get("ratios", [0.02, 0.05, 0.10, 0.20, 0.30, 0.40]),
         "peak_gpu_memory_bytes": int(torch.cuda.max_memory_allocated()) if torch.cuda.is_available() else None,
