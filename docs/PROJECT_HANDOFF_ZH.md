@@ -67,29 +67,36 @@ GRIFFIN 和 FLAP 已形成可评估 baseline。LLM-Pruner 在 Qwen3 上即使轻
 
 因此，**RASP-Zero 当前定位为分析型 prototype**：用于证明问题、构造训练数据和提供 oracle，而不是论文最终方法。
 
-## 3. 当前阶段：RASP-Train v1
+## 3. 当前阶段：RASP-Train v2
 
-RASP-Train v1 已完成第一轮前置代码审查与修复，但尚未生成正式实验结果。
+RASP-Train v1 已完成离线实验，但弱于 matched-budget RASP-Zero：
+
+- B15：ratio `0.1241`，flip rate `0.1023`；RASP-Zero 为 `0.0621`。
+- B20：ratio `0.1761`，flip rate `0.1368`；RASP-Zero 为 `0.0851`。
+
+因此 v1 作为 oracle-ratio classification 失败消融保留，不进入在线实验。当前已实现
+RASP-Train v2 action-risk policy，等待服务器重新训练和离线评估。
 
 当前设计：
 
 - 不训练 Qwen3 本体，只训练轻量 ratio policy；
 - 输入 hidden state、entropy、confidence、position、dataset/domain、target budget 和当前可用预算；
-- 输出 ratio：
+- 对每个候选 ratio 输出 unsafe probability：
 
 ```text
 0.00, 0.02, 0.05, 0.10, 0.20, 0.30, 0.40
 ```
 
-- 采用 `budget-aware monotonic-safe oracle imitation`；
-- oracle 按每道题独立、按 step 顺序执行 causal prefix budget；
-- loss 包括 oracle classification、unsafe action penalty 和 budget penalty；
+- 采用 action-conditioned multi-label risk learning；
+- loss 为 weighted BCE、ratio-risk monotonic penalty 和 safe/unsafe ranking loss；
+- 使用 problem-level 70/15/15 train/calibration/test；
+- calibration problems 自动选择 risk threshold，test problems 独立报告；
+- checkpoint 记录校准约束是否满足及所选阈值下的 ratio/flip/unsafe 指标；
+- 在线由 calibrated threshold 与 causal prefix budget 共同选 ratio；
 - 分别训练 `RASP-Train-B15` 与 `RASP-Train-B20`；
 - 当前仍使用 logical MLP mask，只报告 activated-MLP proxy，不宣称真实硬件加速。
 
-2026-06-06 已修复 policy 训练 checkpoint 崩溃、跨题 oracle 预算、离线/在线预算回放不一致、
-monotonic unsafe 定义不一致，以及在线 smoke 缺少 paired dense control 等问题。旧
-RASP-Train dataset/checkpoint 与当前 feature schema 不兼容，必须重新生成。
+v1 保留在 `runs/rasp_train_v1/`，v2 默认写入 `runs/rasp_train_v2/`。两者 checkpoint 不兼容。
 
 新增入口：
 
@@ -107,13 +114,22 @@ scripts/38_eval_rasp_train_v1_online_smoke.sh
 ```bash
 export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
 
+mkdir -p logs
+nohup env CUDA_VISIBLE_DEVICES=0 PYTHON="$PYTHON" bash -c '
+set -e
 bash scripts/35_prepare_rasp_train_v1_data.sh
 bash scripts/36_train_rasp_train_v1.sh
 bash scripts/37_eval_rasp_train_v1_offline.sh
+' > logs/rasp_train_v2_offline.log 2>&1 &
+echo $! > logs/rasp_train_v2_offline.pid
+tail -f logs/rasp_train_v2_offline.log
 ```
+
+轻量 policy 训练只需要一张 GPU；不要并行占用八张卡。日志现在会逐 epoch 输出 calibration loss/AUC。
 
 首先检查离线结果：
 
+- `calibration_constraints_satisfied` 必须为 `true`，否则说明设定安全门槛在 calibration 上不可达；
 - RASP-Train 在相近平均 ratio 下是否比 RASP-Zero 更低 flip rate；
 - `unsafe_over_oracle_rate` 是否下降；
 - B=0.15 与 B=0.20 的安全性和预算利用率；

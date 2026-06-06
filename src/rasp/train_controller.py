@@ -10,7 +10,7 @@ import torch
 from src.probes.rasp_train_dataset import build_policy_features
 from src.rasp.budget_controller import RuntimeObservation, conservative_ratio_cap
 from src.rasp.safe_oracle import available_prefix_budget
-from src.rasp.train_policy import POLICY_FEATURE_SCHEMA, RatioPolicyNet
+from src.rasp.train_policy import POLICY_FEATURE_SCHEMA, ActionRiskPolicyNet
 
 
 @dataclass
@@ -27,7 +27,8 @@ class RaspTrainPolicyController:
     high_entropy_max_ratio: float | None = None
     low_confidence_threshold: float | None = None
     low_confidence_max_ratio: float | None = None
-    _model: RatioPolicyNet = field(init=False, repr=False)
+    risk_threshold: float | None = None
+    _model: ActionRiskPolicyNet = field(init=False, repr=False)
     _ratios: list[float] = field(init=False, repr=False)
     _selected_ratios: list[float] = field(default_factory=list, init=False, repr=False)
     last_decision: dict[str, Any] | None = field(default=None, init=False)
@@ -41,13 +42,14 @@ class RaspTrainPolicyController:
                 "regenerate data and retrain the policy"
             )
         self._ratios = [float(value) for value in checkpoint["ratios"]]
-        self._model = RatioPolicyNet(
+        self._model = ActionRiskPolicyNet(
             int(checkpoint["dim"]),
-            int(checkpoint["num_ratios"]),
             hidden_dim=int(checkpoint.get("hidden_dim", 256)),
         )
         self._model.load_state_dict(checkpoint["model"])
         self._model.eval()
+        if self.risk_threshold is None:
+            self.risk_threshold = float(metadata["calibrated_threshold"])
         if self.default_max_ratio is None:
             self.default_max_ratio = max(self._ratios)
 
@@ -76,7 +78,7 @@ class RaspTrainPolicyController:
             low_confidence_max_ratio=self.low_confidence_max_ratio,
         )
         features = build_policy_features(
-            torch.as_tensor(observation.hidden_state),
+            torch.as_tensor(observation.hidden_state).detach().float().cpu(),
             entropy=float(observation.entropy),
             confidence=float(observation.confidence),
             position=min(1.0, observation.generated_tokens / max(1, self.max_new_tokens)),
@@ -85,17 +87,20 @@ class RaspTrainPolicyController:
             dataset=self.dataset,
         )
         with torch.no_grad():
-            logits = self._model(features.unsqueeze(0)).squeeze(0)
-            probs = torch.softmax(logits, dim=-1)
+            ratio_tensor = torch.tensor(self._ratios, dtype=torch.float32).unsqueeze(0)
+            logits = self._model(features.unsqueeze(0), ratio_tensor).squeeze(0)
+            probs = torch.sigmoid(logits)
         allowed = [
             index
             for index, ratio in enumerate(self._ratios)
-            if float(ratio) <= available_budget + 1e-9 and float(ratio) <= ratio_cap + 1e-9
+            if float(ratio) <= available_budget + 1e-9
+            and float(ratio) <= ratio_cap + 1e-9
+            and (float(ratio) <= 0.0 or float(probs[index].item()) <= float(self.risk_threshold))
         ]
         if not allowed:
             selected_index = 0
         else:
-            selected_index = max(allowed, key=lambda index: float(logits[index].item()))
+            selected_index = max(allowed, key=lambda index: self._ratios[index])
         selected_ratio = float(self._ratios[selected_index])
         self._selected_ratios.append(selected_ratio)
         self.last_decision = {
@@ -103,12 +108,13 @@ class RaspTrainPolicyController:
             "target_average_ratio": self.target_average_ratio,
             "ratio_cap": ratio_cap,
             "cap_reasons": cap_reasons,
-            "selected_ratio_probability": float(probs[selected_index].item()),
+            "risk_threshold": float(self.risk_threshold),
+            "selected_predicted_risk": float(probs[selected_index].item()),
             "candidate_scores": [
                 {
                     "ratio": float(ratio),
                     "logit": float(logits[index].item()),
-                    "probability": float(probs[index].item()),
+                    "predicted_risk": float(probs[index].item()),
                     "allowed": index in allowed,
                 }
                 for index, ratio in enumerate(self._ratios)

@@ -3,7 +3,7 @@ set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
 RUN_ROOT="${RUN_ROOT:-runs/rasp_zero_runtime_bank_formal}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-runs/rasp_train_v1}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-runs/rasp_train_v2}"
 
 RUN_DIRS=()
 for path in "${RUN_ROOT}"/*; do

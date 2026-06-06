@@ -8,27 +8,35 @@ from typing import Callable
 
 import torch
 
-from src.probes.rasp_train_dataset import RaspTrainPolicyDataset, build_policy_features
-from src.probes.train_probe import LinearRiskProbe, problem_level_split
+from src.probes.rasp_train_dataset import RaspTrainPolicyDataset
+from src.probes.train_probe import LinearRiskProbe
 from src.probes.action_conditioned_dataset import build_action_features
 from src.rasp.safe_oracle import available_prefix_budget
-from src.rasp.train_policy import POLICY_FEATURE_SCHEMA, RatioPolicyNet
+from src.rasp.train_policy import (
+    POLICY_FEATURE_SCHEMA,
+    ActionRiskPolicyNet,
+    causal_action_risk_indices,
+)
 from src.utils.io import ensure_dir, write_json, write_jsonl
 
 
-def _load_policy(checkpoint_path: str | Path) -> tuple[RatioPolicyNet, list[float]]:
+def _load_policy(checkpoint_path: str | Path) -> tuple[ActionRiskPolicyNet, list[float], float, dict]:
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     metadata = dict(checkpoint.get("metadata", {}))
     if metadata.get("feature_schema") != POLICY_FEATURE_SCHEMA:
         raise ValueError("Policy checkpoint feature schema is incompatible with this evaluator")
-    model = RatioPolicyNet(
+    model = ActionRiskPolicyNet(
         int(checkpoint["dim"]),
-        int(checkpoint["num_ratios"]),
         hidden_dim=int(checkpoint.get("hidden_dim", 256)),
     )
     model.load_state_dict(checkpoint["model"])
     model.eval()
-    return model, [float(value) for value in checkpoint["ratios"]]
+    return (
+        model,
+        [float(value) for value in checkpoint["ratios"]],
+        float(metadata["calibrated_threshold"]),
+        metadata,
+    )
 
 
 def _load_risk_probe(checkpoint_path: str | Path) -> tuple[LinearRiskProbe, dict]:
@@ -86,6 +94,15 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
+def _indices_for_problem_keys(rows: list[dict], keys: list[list[str]]) -> list[int]:
+    selected_keys = {(str(dataset), str(problem_id)) for dataset, problem_id in keys}
+    return [
+        index
+        for index, row in enumerate(rows)
+        if (str(row.get("dataset") or "unknown"), str(row["id"])) in selected_keys
+    ]
+
+
 def _problem_sequences(rows: list[dict]) -> list[list[int]]:
     grouped: dict[tuple[str, str], list[int]] = defaultdict(list)
     for index, row in enumerate(rows):
@@ -99,35 +116,6 @@ def _problem_sequences(rows: list[dict]) -> list[list[int]]:
             )
         )
     return sequences
-
-
-def _trained_policy_indices(model: RatioPolicyNet, rows: list[dict], hidden: torch.Tensor, ratios: list[float]) -> list[int]:
-    indices = [0] * len(rows)
-    with torch.no_grad():
-        for sequence in _problem_sequences(rows):
-            selected_history: list[float] = []
-            for row_index in sequence:
-                row = rows[row_index]
-                available = available_prefix_budget(float(row["target_budget"]), selected_history)
-                features = build_policy_features(
-                    hidden[row_index],
-                    entropy=float(row.get("entropy", 0.0)),
-                    confidence=float(row.get("confidence", 0.0)),
-                    position=float(row.get("position", 0.0)),
-                    target_budget=float(row["target_budget"]),
-                    available_budget=available,
-                    dataset=str(row.get("dataset") or "unknown"),
-                )
-                logits = model(features.unsqueeze(0)).squeeze(0)
-                allowed = [
-                    index
-                    for index, ratio in enumerate(ratios)
-                    if float(ratio) <= available + 1e-9
-                ]
-                selected_index = max(allowed, key=lambda index: float(logits[index].item())) if allowed else 0
-                indices[row_index] = selected_index
-                selected_history.append(float(ratios[selected_index]))
-    return indices
 
 
 def _static_indices(rows: list[dict], ratios: list[float], ratio: float) -> list[int]:
@@ -213,21 +201,27 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--risk-router-checkpoint")
     parser.add_argument("--risk-threshold", type=float, default=0.25)
-    parser.add_argument("--val-fraction", type=float, default=0.25)
-    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--val-fraction", type=float, default=0.25, help="Ignored for v2 checkpoints")
+    parser.add_argument("--seed", type=int, default=1, help="Ignored for v2 checkpoints")
     args = parser.parse_args()
 
     output_dir = ensure_dir(args.output_dir)
     dataset = RaspTrainPolicyDataset(args.dataset, args.hidden_states)
-    _train_indices, val_indices = problem_level_split(dataset.rows, args.val_fraction, args.seed)
-    val_rows = [dataset.rows[index] for index in val_indices]
-    val_hidden = dataset.hidden[torch.tensor(val_indices, dtype=torch.long)]
-    policy, ratios = _load_policy(args.policy_checkpoint)
+    policy, ratios, threshold, metadata = _load_policy(args.policy_checkpoint)
     if ratios != dataset.ratios:
         raise ValueError(f"policy ratios {ratios} differ from dataset ratios {dataset.ratios}")
+    test_indices = _indices_for_problem_keys(dataset.rows, metadata["split_problem_keys"]["test"])
+    if not test_indices:
+        raise ValueError("Policy checkpoint test split does not match this dataset")
+    val_rows = [dataset.rows[index] for index in test_indices]
+    val_hidden = dataset.hidden[torch.tensor(test_indices, dtype=torch.long)]
+    device = torch.device("cpu")
+    trained_indices, trained_risks = causal_action_risk_indices(
+        policy, val_rows, val_hidden, ratios, threshold, device
+    )
 
     selected_by_policy = {
-        "rasp_train": _trained_policy_indices(policy, val_rows, val_hidden, ratios),
+        "rasp_train_v2_action_risk": trained_indices,
         "safe_oracle": _oracle_indices(val_rows, ratios),
         "offline_noncausal_entropy_budget": _score_order_budget_indices(
             val_rows, ratios, lambda row: float(row.get("entropy", 0.0))
@@ -251,7 +245,7 @@ def main() -> None:
     summaries = [_summarize(name, indices, val_rows, ratios) for name, indices in selected_by_policy.items()]
     selected_rows = []
     for name, selected_indices in selected_by_policy.items():
-        for row, selected_index in zip(val_rows, selected_indices):
+        for row_index, (row, selected_index) in enumerate(zip(val_rows, selected_indices)):
             selected_rows.append(
                 {
                     "policy": name,
@@ -265,9 +259,25 @@ def main() -> None:
                     "selected_conservative_unsafe": bool(
                         row.get("candidate_unsafe", row["candidate_flipped"])[selected_index]
                     ),
+                    "candidate_predicted_risks": (
+                        trained_risks[row_index]
+                        if name == "rasp_train_v2_action_risk"
+                        else None
+                    ),
                 }
             )
-    write_json(output_dir / "12_rasp_train_offline_summary.json", {"summaries": summaries})
+    write_json(
+        output_dir / "12_rasp_train_offline_summary.json",
+        {
+            "method": "rasp_train_v2_action_risk",
+            "calibrated_threshold": threshold,
+            "test_problem_count": len(
+                {(str(row.get("dataset") or "unknown"), str(row["id"])) for row in val_rows}
+            ),
+            "test_rows": len(val_rows),
+            "summaries": summaries,
+        },
+    )
     _write_csv(output_dir / "12_rasp_train_offline_summary.csv", summaries)
     write_jsonl(output_dir / "12_rasp_train_offline_selected_actions.jsonl", selected_rows)
 

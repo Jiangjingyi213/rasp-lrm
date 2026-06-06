@@ -50,7 +50,7 @@ def build_policy_features(
 
 
 class RaspTrainPolicyDataset(Dataset):
-    """One example per reasoning step and target budget for ratio-policy imitation."""
+    """One multi-label action-risk example per reasoning step."""
 
     def __init__(
         self,
@@ -86,9 +86,9 @@ class RaspTrainPolicyDataset(Dataset):
             available_budget=float(row.get("available_budget_before_selection", row["target_budget"])),
             dataset=str(row.get("dataset") or "unknown"),
         )
-        label = ratio_index(float(row["oracle_ratio"]), self.ratios)
         unsafe_values = row.get("candidate_unsafe", row["candidate_flipped"])
         unsafe_mask = torch.tensor([float(value) for value in unsafe_values], dtype=torch.float32)
+        flipped_mask = torch.tensor([float(value) for value in row["candidate_flipped"]], dtype=torch.float32)
         ratios = torch.tensor(self.ratios, dtype=torch.float32)
         target_budget = torch.tensor(float(row["target_budget"]), dtype=torch.float32)
-        return features, torch.tensor(label, dtype=torch.long), unsafe_mask, ratios, target_budget, index
+        return features, unsafe_mask, flipped_mask, ratios, target_budget, index

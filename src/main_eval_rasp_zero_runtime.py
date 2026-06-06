@@ -66,6 +66,7 @@ def _build_controller(config: dict, generation_config: dict, runtime_layers: lis
             high_entropy_max_ratio=config.get("high_entropy_max_ratio"),
             low_confidence_threshold=config.get("low_confidence_threshold"),
             low_confidence_max_ratio=config.get("low_confidence_max_ratio"),
+            risk_threshold=config.get("risk_threshold"),
         )
     raise ValueError(f"Unsupported runtime controller: {controller}")
 
@@ -121,7 +122,7 @@ def main() -> None:
     write_jsonl(trajectories_path, rows)
     summary = {
         "method": (
-            "rasp_train_runtime_v1"
+            "rasp_train_runtime_v2"
             if runtime_cfg.get("controller") == "rasp_train_policy"
             else "rasp_zero_runtime_v0"
         ),
@@ -129,7 +130,7 @@ def main() -> None:
         "controller": runtime_cfg.get("controller", "fixed"),
         "router_checkpoint": runtime_cfg.get("router_checkpoint"),
         "policy_checkpoint": runtime_cfg.get("policy_checkpoint"),
-        "risk_threshold": runtime_cfg.get("risk_threshold"),
+        "risk_threshold": getattr(controller, "risk_threshold", runtime_cfg.get("risk_threshold")),
         "target_average_ratio": runtime_cfg.get("target_average_ratio"),
         "default_max_ratio": runtime_cfg.get("default_max_ratio"),
         "early_tokens": runtime_cfg.get("early_tokens"),
