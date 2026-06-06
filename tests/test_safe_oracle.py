@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from src.rasp.safe_oracle import allocate_budget_aware_safe_oracle, build_safe_oracle_steps
+from src.rasp.safe_oracle import (
+    allocate_budget_aware_safe_oracle,
+    allocate_causal_budget_aware_safe_oracle,
+    build_safe_oracle_steps,
+)
 
 
 class SafeOracleTest(unittest.TestCase):
@@ -25,6 +29,40 @@ class SafeOracleTest(unittest.TestCase):
         selected = allocate_budget_aware_safe_oracle(steps, 0.2)
         self.assertLessEqual(sum(row["selected_ratio"] for row in selected), 0.4)
         self.assertTrue(all(row["selected_ratio"] <= row["max_safe_ratio"] for row in selected))
+
+    def test_causal_oracle_is_problem_local_and_prefix_budget_safe(self) -> None:
+        steps = [
+            {
+                "dataset": "gsm8k",
+                "id": "a",
+                "segment_id": 0,
+                "segment_index": 0,
+                "tested_ratios": [0.0, 0.1, 0.2, 0.4],
+                "monotonic_safe_ratio": 0.4,
+            },
+            {
+                "dataset": "gsm8k",
+                "id": "a",
+                "segment_id": 1,
+                "segment_index": 1,
+                "tested_ratios": [0.0, 0.1, 0.2, 0.4],
+                "monotonic_safe_ratio": 0.4,
+            },
+            {
+                "dataset": "gsm8k",
+                "id": "b",
+                "segment_id": 0,
+                "segment_index": 0,
+                "tested_ratios": [0.0, 0.1, 0.2, 0.4],
+                "monotonic_safe_ratio": 0.4,
+            },
+        ]
+        selected = allocate_causal_budget_aware_safe_oracle(steps, 0.15)
+        self.assertEqual([row["selected_ratio"] for row in selected], [0.1, 0.2, 0.1])
+        self.assertEqual(selected[0]["available_budget_before_selection"], 0.15)
+        self.assertAlmostEqual(selected[1]["available_budget_before_selection"], 0.2)
+        self.assertEqual(selected[2]["available_budget_before_selection"], 0.15)
+        self.assertTrue(all(row["prefix_average_after_selection"] <= 0.15 + 1e-9 for row in selected))
 
 
 if __name__ == "__main__":

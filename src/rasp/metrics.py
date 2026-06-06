@@ -23,7 +23,13 @@ def summarize_runtime_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "decode_seconds": total_decode_seconds,
         "decode_tokens_per_second": total_tokens / total_decode_seconds if total_decode_seconds > 0 else None,
         "average_decode_pruning_ratio": average_ratio,
+        "logical_mlp_channel_mask_ratio": average_ratio,
+        "idealized_mlp_decode_flops_reduction_if_physically_pruned": average_ratio,
         "theoretical_mlp_decode_flops_reduction": average_ratio,
         "theoretical_mlp_decode_activated_parameter_reduction": average_ratio,
+        "efficiency_metric_note": (
+            "Logical masking keeps dense projections in the current backend; "
+            "the ratio is an idealized proxy, not measured compute reduction."
+        ),
         "real_speedup_claimed": False,
     }

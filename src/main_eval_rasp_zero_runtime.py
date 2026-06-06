@@ -17,6 +17,7 @@ from src.rasp.budget_controller import ConfidenceThresholdController, FixedRatio
 from src.rasp.greedy_decode import greedy_decode_runtime
 from src.rasp.metrics import summarize_runtime_rows
 from src.rasp.mlp_runtime import apply_runtime_mlp_masking_qwen3
+from src.rasp.train_controller import RaspTrainPolicyController
 from src.utils.io import ensure_dir, read_yaml, write_json, write_jsonl
 from src.utils.seed import set_seed
 
@@ -40,6 +41,21 @@ def _build_controller(config: dict, generation_config: dict, runtime_layers: lis
             ratios=[float(ratio) for ratio in config.get("ratios", [0.02, 0.05, 0.10, 0.20, 0.30, 0.40])],
             runtime_layers=runtime_layers,
             risk_threshold=float(config.get("risk_threshold", 0.35)),
+            target_average_ratio=float(config.get("target_average_ratio", 0.20)),
+            max_new_tokens=int(generation_config.get("max_new_tokens", 512)),
+            window_tokens=int(config.get("window_tokens", 16)),
+            default_max_ratio=float(config.get("default_max_ratio", max(config.get("ratios", [0.40])))),
+            early_tokens=int(config.get("early_tokens", 0)),
+            early_max_ratio=config.get("early_max_ratio"),
+            high_entropy_threshold=config.get("high_entropy_threshold"),
+            high_entropy_max_ratio=config.get("high_entropy_max_ratio"),
+            low_confidence_threshold=config.get("low_confidence_threshold"),
+            low_confidence_max_ratio=config.get("low_confidence_max_ratio"),
+        )
+    if controller == "rasp_train_policy":
+        return RaspTrainPolicyController(
+            checkpoint_path=config["policy_checkpoint"],
+            dataset=dataset,
             target_average_ratio=float(config.get("target_average_ratio", 0.20)),
             max_new_tokens=int(generation_config.get("max_new_tokens", 512)),
             window_tokens=int(config.get("window_tokens", 16)),
@@ -104,10 +120,15 @@ def main() -> None:
         )
     write_jsonl(trajectories_path, rows)
     summary = {
-        "method": "rasp_zero_runtime_v0",
+        "method": (
+            "rasp_train_runtime_v1"
+            if runtime_cfg.get("controller") == "rasp_train_policy"
+            else "rasp_zero_runtime_v0"
+        ),
         "backend": "logical_mask_v0",
         "controller": runtime_cfg.get("controller", "fixed"),
         "router_checkpoint": runtime_cfg.get("router_checkpoint"),
+        "policy_checkpoint": runtime_cfg.get("policy_checkpoint"),
         "risk_threshold": runtime_cfg.get("risk_threshold"),
         "target_average_ratio": runtime_cfg.get("target_average_ratio"),
         "default_max_ratio": runtime_cfg.get("default_max_ratio"),

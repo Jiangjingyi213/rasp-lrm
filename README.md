@@ -60,6 +60,19 @@ bash scripts/21_rasp_zero_offline_v2.sh
 See `docs/rasp_zero_offline_v2_zh.md` for the detailed Chinese experiment
 record and interpretation guide.
 
+The trainable runtime-ratio prototype is RASP-Train v1:
+
+```bash
+bash scripts/35_prepare_rasp_train_v1_data.sh
+bash scripts/36_train_rasp_train_v1.sh
+bash scripts/37_eval_rasp_train_v1_offline.sh
+```
+
+It uses problem-local causal-prefix budget supervision and must pass offline
+validation before `scripts/38_eval_rasp_train_v1_online_smoke.sh` is run. The
+online smoke includes a paired ratio-zero control and writes
+`14_paired_dense_comparison.json`. See `docs/rasp_train_v1_zh.md`.
+
 See `docs/baseline_evaluation.md` for the distinction between offline policy baselines and external pruned-model baselines such as LLM-Pruner/FLAP.
 
 External pruning repositories are cloned on the remote server, not committed here:
