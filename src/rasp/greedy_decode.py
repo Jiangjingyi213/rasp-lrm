@@ -137,3 +137,78 @@ def greedy_decode_runtime(
         "router_events": [asdict(event) for event in events],
         "runtime_mlp": summarize_runtime_mlp(model),
     }
+
+
+@torch.no_grad()
+def greedy_decode_single_window_counterfactual(
+    model,
+    tokenizer,
+    prompt: str,
+    forced_prefix_ids: list[int],
+    ratio: float,
+    *,
+    max_new_tokens: int = 512,
+    max_input_tokens: int = 2048,
+    window_tokens: int = 16,
+) -> dict[str, Any]:
+    """Replay a dense prefix, prune one decode window, then return to dense."""
+    if window_tokens < 1:
+        raise ValueError("window_tokens must be positive")
+    if len(forced_prefix_ids) >= max_new_tokens:
+        raise ValueError("Forced prefix must leave room for counterfactual continuation")
+    device = model_device(model)
+    reset_runtime_mlp_state(model)
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_input_tokens).to(device)
+    outputs = model(**inputs, use_cache=True, output_hidden_states=True, return_dict=True)
+    past_key_values = outputs.past_key_values
+
+    set_runtime_mlp_ratio(model, 0.0)
+    for token_id in forced_prefix_ids:
+        token = torch.tensor([[int(token_id)]], device=device)
+        outputs = model(
+            input_ids=token,
+            past_key_values=past_key_values,
+            use_cache=True,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+        past_key_values = outputs.past_key_values
+
+    observation = _observation(outputs, generated_tokens=len(forced_prefix_ids))
+    set_runtime_mlp_ratio(model, float(ratio))
+    eos_ids = tokenizer.eos_token_id
+    eos_ids = {int(eos_ids)} if isinstance(eos_ids, int) else {int(item) for item in (eos_ids or [])}
+    generated_ids: list[int] = []
+    window_ids: list[int] = []
+    window_end_hidden = None
+    remaining = max_new_tokens - len(forced_prefix_ids)
+    for step in range(remaining):
+        next_token = torch.argmax(outputs.logits[:, -1, :], dim=-1)
+        token_id = int(next_token.item())
+        generated_ids.append(token_id)
+        if step < window_tokens:
+            window_ids.append(token_id)
+        if token_id in eos_ids:
+            break
+        outputs = model(
+            input_ids=next_token.unsqueeze(-1),
+            past_key_values=past_key_values,
+            use_cache=True,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+        past_key_values = outputs.past_key_values
+        if step + 1 == window_tokens:
+            window_end_hidden = outputs.hidden_states[-1][:, -1, :].detach().float().cpu()
+            set_runtime_mlp_ratio(model, 0.0)
+    if window_end_hidden is None and getattr(outputs, "hidden_states", None):
+        window_end_hidden = outputs.hidden_states[-1][:, -1, :].detach().float().cpu()
+    return {
+        "completion": tokenizer.decode([*forced_prefix_ids, *generated_ids], skip_special_tokens=True).strip(),
+        "continuation": tokenizer.decode(generated_ids, skip_special_tokens=True).strip(),
+        "generated_ids": generated_ids,
+        "window_ids": window_ids,
+        "window_end_hidden": window_end_hidden,
+        "boundary_observation": observation,
+        "runtime_mlp": summarize_runtime_mlp(model),
+    }

@@ -88,7 +88,7 @@ def build_flap_calibration_texts(bundle, tasks: list[dict], cfg: dict) -> list[s
 
 
 @torch.no_grad()
-def generate_text(bundle, prompt: str, generation_config: dict) -> str:
+def generate_text_with_ids(bundle, prompt: str, generation_config: dict) -> tuple[str, list[int]]:
     tokenizer = bundle.tokenizer
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=generation_config.get("max_input_tokens", 2048))
     inputs = inputs.to(model_device(bundle.model))
@@ -108,7 +108,15 @@ def generate_text(bundle, prompt: str, generation_config: dict) -> str:
     )
     gen_ids = out[0, inputs["input_ids"].shape[1] :]
     completion = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
-    return truncate_completion(completion, generation_config.get("stop_strings", DEFAULT_STOP_STRINGS))
+    return (
+        truncate_completion(completion, generation_config.get("stop_strings", DEFAULT_STOP_STRINGS)),
+        [int(value) for value in gen_ids.cpu().tolist()],
+    )
+
+
+def generate_text(bundle, prompt: str, generation_config: dict) -> str:
+    completion, _generated_ids = generate_text_with_ids(bundle, prompt, generation_config)
+    return completion
 
 
 def main() -> None:
@@ -158,7 +166,7 @@ def main() -> None:
 
     for task in tqdm(tasks, desc="generate"):
         prompt = build_prompt(task["question"], bundle.tokenizer, cfg.get("prompt", {}))
-        completion = generate_text(bundle, prompt, cfg.get("generation", {}))
+        completion, generated_token_ids = generate_text_with_ids(bundle, prompt, cfg.get("generation", {}))
         row = {
             **task,
             "prompt": prompt,
@@ -166,6 +174,8 @@ def main() -> None:
             "prediction": extract_answer(completion),
             "correct": answer_match(completion, task.get("gold", "")),
         }
+        if bool(cfg.get("generation", {}).get("store_generated_token_ids", False)):
+            row["generated_token_ids"] = generated_token_ids
         append_jsonl(output, row)
 
 

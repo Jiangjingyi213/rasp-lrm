@@ -151,6 +151,43 @@ label = 单窗口干预是否最终导致答案 flip
 
 最终答案 flip 负责真实性，短期 drift 提供更密集的 credit assignment。
 
+#### Phase B1 实现状态
+
+Phase B1 aligned window bank 采集代码已完成：
+
+```text
+src/main_collect_aligned_window_bank.py
+src/main_validate_aligned_window_bank.py
+scripts/43_prepare_rasp_phase_b_aligned_bank_configs.py
+scripts/44_collect_rasp_phase_b_aligned_bank.sh
+```
+
+实现语义：
+
+1. 从原始 prompt 做一次 dense prefill，建立与 runtime 相同的固定 neuron ranking；
+2. dense 强制重放 baseline assistant token 到固定 `16-token` boundary；
+3. candidate ratio 仅作用下一个窗口；
+4. 窗口后恢复 ratio `0`，继续生成到答案结束；
+5. paired ratio-0 continuation 作为 dense control；
+6. 记录 `window_token_divergence`、窗口末 hidden L2/cosine drift 和 paired final-answer flip。
+
+Phase B 配置要求 dense trajectory 生成入口直接保存并重放模型原始 `generated_token_ids`，避免
+decode/re-tokenize 改变 token boundary。采集器虽然保留文本重新 tokenize 的兼容回退，但正式
+validation 会拒绝这种 fallback 数据。
+
+Phase B bank 采集成本显著高于旧 bank，应先运行小规模 smoke：
+
+```bash
+export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
+export RASP_PHASE_B_LIMIT_PER_SOURCE=25
+export RASP_PHASE_B_SHARD_SIZE=5
+export RASP_PHASE_B_GPU_COUNT=8
+bash scripts/44_collect_rasp_phase_b_aligned_bank.sh
+```
+
+确认所有 shard validation 为 `status=ok`、ratio-0 control 稳定且局部 drift 字段有效后，再将
+`RASP_PHASE_B_LIMIT_PER_SOURCE` 提升到 `500` 正式采集。
+
 ### Phase C：覆盖 policy-induced states
 
 第一轮 window bank 来自 dense trajectory。训练初版 policy 后，再从 policy rollout 中采集状态并加入

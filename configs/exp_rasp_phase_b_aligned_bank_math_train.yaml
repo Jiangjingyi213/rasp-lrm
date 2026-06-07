@@ -1,0 +1,36 @@
+seed: 1
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float32
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+prompt:
+  use_chat_template: true
+  enable_thinking: false
+  system: You are a careful math reasoning assistant.
+data:
+  dataset: math500
+  dataset_label: math_train
+  name_or_path: rasbt/math_full_minus_math500
+  split: train
+  limit: 50
+generation:
+  max_input_tokens: 2048
+  max_new_tokens: 768
+  store_generated_token_ids: true
+  temperature: 0.0
+  top_p: 1.0
+aligned_window_bank:
+  ratios: [0.00, 0.02, 0.05, 0.10, 0.20, 0.30, 0.40]
+  window_tokens: 16
+  max_boundaries_per_example: 6
+  max_dense_replay_flip_rate: 0.05
+paths:
+  run_dir: runs/rasp_phase_b_aligned_bank/template_math_train
+  trajectories: runs/rasp_phase_b_aligned_bank/template_math_train/01_trajectories.jsonl
+  counterfactuals: runs/rasp_phase_b_aligned_bank/template_math_train/03_aligned_window_counterfactuals.jsonl
+  probe_dataset: runs/rasp_phase_b_aligned_bank/template_math_train/05_probe_dataset.jsonl
+  probe_hidden_states: runs/rasp_phase_b_aligned_bank/template_math_train/05_probe_hidden_states.pt
+  aligned_window_bank_summary: runs/rasp_phase_b_aligned_bank/template_math_train/06_aligned_window_bank_summary.json
+  aligned_window_bank_validation: runs/rasp_phase_b_aligned_bank/template_math_train/07_aligned_window_bank_validation.json

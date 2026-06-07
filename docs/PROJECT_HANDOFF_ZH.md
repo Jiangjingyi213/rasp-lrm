@@ -164,7 +164,27 @@ scripts/38_eval_rasp_train_v1_online_smoke.sh
 其中第 1 步的代码已经完成，入口为 `scripts/39_prepare_rasp_train_fair_benchmark.sh` 至
 `scripts/42_summarize_rasp_train_fair_benchmark.py`。它复用 v2.1 bank，使用共享 split manifest，
 并在同标签、同 controller、同 calibration/test 口径下比较五种 policy variant 与两种标签定义。
-服务器尚需执行完整的 3-seed 训练与评估，结果写入 `runs/rasp_train_fair_benchmark/`。
+完整 3-seed 训练与评估已经完成，结果写入 `runs/rasp_train_fair_benchmark/`。
+
+公平 benchmark 的主要结论：
+
+- raw-flip hidden-nonlinear 风险预测最强，ROC-AUC/PR-AUC 为 `0.8457/0.5914`；
+- 它的平均 controller 结果为 B15 `ratio/flip/unsafe = 0.1341/0.0585/0.0753`，
+  B20 为 `0.1695/0.0777/0.0965`；
+- uncertainty-linear 安全性更高，说明旧 bank 风险中存在大量通用不确定性/位置可预测信号；
+- monotonic unsafe 标签没有稳定优于 raw flip；
+- 所有 calibration split 均通过约束，但 seed 3 test 明显恶化，确认当前瓶颈是 calibration
+  distribution shift 与 bank/runtime 定义不一致，而不是继续扩大 policy 即可解决。
+
+因此下一步应保留 raw-flip hidden-nonlinear 与 uncertainty-linear 作为主要对照，增加分层或
+out-of-fold calibration，并开始重建 action 只作用一个 runtime window 的 aligned bank。旧
+RASP-Zero 尚未在共享 manifests 上重跑，不能声称公平 benchmark 已严格超过它。
+
+Phase B1 aligned window bank 代码已经实现。新采集器从原始 prompt 建立固定 ranking，dense
+重放到固定 16-token boundary，仅在下一个窗口施加 ratio，之后恢复 dense；同时记录局部 token
+divergence、窗口末 hidden drift 和最终 paired answer flip。入口为
+`scripts/44_collect_rasp_phase_b_aligned_bank.sh`。下一步先采集每个数据源 25 题 smoke 并检查
+所有 shard validation，再启动正式 bank。
 
 ## 5. 建议优先阅读
 

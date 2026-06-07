@@ -9,6 +9,7 @@ from src.data.format_prompt import build_assistant_continuation_prompt
 from src.pruning.mlp_pruner import mlp_intermediate_channel_mask
 from src.rasp.activation_ranker import keep_mask_from_ranking, rank_intermediate_neurons
 from src.rasp.mlp_runtime import RuntimeMaskedQwen3MLP
+from src.main_collect_aligned_window_bank import boundary_positions, token_divergence
 from src.segmentation.rule_segmenter import segment_text
 
 
@@ -108,6 +109,11 @@ class RaspZeroRuntimeTest(unittest.TestCase):
         with mlp_intermediate_channel_mask(model, [0], 0.50):
             self.assertTrue(torch.allclose(mlp(prefix), torch.tensor([[[16.0, 9.0, 4.0, 1.0], [16.0, 9.0, 4.0, 1.0]]])))
             self.assertTrue(torch.allclose(mlp(decode), torch.tensor([[[1.0, 4.0, 0.0, 0.0]]])))
+
+    def test_aligned_bank_uses_fixed_token_boundaries(self) -> None:
+        self.assertEqual(boundary_positions(50, 16, None), [0, 16, 32, 48])
+        self.assertEqual(boundary_positions(50, 16, 2), [0, 16])
+        self.assertAlmostEqual(token_divergence([1, 2, 3], [1, 4, 3]), 1 / 3)
 
 
 if __name__ == "__main__":
