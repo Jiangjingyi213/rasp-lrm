@@ -14,6 +14,12 @@ from src.probes.rasp_train_dataset import (
 )
 from src.main_train_rasp_train_router import problem_level_three_way_split, validate_equivalent_action_labels
 from src.rasp.budget_controller import RuntimeObservation
+from src.rasp.fair_benchmark import (
+    LinearActionRiskNet,
+    create_split_manifest,
+    indices_for_split,
+    monotonic_risk_envelope,
+)
 from src.rasp.train_controller import RaspTrainPolicyController
 from src.rasp.train_policy import (
     POLICY_FEATURE_SCHEMA,
@@ -86,6 +92,33 @@ class RaspTrainPolicyTest(unittest.TestCase):
         self.assertTrue(problem_sets[1].isdisjoint(problem_sets[2]))
         repeated = problem_level_three_way_split(rows, 0.4, 1)
         self.assertEqual((train, calibration, test), repeated[:3])
+
+    def test_fair_manifest_is_reusable_and_problem_disjoint(self) -> None:
+        rows = [
+            {"dataset": "gsm8k", "id": str(problem), "segment_id": segment}
+            for problem in range(20)
+            for segment in range(2)
+        ]
+        manifest = create_split_manifest(rows, seed=2)
+        split_indices = {
+            name: indices_for_split(rows, manifest, name)
+            for name in ("train", "calibration", "test")
+        }
+        split_problems = {
+            name: {(rows[index]["dataset"], rows[index]["id"]) for index in indices}
+            for name, indices in split_indices.items()
+        }
+        self.assertTrue(split_problems["train"].isdisjoint(split_problems["calibration"]))
+        self.assertTrue(split_problems["train"].isdisjoint(split_problems["test"]))
+        self.assertTrue(split_problems["calibration"].isdisjoint(split_problems["test"]))
+        self.assertEqual(manifest, create_split_manifest(rows, seed=2))
+
+    def test_fair_linear_ratio_only_and_monotonic_envelope(self) -> None:
+        model = LinearActionRiskNet(0)
+        logits = model(torch.empty(2, 0), torch.tensor(DEFAULT_RATIOS))
+        self.assertEqual(tuple(logits.shape), (2, len(DEFAULT_RATIOS)))
+        risks = monotonic_risk_envelope([[0.1, 0.4, 0.2, 0.8]])
+        self.assertEqual(risks, [[0.1, 0.4, 0.4, 0.8]])
 
     def test_shared_training_requires_equivalent_action_labels(self) -> None:
         row = {

@@ -77,7 +77,7 @@ RASP-Train v1 已完成离线实验，但弱于 matched-budget RASP-Zero：
 因此 v1 作为 oracle-ratio classification 失败消融保留，不进入在线实验。RASP-Train v2
 action-risk policy 已完成服务器训练和离线评估，但仍未超过 RASP-Zero，因此也暂不进入在线实验。
 
-v2.1 已完成代码实现，等待服务器训练与离线验证。当前设计：
+v2.1 已完成代码实现、服务器训练与离线验证。当前设计：
 
 - 不训练 Qwen3 本体，只训练轻量 ratio policy；
 - 风险输入仅包含 hidden state、entropy、confidence、position、dataset/domain 和 candidate ratio；
@@ -99,6 +99,26 @@ v2.1 已完成代码实现，等待服务器训练与离线验证。当前设计
 
 v1/v2 分别保留在 `runs/rasp_train_v1/` 与 `runs/rasp_train_v2/`。v2.1 默认写入
 `runs/rasp_train_v2_1/`，共享 checkpoint 为 `shared/rasp_train_policy.pt`。
+
+### RASP-Train v2.1 离线结果
+
+| 方法 | B15 ratio | B15 flip | B15 unsafe | B20 ratio | B20 flip | B20 unsafe |
+|---|---:|---:|---:|---:|---:|---:|
+| RASP-Train v2.1 | 0.1036 | 0.0603 | 0.0661 | 0.1224 | 0.0623 | 0.0720 |
+| RASP-Zero | 0.1372 | 0.0642 | 0.0778 | 0.1825 | 0.0856 | 0.1012 |
+
+v2.1 的共享风险模型 ROC-AUC/PR-AUC 为 `0.8406/0.6309`，monotonic violation rate 为 `0`，
+所有 fold-stable calibration constraints 均满足。相对 v2，v2.1 明显降低 flip/unsafe，但预算
+利用率只有 B15 `69.1%`、B20 `61.2%`，过于保守。
+
+诊断性 test threshold sweep 表明：
+
+- 在安全性不差于 RASP-Zero 时，B15 最大 ratio 仅 `0.1120`；
+- 在安全性不差于 RASP-Zero 时，B20 最大 ratio 仅 `0.1492`；
+- 与 RASP-Zero 接近的 ratio 下，v2.1 flip/unsafe 明显更高；
+- 没有任何 threshold 同时达到不低于 RASP-Zero 的 ratio 和不高于它的 flip/unsafe。
+
+因此 v2.1 修复了校准安全性，但仍未形成效率-安全 Pareto 优势，不进入在线 smoke。
 
 ### RASP-Train v2 离线结果
 
@@ -130,24 +150,21 @@ scripts/38_eval_rasp_train_v1_online_smoke.sh
 
 ## 4. 下一步
 
-在服务器运行 v2.1 离线链路：
+当前已完成系统瓶颈审计，详细见
+[`rasp_train_bottleneck_diagnosis_zh.md`](rasp_train_bottleneck_diagnosis_zh.md)。
 
-```bash
-export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
-mkdir -p logs
-nohup env CUDA_VISIBLE_DEVICES=0 PYTHON="$PYTHON" bash -c '
-set -e
-bash scripts/35_prepare_rasp_train_v1_data.sh
-bash scripts/36_train_rasp_train_v1.sh
-bash scripts/37_eval_rasp_train_v1_offline.sh
-' > logs/rasp_train_v2_1_offline.log 2>&1 &
-echo $! > logs/rasp_train_v2_1_offline.pid
-tail -f logs/rasp_train_v2_1_offline.log
-```
+下一步不应继续单纯调 threshold 或扩大 policy，而应先修复数据与评估协议：
 
-重点检查 `runs/rasp_train_v2_1/shared/13_rasp_train_metrics.json` 中
-`all_calibration_constraints_satisfied`，以及 B15/B20 独立 test 是否形成相对 RASP-Zero 的
-Pareto 优势。未通过前不运行在线 smoke。
+1. 建立共享 split manifest，做同 split、同标签、同 controller 的 linear/nonlinear 公平对照；
+2. 重建 action 只作用一个 16-token window、ranking 与 runtime 一致的 counterfactual bank；
+3. 同时记录窗口内 drift 与最终 answer flip，改善 credit assignment；
+4. 用 policy rollout 做一到两轮 state aggregation，覆盖剪枝后的状态分布；
+5. 在 aligned bank 上再比较 linear、nonlinear 与 RASP-Zero residual。
+
+其中第 1 步的代码已经完成，入口为 `scripts/39_prepare_rasp_train_fair_benchmark.sh` 至
+`scripts/42_summarize_rasp_train_fair_benchmark.py`。它复用 v2.1 bank，使用共享 split manifest，
+并在同标签、同 controller、同 calibration/test 口径下比较五种 policy variant 与两种标签定义。
+服务器尚需执行完整的 3-seed 训练与评估，结果写入 `runs/rasp_train_fair_benchmark/`。
 
 ## 5. 建议优先阅读
 

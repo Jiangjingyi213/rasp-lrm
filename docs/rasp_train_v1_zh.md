@@ -219,6 +219,61 @@ bash scripts/38_eval_rasp_train_v1_online_smoke.sh
 
 ## 8. 当前边界
 
+## 9. Phase A：公平 Benchmark
+
+已实现独立公平对照入口，用于判断当前瓶颈究竟来自特征、模型容量还是标签定义。该实验复用
+`runs/rasp_train_v2_1` 的现有 counterfactual bank，不重新采集模型输出。
+
+公平协议固定为：
+
+- 三个 seed 各自生成共享 problem-level `70/15/15` split manifest；
+- 所有方法统一使用 candidate `ratio` 与 `ratio²`；
+- 对比 `ratio-only`、`position`、`entropy/confidence`、hidden-linear、hidden-nonlinear；
+- 分别训练 raw `candidate_flipped` 与 monotonic `candidate_unsafe` 标签；
+- 所有预测统一做 ratio-risk monotonic envelope；
+- 所有方法使用同一个 causal prefix-budget controller 和 calibration/test split；
+- 最终报告三个 seed 的 ratio、flip、unsafe 均值与标准差。
+
+执行顺序：
+
+```bash
+bash scripts/39_prepare_rasp_train_fair_benchmark.sh
+bash scripts/40_train_rasp_train_fair_benchmark.sh
+bash scripts/41_eval_rasp_train_fair_benchmark.sh
+```
+
+三个 seed 可以分别占用三张 GPU 并行训练；policy 很小，没有必要占满八张卡：
+
+```bash
+mkdir -p logs
+nohup bash -c '
+set -euo pipefail
+bash scripts/39_prepare_rasp_train_fair_benchmark.sh
+pids=""
+for item in "0 1" "1 2" "2 3"; do
+  set -- ${item}
+  CUDA_VISIBLE_DEVICES="$1" FAIR_SEEDS="$2" bash scripts/40_train_rasp_train_fair_benchmark.sh \
+    > "logs/rasp_train_fair_seed_$2.log" 2>&1 &
+  pids="${pids} $!"
+done
+for pid in ${pids}; do wait "${pid}"; done
+bash scripts/41_eval_rasp_train_fair_benchmark.sh
+' > logs/rasp_train_fair_benchmark.log 2>&1 &
+echo $! > logs/rasp_train_fair_benchmark.pid
+```
+
+输出位于：
+
+```text
+runs/rasp_train_fair_benchmark/split_manifests/
+runs/rasp_train_fair_benchmark/seed_<n>/<label>/<variant>/
+runs/rasp_train_fair_benchmark/comparison_summary.csv
+```
+
+该阶段只解决离线比较协议不公平的问题。即使 hidden-nonlinear 在公平对照中胜出，也不能直接进入
+在线实验；下一阶段仍需修复 bank action persistence、ranking 与 runtime 不一致以及 rollout state
+distribution shift。
+
 - Bank state 来自 dense segment boundary，在线按 fixed token window 更新，仍有分布差异。
 - 在线剪枝会改变后续 hidden state，离线 risk prediction 不能完全消除 reasoning drift。
 - 当前只控制 MLP intermediate-channel ratio，尚未实现 attention/layer multi-module routing。
@@ -283,4 +338,30 @@ B15/B20 应共享同一风险模型，并增加跨 seed/cross-fitting calibratio
 - 候选风险只预测一次，不同 threshold/budget 仅重放 causal controller；
 - 离线评估与在线 controller 根据目标预算读取对应 threshold。
 
-v2.1 当前状态是“代码完成，等待服务器离线验证”，不是已通过方法。
+v2.1 当前状态是“代码与服务器离线验证完成，但未通过 Pareto 门槛”，不是已通过方法。
+
+## 11. v2.1 正式离线结果
+
+| 方法 | B15 ratio | B15 flip | B15 unsafe | B20 ratio | B20 flip | B20 unsafe |
+|---|---:|---:|---:|---:|---:|---:|
+| RASP-Train v2.1 | 0.1036 | 0.0603 | 0.0661 | 0.1224 | 0.0623 | 0.0720 |
+| RASP-Zero | 0.1372 | 0.0642 | 0.0778 | 0.1825 | 0.0856 | 0.1012 |
+
+共享模型指标：
+
+- ROC-AUC：`0.8406`；
+- PR-AUC：`0.6309`；
+- monotonic violation rate：`0`；
+- `all_calibration_constraints_satisfied=true`。
+
+v2.1 相比 v2 更安全，但预算利用率降至 B15 `69.1%`、B20 `61.2%`。Test threshold sweep
+显示，在 flip/unsafe 均不差于 RASP-Zero 时，最大 ratio 仅为 B15 `0.1120`、B20 `0.1492`；
+不存在支配 RASP-Zero 的 threshold 点。与 RASP-Zero 接近 ratio 时，v2.1 的风险反而更高。
+
+结论：移除预算伪相关和 fold-stable calibration 修复了安全性泛化，但 action-risk 排序能力仍不足。
+下一步应做同 split/同标签的 RASP-Zero 对照、raw-flip 与 monotonic-unsafe 标签消融，以及基于
+RASP-Zero score 的 residual/distillation；不应继续只调 threshold，也暂不运行在线 smoke。
+
+进一步审计发现，当前更上游的瓶颈包括 action horizon、neuron ranking、state distribution 和
+RASP-Zero split 公平性。完整诊断与解决顺序见
+[`rasp_train_bottleneck_diagnosis_zh.md`](rasp_train_bottleneck_diagnosis_zh.md)。
