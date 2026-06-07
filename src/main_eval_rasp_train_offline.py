@@ -16,11 +16,12 @@ from src.rasp.train_policy import (
     POLICY_FEATURE_SCHEMA,
     ActionRiskPolicyNet,
     causal_action_risk_indices,
+    threshold_for_budget,
 )
 from src.utils.io import ensure_dir, write_json, write_jsonl
 
 
-def _load_policy(checkpoint_path: str | Path) -> tuple[ActionRiskPolicyNet, list[float], float, dict]:
+def _load_policy(checkpoint_path: str | Path) -> tuple[ActionRiskPolicyNet, list[float], dict]:
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     metadata = dict(checkpoint.get("metadata", {}))
     if metadata.get("feature_schema") != POLICY_FEATURE_SCHEMA:
@@ -34,7 +35,6 @@ def _load_policy(checkpoint_path: str | Path) -> tuple[ActionRiskPolicyNet, list
     return (
         model,
         [float(value) for value in checkpoint["ratios"]],
-        float(metadata["calibrated_threshold"]),
         metadata,
     )
 
@@ -201,13 +201,13 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--risk-router-checkpoint")
     parser.add_argument("--risk-threshold", type=float, default=0.25)
-    parser.add_argument("--val-fraction", type=float, default=0.25, help="Ignored for v2 checkpoints")
-    parser.add_argument("--seed", type=int, default=1, help="Ignored for v2 checkpoints")
+    parser.add_argument("--val-fraction", type=float, default=0.25, help="Ignored for v2.1 checkpoints")
+    parser.add_argument("--seed", type=int, default=1, help="Ignored for v2.1 checkpoints")
     args = parser.parse_args()
 
     output_dir = ensure_dir(args.output_dir)
     dataset = RaspTrainPolicyDataset(args.dataset, args.hidden_states)
-    policy, ratios, threshold, metadata = _load_policy(args.policy_checkpoint)
+    policy, ratios, metadata = _load_policy(args.policy_checkpoint)
     if ratios != dataset.ratios:
         raise ValueError(f"policy ratios {ratios} differ from dataset ratios {dataset.ratios}")
     test_indices = _indices_for_problem_keys(dataset.rows, metadata["split_problem_keys"]["test"])
@@ -215,13 +215,24 @@ def main() -> None:
         raise ValueError("Policy checkpoint test split does not match this dataset")
     val_rows = [dataset.rows[index] for index in test_indices]
     val_hidden = dataset.hidden[torch.tensor(test_indices, dtype=torch.long)]
+    target_budgets = {round(float(row["target_budget"]), 8) for row in val_rows}
+    if len(target_budgets) != 1:
+        raise ValueError("Offline evaluation requires exactly one target budget per dataset")
+    target_budget = float(next(iter(target_budgets)))
+    threshold = threshold_for_budget(metadata, target_budget)
     device = torch.device("cpu")
     trained_indices, trained_risks = causal_action_risk_indices(
-        policy, val_rows, val_hidden, ratios, threshold, device
+        policy,
+        val_rows,
+        val_hidden,
+        ratios,
+        threshold,
+        device,
+        target_budget=target_budget,
     )
 
     selected_by_policy = {
-        "rasp_train_v2_action_risk": trained_indices,
+        "rasp_train_v2_1_shared_action_risk": trained_indices,
         "safe_oracle": _oracle_indices(val_rows, ratios),
         "offline_noncausal_entropy_budget": _score_order_budget_indices(
             val_rows, ratios, lambda row: float(row.get("entropy", 0.0))
@@ -261,7 +272,7 @@ def main() -> None:
                     ),
                     "candidate_predicted_risks": (
                         trained_risks[row_index]
-                        if name == "rasp_train_v2_action_risk"
+                        if name == "rasp_train_v2_1_shared_action_risk"
                         else None
                     ),
                 }
@@ -269,7 +280,8 @@ def main() -> None:
     write_json(
         output_dir / "12_rasp_train_offline_summary.json",
         {
-            "method": "rasp_train_v2_action_risk",
+            "method": "rasp_train_v2_1_shared_action_risk",
+            "target_budget": target_budget,
             "calibrated_threshold": threshold,
             "test_problem_count": len(
                 {(str(row.get("dataset") or "unknown"), str(row["id"])) for row in val_rows}

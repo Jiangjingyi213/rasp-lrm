@@ -67,20 +67,21 @@ GRIFFIN 和 FLAP 已形成可评估 baseline。LLM-Pruner 在 Qwen3 上即使轻
 
 因此，**RASP-Zero 当前定位为分析型 prototype**：用于证明问题、构造训练数据和提供 oracle，而不是论文最终方法。
 
-## 3. 当前阶段：RASP-Train v2
+## 3. 当前阶段：RASP-Train v2.1
 
 RASP-Train v1 已完成离线实验，但弱于 matched-budget RASP-Zero：
 
 - B15：ratio `0.1241`，flip rate `0.1023`；RASP-Zero 为 `0.0621`。
 - B20：ratio `0.1761`，flip rate `0.1368`；RASP-Zero 为 `0.0851`。
 
-因此 v1 作为 oracle-ratio classification 失败消融保留，不进入在线实验。当前已实现
-RASP-Train v2 action-risk policy，等待服务器重新训练和离线评估。
+因此 v1 作为 oracle-ratio classification 失败消融保留，不进入在线实验。RASP-Train v2
+action-risk policy 已完成服务器训练和离线评估，但仍未超过 RASP-Zero，因此也暂不进入在线实验。
 
-当前设计：
+v2.1 已完成代码实现，等待服务器训练与离线验证。当前设计：
 
 - 不训练 Qwen3 本体，只训练轻量 ratio policy；
-- 输入 hidden state、entropy、confidence、position、dataset/domain、target budget 和当前可用预算；
+- 风险输入仅包含 hidden state、entropy、confidence、position、dataset/domain 和 candidate ratio；
+- `target_budget/available_budget` 不进入风险网络，只由 causal controller 使用；
 - 对每个候选 ratio 输出 unsafe probability：
 
 ```text
@@ -90,13 +91,33 @@ RASP-Train v2 action-risk policy，等待服务器重新训练和离线评估。
 - 采用 action-conditioned multi-label risk learning；
 - loss 为 weighted BCE、ratio-risk monotonic penalty 和 safe/unsafe ranking loss；
 - 使用 problem-level 70/15/15 train/calibration/test；
-- calibration problems 自动选择 risk threshold，test problems 独立报告；
-- checkpoint 记录校准约束是否满足及所选阈值下的 ratio/flip/unsafe 指标；
+- B15/B20 使用同一个共享风险 checkpoint；
+- calibration problems 分别为 B15/B20 选择 threshold，并检查三折 problem-level 稳定性；
+- checkpoint 记录各预算阈值、总体约束和最差 fold 指标；
 - 在线由 calibrated threshold 与 causal prefix budget 共同选 ratio；
-- 分别训练 `RASP-Train-B15` 与 `RASP-Train-B20`；
 - 当前仍使用 logical MLP mask，只报告 activated-MLP proxy，不宣称真实硬件加速。
 
-v1 保留在 `runs/rasp_train_v1/`，v2 默认写入 `runs/rasp_train_v2/`。两者 checkpoint 不兼容。
+v1/v2 分别保留在 `runs/rasp_train_v1/` 与 `runs/rasp_train_v2/`。v2.1 默认写入
+`runs/rasp_train_v2_1/`，共享 checkpoint 为 `shared/rasp_train_policy.pt`。
+
+### RASP-Train v2 离线结果
+
+| 方法 | B15 ratio | B15 flip | B15 unsafe | B20 ratio | B20 flip | B20 unsafe |
+|---|---:|---:|---:|---:|---:|---:|
+| RASP-Train v2 | 0.1336 | 0.0778 | 0.0875 | 0.1641 | 0.0895 | 0.1051 |
+| RASP-Zero | 0.1372 | 0.0642 | 0.0778 | 0.1825 | 0.0856 | 0.1012 |
+
+v2 的 action-risk prediction 有有效信号：B15/B20 ROC-AUC 分别为 `0.8611/0.8551`，
+PR-AUC 为 `0.6628/0.6483`，monotonic violation rate 均为 `0`。但是独立 test 上：
+
+- B15 比 RASP-Zero 少剪 `0.0036`，flip 仍高 `0.0136`；
+- B20 比 RASP-Zero 少剪 `0.0184`，flip 仍高 `0.0039`；
+- calibration 到 test 存在约 `0.01-0.02` 的 flip/unsafe 泛化差距；
+- test 阈值扫描表明，更保守阈值只能通过明显降低 ratio 达到不差于 RASP-Zero，不能形成 Pareto 优势。
+
+因此当前结论是：v2 相对 v1 呈明显改善趋势，但两版 test split 不同，不能作严格逐项比较；
+v2 仍没有通过“相近 ratio 下优于 RASP-Zero”的离线门槛。另已确认 B15/B20 的全部
+`candidate_unsafe` 标签完全一致，进一步说明风险模型不应依赖预算字段或按预算分别训练。
 
 新增入口：
 
@@ -109,42 +130,24 @@ scripts/38_eval_rasp_train_v1_online_smoke.sh
 
 ## 4. 下一步
 
-在服务器 `rasp_qwen3` 环境中按顺序执行：
+在服务器运行 v2.1 离线链路：
 
 ```bash
 export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
-
 mkdir -p logs
 nohup env CUDA_VISIBLE_DEVICES=0 PYTHON="$PYTHON" bash -c '
 set -e
 bash scripts/35_prepare_rasp_train_v1_data.sh
 bash scripts/36_train_rasp_train_v1.sh
 bash scripts/37_eval_rasp_train_v1_offline.sh
-' > logs/rasp_train_v2_offline.log 2>&1 &
-echo $! > logs/rasp_train_v2_offline.pid
-tail -f logs/rasp_train_v2_offline.log
+' > logs/rasp_train_v2_1_offline.log 2>&1 &
+echo $! > logs/rasp_train_v2_1_offline.pid
+tail -f logs/rasp_train_v2_1_offline.log
 ```
 
-轻量 policy 训练只需要一张 GPU；不要并行占用八张卡。日志现在会逐 epoch 输出 calibration loss/AUC。
-
-首先检查离线结果：
-
-- `calibration_constraints_satisfied` 必须为 `true`，否则说明设定安全门槛在 calibration 上不可达；
-- RASP-Train 在相近平均 ratio 下是否比 RASP-Zero 更低 flip rate；
-- `unsafe_over_oracle_rate` 是否下降；
-- B=0.15 与 B=0.20 的安全性和预算利用率；
-- problem-level validation 上是否稳定。
-
-只有离线结果通过后，再执行：
-
-```bash
-bash scripts/38_eval_rasp_train_v1_online_smoke.sh
-```
-
-在线阶段先跑 GSM8K-20 与 MATH500-20，并重点检查 dense-correct 样本被剪错的数量，而不是只看总体 accuracy。
-
-在线脚本会自动运行 paired ratio-0 control，并在每个 policy run 下输出
-`14_paired_dense_comparison.json`。
+重点检查 `runs/rasp_train_v2_1/shared/13_rasp_train_metrics.json` 中
+`all_calibration_constraints_satisfied`，以及 B15/B20 独立 test 是否形成相对 RASP-Zero 的
+Pareto 优势。未通过前不运行在线 smoke。
 
 ## 5. 建议优先阅读
 

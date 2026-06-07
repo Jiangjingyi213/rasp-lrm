@@ -1,4 +1,4 @@
-# RASP-Train：从 Ratio Imitation v1 到 Action-Risk v2
+# RASP-Train：从 Ratio Imitation v1 到 Shared Action-Risk v2.1
 
 ## 1. Motivation 特征与在线判断的关系
 
@@ -31,6 +31,11 @@ RASP-Train v2:
   hidden + entropy + confidence + budget state + candidate ratio
   -> nonlinear action-risk prediction
   -> calibrated threshold + causal budget controller
+
+RASP-Train v2.1:
+  hidden + entropy + confidence + position + dataset + candidate ratio
+  -> shared budget-independent action-risk prediction
+  -> per-budget fold-stable threshold + causal budget controller
 ```
 
 Entropy 和 confidence 在 v2 中仍是辅助特征，主要信息来源仍是 hidden state。Activation summary
@@ -167,10 +172,10 @@ v1 结果保留在：
 runs/rasp_train_v1/
 ```
 
-v2 默认写入：
+v2.1 默认写入：
 
 ```text
-runs/rasp_train_v2/
+runs/rasp_train_v2_1/
 ```
 
 脚本名称暂时沿用 `v1`，避免大范围入口变更：
@@ -183,18 +188,17 @@ set -e
 bash scripts/35_prepare_rasp_train_v1_data.sh
 bash scripts/36_train_rasp_train_v1.sh
 bash scripts/37_eval_rasp_train_v1_offline.sh
-' > logs/rasp_train_v2_offline.log 2>&1 &
-echo $! > logs/rasp_train_v2_offline.pid
-tail -f logs/rasp_train_v2_offline.log
+' > logs/rasp_train_v2_1_offline.log 2>&1 &
+echo $! > logs/rasp_train_v2_1_offline.pid
+tail -f logs/rasp_train_v2_1_offline.log
 ```
 
 重点检查：
 
 ```text
-runs/rasp_train_v2/b15/13_rasp_train_metrics.json
-runs/rasp_train_v2/b15/offline_eval/12_rasp_train_offline_summary.csv
-runs/rasp_train_v2/b20/13_rasp_train_metrics.json
-runs/rasp_train_v2/b20/offline_eval/12_rasp_train_offline_summary.csv
+runs/rasp_train_v2_1/shared/13_rasp_train_metrics.json
+runs/rasp_train_v2_1/b15/offline_eval/12_rasp_train_offline_summary.csv
+runs/rasp_train_v2_1/b20/offline_eval/12_rasp_train_offline_summary.csv
 ```
 
 离线门槛：
@@ -203,7 +207,7 @@ runs/rasp_train_v2/b20/offline_eval/12_rasp_train_offline_summary.csv
 - conservative unsafe rate 同步下降；
 - 不能通过接近 ratio=0 换取低 flip；
 - calibration 与 test problems 严格隔离。
-- `calibration_constraints_satisfied` 为 `true`。
+- `all_calibration_constraints_satisfied` 为 `true`。
 
 离线通过后才运行：
 
@@ -219,3 +223,64 @@ bash scripts/38_eval_rasp_train_v1_online_smoke.sh
 - 在线剪枝会改变后续 hidden state，离线 risk prediction 不能完全消除 reasoning drift。
 - 当前只控制 MLP intermediate-channel ratio，尚未实现 attention/layer multi-module routing。
 - Logical mask 仍执行 dense projection，只能报告 activated-channel proxy，不能宣称 wall-clock speedup。
+
+## 9. v2 正式离线结果与结论
+
+服务器结果已同步至 `runs/rasp_train_v2/`。
+
+| 方法 | B15 ratio | B15 flip | B15 unsafe | B20 ratio | B20 flip | B20 unsafe |
+|---|---:|---:|---:|---:|---:|---:|
+| RASP-Train v2 | 0.1336 | 0.0778 | 0.0875 | 0.1641 | 0.0895 | 0.1051 |
+| RASP-Zero | 0.1372 | 0.0642 | 0.0778 | 0.1825 | 0.0856 | 0.1012 |
+
+风险模型本身有学习能力：
+
+- B15：ROC-AUC `0.8611`，PR-AUC `0.6628`；
+- B20：ROC-AUC `0.8551`，PR-AUC `0.6483`；
+- 两者 monotonic violation rate 均为 `0`；
+- calibration constraints 均满足。
+
+但默认 calibrated threshold 在独立 test 上发生安全性退化：
+
+- B15 calibration/test flip：`0.0576 -> 0.0778`；
+- B20 calibration/test flip：`0.0787 -> 0.0895`。
+
+诊断性 test threshold sweep 表明：
+
+- B15 在不差于 RASP-Zero 安全性的点只能达到 ratio `0.1262`；
+- B20 在不差于 RASP-Zero 安全性的点只能达到 ratio `0.1616`；
+- 与 RASP-Zero 接近的 ratio 下，v2 flip 明显更高。
+
+因此 v2 相对 v1 呈明显改善趋势，但两版 test split 不同，不能作严格逐项比较；v2 未形成
+相对 RASP-Zero 的 Pareto 优势，暂不运行在线 smoke。已经核对 B15/B20 的 3479 个
+state-action `candidate_unsafe` 标签完全一致，预算不应成为 unsafe risk 的输入或拆分训练依据。
+
+下一版应把 risk model 从：
+
+```text
+q(hidden, uncertainty, target_budget, available_budget, ratio)
+```
+
+改为更干净的：
+
+```text
+q(hidden, uncertainty, ratio)
+```
+
+unsafe risk 不应由预算决定；`target_budget/available_budget` 只留在 causal controller 中。
+B15/B20 应共享同一风险模型，并增加跨 seed/cross-fitting calibration 后重新离线验证。
+
+## 10. v2.1 实现状态
+
+上述修改已实现：
+
+- feature schema 更新为 budget-independent shared action risk；
+- `target_budget/available_budget` 已从风险网络输入移除；
+- B15/B20 标签在训练入口强制校验一致；
+- 只训练 `runs/rasp_train_v2_1/shared/rasp_train_policy.pt` 一个 checkpoint；
+- checkpoint 分别保存 B15/B20 calibrated threshold；
+- threshold calibration 增加 problem-level 三折稳定性约束，记录最差 fold flip/unsafe；
+- 候选风险只预测一次，不同 threshold/budget 仅重放 causal controller；
+- 离线评估与在线 controller 根据目标预算读取对应 threshold。
+
+v2.1 当前状态是“代码完成，等待服务器离线验证”，不是已通过方法。

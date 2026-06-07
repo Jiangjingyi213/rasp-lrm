@@ -122,7 +122,7 @@ def main() -> None:
     write_jsonl(trajectories_path, rows)
     summary = {
         "method": (
-            "rasp_train_runtime_v2"
+            "rasp_train_runtime_v2_1"
             if runtime_cfg.get("controller") == "rasp_train_policy"
             else "rasp_zero_runtime_v0"
         ),

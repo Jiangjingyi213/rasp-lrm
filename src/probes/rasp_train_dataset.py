@@ -26,8 +26,6 @@ def build_policy_features(
     entropy: float,
     confidence: float,
     position: float,
-    target_budget: float,
-    available_budget: float,
     dataset: str,
 ) -> torch.Tensor:
     dense_features = torch.tensor(
@@ -35,8 +33,6 @@ def build_policy_features(
             float(entropy),
             float(confidence),
             float(position),
-            float(target_budget),
-            float(available_budget),
         ],
         dtype=torch.float32,
     )
@@ -82,8 +78,6 @@ class RaspTrainPolicyDataset(Dataset):
             entropy=float(row.get("entropy", 0.0)),
             confidence=float(row.get("confidence", 0.0)),
             position=float(row.get("position", 0.0)),
-            target_budget=float(row["target_budget"]),
-            available_budget=float(row.get("available_budget_before_selection", row["target_budget"])),
             dataset=str(row.get("dataset") or "unknown"),
         )
         unsafe_values = row.get("candidate_unsafe", row["candidate_flipped"])

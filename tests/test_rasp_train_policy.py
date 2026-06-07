@@ -6,11 +6,21 @@ from pathlib import Path
 
 import torch
 
-from src.probes.rasp_train_dataset import DEFAULT_RATIOS, RaspTrainPolicyDataset, ratio_index
-from src.main_train_rasp_train_router import problem_level_three_way_split
+from src.probes.rasp_train_dataset import (
+    DEFAULT_RATIOS,
+    RaspTrainPolicyDataset,
+    build_policy_features,
+    ratio_index,
+)
+from src.main_train_rasp_train_router import problem_level_three_way_split, validate_equivalent_action_labels
 from src.rasp.budget_controller import RuntimeObservation
 from src.rasp.train_controller import RaspTrainPolicyController
-from src.rasp.train_policy import POLICY_FEATURE_SCHEMA, ActionRiskPolicyNet, action_risk_loss
+from src.rasp.train_policy import (
+    POLICY_FEATURE_SCHEMA,
+    ActionRiskPolicyNet,
+    action_risk_loss,
+    threshold_for_budget,
+)
 from src.utils.io import write_jsonl
 
 
@@ -49,6 +59,17 @@ class RaspTrainPolicyTest(unittest.TestCase):
             self.assertEqual(tuple(ratios.shape), (len(DEFAULT_RATIOS),))
             self.assertGreater(features.numel(), 4)
 
+    def test_risk_features_do_not_depend_on_budget(self) -> None:
+        common = {
+            "hidden_state": torch.zeros(4),
+            "entropy": 0.1,
+            "confidence": 0.9,
+            "position": 0.5,
+            "dataset": "gsm8k",
+        }
+        features = build_policy_features(**common)
+        self.assertEqual(features.numel(), 11)
+
     def test_three_way_split_keeps_problems_disjoint(self) -> None:
         rows = [
             {"dataset": "gsm8k", "id": str(problem), "segment_id": segment}
@@ -66,6 +87,27 @@ class RaspTrainPolicyTest(unittest.TestCase):
         repeated = problem_level_three_way_split(rows, 0.4, 1)
         self.assertEqual((train, calibration, test), repeated[:3])
 
+    def test_shared_training_requires_equivalent_action_labels(self) -> None:
+        row = {
+            "dataset": "gsm8k",
+            "id": "x",
+            "segment_id": 0,
+            "candidate_flipped": [False, True],
+            "candidate_unsafe": [False, True],
+        }
+        validate_equivalent_action_labels([row], [{**row, "target_budget": 0.2}])
+        with self.assertRaises(ValueError):
+            validate_equivalent_action_labels(
+                [row],
+                [{**row, "candidate_unsafe": [False, False]}],
+            )
+
+    def test_threshold_is_selected_by_controller_budget(self) -> None:
+        metadata = {"calibrated_thresholds": {"0.15": 0.3, "0.20": 0.4}}
+        self.assertAlmostEqual(threshold_for_budget(metadata, 0.15), 0.3)
+        with self.assertRaises(ValueError):
+            threshold_for_budget(metadata, 0.10)
+
     def test_action_risk_loss_is_finite_and_rewards_monotonic_risk(self) -> None:
         logits = torch.zeros(2, len(DEFAULT_RATIOS))
         unsafe_mask = torch.zeros(2, len(DEFAULT_RATIOS))
@@ -82,7 +124,7 @@ class RaspTrainPolicyTest(unittest.TestCase):
     def test_runtime_controller_respects_budget_and_cap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            dim = 13
+            dim = 11
             model = ActionRiskPolicyNet(dim, hidden_dim=8)
             checkpoint = {
                 "model": model.state_dict(),
@@ -91,7 +133,7 @@ class RaspTrainPolicyTest(unittest.TestCase):
                 "ratios": DEFAULT_RATIOS,
                 "metadata": {
                     "feature_schema": POLICY_FEATURE_SCHEMA,
-                    "calibrated_threshold": 0.5,
+                    "calibrated_thresholds": {"0.10": 0.5},
                 },
             }
             torch.save(checkpoint, root / "policy.pt")

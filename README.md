@@ -60,7 +60,7 @@ bash scripts/21_rasp_zero_offline_v2.sh
 See `docs/rasp_zero_offline_v2_zh.md` for the detailed Chinese experiment
 record and interpretation guide.
 
-The current trainable runtime-ratio prototype is RASP-Train v2 action-risk learning:
+The current trainable runtime-ratio prototype is RASP-Train v2.1 shared action-risk learning:
 
 ```bash
 bash scripts/35_prepare_rasp_train_v1_data.sh
@@ -68,13 +68,13 @@ bash scripts/36_train_rasp_train_v1.sh
 bash scripts/37_eval_rasp_train_v1_offline.sh
 ```
 
-It predicts risk for every candidate ratio, calibrates its threshold on
-problem-level calibration data, and reports offline results on separate test
-problems. It must pass offline validation before
+It trains one budget-independent risk model, calibrates separate B15/B20
+thresholds with problem-level fold-stability checks, and reports offline
+results on separate test problems. It must pass offline validation before
 `scripts/38_eval_rasp_train_v1_online_smoke.sh` is run. The
 online smoke includes a paired ratio-zero control and writes
-`14_paired_dense_comparison.json`. v2 outputs are written under
-`runs/rasp_train_v2/`; v1 remains under `runs/rasp_train_v1/`. See
+`14_paired_dense_comparison.json`. v2.1 outputs are written under
+`runs/rasp_train_v2_1/`; prior v1/v2 results remain unchanged. See
 `docs/rasp_train_v1_zh.md`.
 
 See `docs/baseline_evaluation.md` for the distinction between offline policy baselines and external pruned-model baselines such as LLM-Pruner/FLAP.

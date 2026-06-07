@@ -12,7 +12,22 @@ from src.probes.rasp_train_dataset import build_policy_features
 from src.rasp.safe_oracle import available_prefix_budget
 
 
-POLICY_FEATURE_SCHEMA = "hidden_entropy_confidence_position_target_available_dataset_v3_action_risk"
+POLICY_FEATURE_SCHEMA = "hidden_entropy_confidence_position_dataset_v4_shared_action_risk"
+
+
+def budget_key(value: float) -> str:
+    return f"{float(value):.2f}"
+
+
+def threshold_for_budget(metadata: dict[str, Any], target_budget: float) -> float:
+    thresholds = dict(metadata.get("calibrated_thresholds", {}))
+    key = budget_key(target_budget)
+    if key not in thresholds:
+        raise ValueError(
+            f"RASP-Train checkpoint has no calibrated threshold for budget {key}; "
+            f"available budgets: {sorted(thresholds)}"
+        )
+    return float(thresholds[key])
 
 
 class ActionRiskPolicyNet(nn.Module):
@@ -143,37 +158,49 @@ def _problem_sequences(rows: list[dict[str, Any]]) -> list[list[int]]:
 
 
 @torch.no_grad()
-def causal_action_risk_indices(
+def predict_action_risks(
     model: ActionRiskPolicyNet,
     rows: list[dict[str, Any]],
     hidden: torch.Tensor,
     ratios: list[float],
-    threshold: float,
     device: torch.device,
-    *,
-    default_max_ratio: float | None = None,
-) -> tuple[list[int], list[list[float]]]:
+) -> list[list[float]]:
     model.eval()
-    selected = [0] * len(rows)
     risks: list[list[float]] = [[] for _ in rows]
     ratio_tensor = torch.tensor(ratios, dtype=torch.float32, device=device).unsqueeze(0)
+    for row_index, row in enumerate(rows):
+        features = build_policy_features(
+            hidden[row_index],
+            entropy=float(row.get("entropy", 0.0)),
+            confidence=float(row.get("confidence", 0.0)),
+            position=float(row.get("position", 0.0)),
+            dataset=str(row.get("dataset") or "unknown"),
+        ).to(device)
+        probabilities = torch.sigmoid(model(features.unsqueeze(0), ratio_tensor)).squeeze(0).cpu().tolist()
+        risks[row_index] = [float(value) for value in probabilities]
+    return risks
+
+
+def causal_action_risk_indices_from_risks(
+    rows: list[dict[str, Any]],
+    risks: list[list[float]],
+    ratios: list[float],
+    threshold: float,
+    *,
+    target_budget: float | None = None,
+    default_max_ratio: float | None = None,
+) -> list[int]:
+    if len(rows) != len(risks):
+        raise ValueError("Rows and predicted risks must have matching lengths")
+    selected = [0] * len(rows)
     max_ratio = max(ratios) if default_max_ratio is None else float(default_max_ratio)
     for sequence in _problem_sequences(rows):
         history: list[float] = []
         for row_index in sequence:
             row = rows[row_index]
-            available = available_prefix_budget(float(row["target_budget"]), history)
-            features = build_policy_features(
-                hidden[row_index],
-                entropy=float(row.get("entropy", 0.0)),
-                confidence=float(row.get("confidence", 0.0)),
-                position=float(row.get("position", 0.0)),
-                target_budget=float(row["target_budget"]),
-                available_budget=available,
-                dataset=str(row.get("dataset") or "unknown"),
-            ).to(device)
-            probabilities = torch.sigmoid(model(features.unsqueeze(0), ratio_tensor)).squeeze(0).cpu().tolist()
-            risks[row_index] = [float(value) for value in probabilities]
+            budget = float(row["target_budget"]) if target_budget is None else float(target_budget)
+            available = available_prefix_budget(budget, history)
+            probabilities = risks[row_index]
             allowed = [
                 index
                 for index, ratio in enumerate(ratios)
@@ -184,17 +211,51 @@ def causal_action_risk_indices(
             selected_index = max(allowed, key=lambda index: ratios[index]) if allowed else 0
             selected[row_index] = selected_index
             history.append(float(ratios[selected_index]))
+    return selected
+
+
+@torch.no_grad()
+def causal_action_risk_indices(
+    model: ActionRiskPolicyNet,
+    rows: list[dict[str, Any]],
+    hidden: torch.Tensor,
+    ratios: list[float],
+    threshold: float,
+    device: torch.device,
+    *,
+    target_budget: float | None = None,
+    default_max_ratio: float | None = None,
+) -> tuple[list[int], list[list[float]]]:
+    risks = predict_action_risks(model, rows, hidden, ratios, device)
+    selected = causal_action_risk_indices_from_risks(
+        rows,
+        risks,
+        ratios,
+        threshold,
+        target_budget=target_budget,
+        default_max_ratio=default_max_ratio,
+    )
     return selected, risks
 
 
-def selection_metrics(selected: list[int], rows: list[dict[str, Any]], ratios: list[float]) -> dict[str, float]:
+def selection_metrics(
+    selected: list[int],
+    rows: list[dict[str, Any]],
+    ratios: list[float],
+    *,
+    target_budget: float | None = None,
+) -> dict[str, float]:
     chosen_ratios = [float(ratios[index]) for index in selected]
     flips = [bool(row["candidate_flipped"][index]) for row, index in zip(rows, selected)]
     unsafe = [
         bool(row.get("candidate_unsafe", row["candidate_flipped"])[index])
         for row, index in zip(rows, selected)
     ]
-    target = sum(float(row["target_budget"]) for row in rows) / max(1, len(rows))
+    target = (
+        sum(float(row["target_budget"]) for row in rows) / max(1, len(rows))
+        if target_budget is None
+        else float(target_budget)
+    )
     average = sum(chosen_ratios) / max(1, len(chosen_ratios))
     return {
         "average_selected_ratio": average,
@@ -208,14 +269,16 @@ def checkpoint_metadata(
     *,
     ratios: list[float],
     best: dict[str, Any],
-    calibrated_threshold: float,
+    calibrated_thresholds: dict[str, float],
     split_problem_keys: dict[str, list[list[str]]],
 ) -> dict[str, Any]:
     return {
-        "method": "rasp_train_v2_action_risk",
+        "method": "rasp_train_v2_1_shared_action_risk",
         "feature_schema": POLICY_FEATURE_SCHEMA,
         "ratios": [float(value) for value in ratios],
-        "calibrated_threshold": float(calibrated_threshold),
+        "calibrated_thresholds": {
+            str(key): float(value) for key, value in calibrated_thresholds.items()
+        },
         "split_problem_keys": split_problem_keys,
         "best": best,
     }

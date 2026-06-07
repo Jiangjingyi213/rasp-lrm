@@ -10,7 +10,7 @@ import torch
 from src.probes.rasp_train_dataset import build_policy_features
 from src.rasp.budget_controller import RuntimeObservation, conservative_ratio_cap
 from src.rasp.safe_oracle import available_prefix_budget
-from src.rasp.train_policy import POLICY_FEATURE_SCHEMA, ActionRiskPolicyNet
+from src.rasp.train_policy import POLICY_FEATURE_SCHEMA, ActionRiskPolicyNet, threshold_for_budget
 
 
 @dataclass
@@ -49,7 +49,7 @@ class RaspTrainPolicyController:
         self._model.load_state_dict(checkpoint["model"])
         self._model.eval()
         if self.risk_threshold is None:
-            self.risk_threshold = float(metadata["calibrated_threshold"])
+            self.risk_threshold = threshold_for_budget(metadata, self.target_average_ratio)
         if self.default_max_ratio is None:
             self.default_max_ratio = max(self._ratios)
 
@@ -82,8 +82,6 @@ class RaspTrainPolicyController:
             entropy=float(observation.entropy),
             confidence=float(observation.confidence),
             position=min(1.0, observation.generated_tokens / max(1, self.max_new_tokens)),
-            target_budget=float(self.target_average_ratio),
-            available_budget=available_budget,
             dataset=self.dataset,
         )
         with torch.no_grad():
