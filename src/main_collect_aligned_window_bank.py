@@ -146,6 +146,7 @@ def main() -> None:
             "counterfactual_rows": len(rows),
             "ratios": ratios,
             "window_tokens": window_tokens,
+            "configured_max_boundaries_per_example": max_boundaries,
             "action_scope": "single_fixed_window_then_dense",
             "ranking_scope": "initial_prompt_prefill_fixed",
             "boundary_token_sources": sorted({row["boundary_token_source"] for row in rows}),

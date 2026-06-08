@@ -420,3 +420,14 @@ bash scripts/44_collect_rasp_phase_b_aligned_bank.sh
 只有所有 `runs/rasp_phase_b_aligned_bank/*/07_aligned_window_bank_validation.json` 均为 `status=ok`，
 且 dense replay flip rate 可接受后，才扩大正式 bank，并进入 Phase B2 的 aligned-bank policy
 训练与 out-of-fold calibration。
+
+Phase B1 smoke 已完成并通过：10/10 shard 为 `status=ok`，dense replay flip rate 为 `0`。
+38 个 dense-correct problems 产生 228 个 fixed-window boundaries；非零动作最终 flip rate 为
+`3.51%`，而 token divergence 与 hidden drift 随 ratio 明显增长。说明 aligned bank 语义正确，
+但最终 flip 标签稀疏，Phase B2 必须联合使用短期 drift 辅助目标。下一步先进行每数据源 100 题、
+每题 12 个窗口的中型采集，而不是立即盲目启动 500 题全集。
+
+中型采集已完成并通过 20/20 shard validation：164 个 dense-correct problems、984 个 boundaries、
+6888 条 counterfactual rows，非零动作正例率为 `4.00%`。但实际仍只采到前 6 个窗口，原因是旧
+断点续跑逻辑未检查 validation 与新 max-boundary 配置是否匹配。该逻辑已经修复；下一步复用现有
+dense trajectories 重采 12-window bank，再进入 Phase B2。

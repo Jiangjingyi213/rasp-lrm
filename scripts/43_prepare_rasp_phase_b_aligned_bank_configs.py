@@ -22,6 +22,7 @@ def main() -> None:
     total = int(os.environ.get("RASP_PHASE_B_LIMIT_PER_SOURCE", "500"))
     shard_size = int(os.environ.get("RASP_PHASE_B_SHARD_SIZE", "25"))
     gpu_count = int(os.environ.get("RASP_PHASE_B_GPU_COUNT", "8"))
+    max_boundaries = int(os.environ.get("RASP_PHASE_B_MAX_BOUNDARIES_PER_EXAMPLE", "12"))
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     manifest = []
     gpu = 0
@@ -32,6 +33,10 @@ def main() -> None:
             cfg = copy.deepcopy(base)
             cfg["data"]["limit"] = min(shard_size, total - offset)
             cfg["data"]["offset"] = offset
+            if max_boundaries > 0:
+                cfg["aligned_window_bank"]["max_boundaries_per_example"] = max_boundaries
+            else:
+                cfg["aligned_window_bank"].pop("max_boundaries_per_example", None)
             run_dir = f"{RUN_ROOT}/{source}_s{shard:02d}"
             cfg["paths"] = {
                 "run_dir": run_dir,

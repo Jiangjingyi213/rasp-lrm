@@ -186,6 +186,20 @@ divergence、窗口末 hidden drift 和最终 paired answer flip。入口为
 `scripts/44_collect_rasp_phase_b_aligned_bank.sh`。下一步先采集每个数据源 25 题 smoke 并检查
 所有 shard validation，再启动正式 bank。
 
+Phase B1 smoke 已完成：10/10 shard 均通过严格 validation，dense replay flip 为 `0`，共得到
+38 个 dense-correct problems、228 个 fixed-window boundaries 和 1596 条 counterfactual rows。
+非零动作最终 flip rate 为 `3.51%`，但 window divergence 和 hidden drift 随 ratio 清晰增长，
+证明短窗口 action 与辅助 drift 标签有效。由于最终 flip 稀疏，Phase B2 应使用 raw flip + drift
+多任务训练。Smoke 只覆盖前 6 个窗口，下一步建议先采集每数据源 100 题、每题前 12 个窗口，
+验证后半程分布与采集成本后再扩大到 500 题。
+
+每数据源 100 题的中型采集已经完成，20/20 shard 均通过 validation，得到 164 个 dense-correct
+problems、984 个 boundaries、6888 条 rows，非零动作 final-flip 正例率为 `4.00%`。但本次实际
+仍只覆盖前 6 个窗口：旧 worker 只要发现 `status=ok` 就跳过，没有确认 validation 是否匹配新
+配置。该问题已修复，worker 现在会在 max-boundary 配置改变时复用已有 dense trajectories 并重采
+counterfactual。下一步先在现有 100 题上补齐 12-window bank，再决定扩到 500 题和进行正式
+Phase B2 训练；多任务模型代码可并行开发，但不能用当前前 96-token bank 得出正式结论。
+
 ## 5. 建议优先阅读
 
 - Motivation 全链路与专业概念解释：  

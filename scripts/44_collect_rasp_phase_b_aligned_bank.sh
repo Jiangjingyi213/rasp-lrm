@@ -20,9 +20,12 @@ for ((gpu = 0; gpu < GPU_COUNT; gpu++)); do
       [[ -n \"\${config}\" ]] || continue
       run_dir=\"\$(${PYTHON} -c 'import sys; from src.utils.io import read_yaml; print(read_yaml(sys.argv[1])[\"paths\"][\"run_dir\"])' \"\${config}\")\"
       validation=\"\${run_dir}/07_aligned_window_bank_validation.json\"
-      if [[ -f \"\${validation}\" ]] && grep -q '\"status\": \"ok\"' \"\${validation}\"; then
-        echo \"SKIP validated \${run_dir}\"
-        continue
+      if [[ -f \"\${validation}\" ]]; then
+        if ${PYTHON} -c 'import sys; from src.utils.io import read_json, read_yaml; c=read_yaml(sys.argv[1])[\"aligned_window_bank\"]; v=read_json(sys.argv[2]); raise SystemExit(0 if v.get(\"status\")==\"ok\" and v.get(\"configured_window_tokens\")==c.get(\"window_tokens\",16) and v.get(\"configured_max_boundaries_per_example\")==c.get(\"max_boundaries_per_example\") else 1)' \"\${config}\" \"\${validation}\"; then
+          echo \"SKIP validated matching config \${run_dir}\"
+          continue
+        fi
+        echo \"RECOLLECT config changed \${run_dir}\"
       fi
       echo \"START \${config}\"
       trajectories=\"\${run_dir}/01_trajectories.jsonl\"

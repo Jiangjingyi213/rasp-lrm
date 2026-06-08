@@ -70,6 +70,8 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         "ratio_counts": dict(sorted(ratio_counts.items())),
         "dense_control_paired_flip_rate": dense_flip_rate,
         "dense_replay_flip_rate_from_baseline": replay_flip_rate,
+        "configured_window_tokens": int(cfg.get("window_tokens", 16)),
+        "configured_max_boundaries_per_example": cfg.get("max_boundaries_per_example"),
         "action_scope": "single_fixed_window_then_dense",
         "ranking_scope": "initial_prompt_prefill_fixed",
         "boundary_token_sources": token_sources,

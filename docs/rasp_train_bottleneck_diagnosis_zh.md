@@ -188,6 +188,90 @@ bash scripts/44_collect_rasp_phase_b_aligned_bank.sh
 确认所有 shard validation 为 `status=ok`、ratio-0 control 稳定且局部 drift 字段有效后，再将
 `RASP_PHASE_B_LIMIT_PER_SOURCE` 提升到 `500` 正式采集。
 
+#### Phase B1 Smoke 结果
+
+每个数据源 25 题的 smoke 已完成。10/10 个 shard validation 均为 `status=ok`：
+
+```text
+dense-correct problems = 38 / 50
+fixed-window boundaries = 228
+counterfactual rows = 1596
+dense replay flip rate = 0
+所有 action duration = 16 tokens
+所有 boundary 使用原始 generated_token_ids
+```
+
+非零 ratio 的 paired final-answer flip rate 为 `48 / 1368 = 3.51%`，明显低于旧永久干预 bank，
+符合短窗口动作风险更低的预期。按 ratio 汇总：
+
+| Ratio | Flip | Window token divergence | Hidden L2 drift |
+|---:|---:|---:|---:|
+| 0.02 | 0.0088 | 0.0779 | 24.99 |
+| 0.05 | 0.0175 | 0.1058 | 35.45 |
+| 0.10 | 0.0175 | 0.1395 | 46.82 |
+| 0.20 | 0.0395 | 0.2385 | 71.38 |
+| 0.30 | 0.0658 | 0.3353 | 94.12 |
+| 0.40 | 0.0614 | 0.3983 | 109.76 |
+
+局部 divergence 与 hidden drift 随 ratio 清晰增长，说明 aligned action 生效且辅助标签有信息量。
+但最终 flip 标签稀疏并存在约 `8.3%` boundary-level 非单调，因此 Phase B2 应采用 raw flip +
+连续 drift 多任务目标，而不能只训练最终 flip BCE。
+
+Smoke 只覆盖每题前 6 个窗口，即前 96 tokens。正式采集必须显式决定覆盖范围：
+
+```bash
+# 建议先覆盖前 12 个窗口，即 192 tokens；设为 0 表示覆盖完整 dense trajectory。
+export RASP_PHASE_B_MAX_BOUNDARIES_PER_EXAMPLE=12
+```
+
+由于正式 aligned bank 成本远高于旧 bank，建议先以每数据源 `100` 题、12 个窗口进行中型采集，
+检查后半程标签和运行成本，再扩大到 `500` 题。
+
+#### Phase B1 中型采集结果与配置修复
+
+每数据源 100 题的中型采集已经完成，20/20 shard 严格 validation 均通过：
+
+```text
+dense trajectories = 200
+dense-correct problems = 164
+fixed-window boundaries = 984
+counterfactual rows = 6888
+dense replay flip rate = 0
+nonzero-action positives = 236 / 5904 = 4.00%
+positive problems = 60
+positive boundaries = 138
+```
+
+相比 smoke，正例率从 `3.51%` 上升到 `4.00%`，ratio 与 token divergence/hidden L2 drift 的
+Pearson correlation 分别为 `0.375/0.436`。但 drift 与最终 flip 的线性相关都只有约 `0.11`，
+因此 drift 适合作为辅助多任务目标，不能直接替代 final flip 标签。
+
+本次中型采集实际仍只覆盖 boundary `0-5`，即前 96 tokens，没有按计划覆盖 12 个窗口。数据长度
+不是原因：全部 164 个 dense-correct trajectory 均超过 96 tokens，其中 140 个超过 192 tokens。
+这是旧断点续跑逻辑只检查 `status=ok`、未检查当前配置是否改变导致的。
+
+该问题已经修复：
+
+- 默认 `RASP_PHASE_B_MAX_BOUNDARIES_PER_EXAMPLE` 从 `6` 改为 `12`；
+- validation 记录 configured window/max-boundary 参数；
+- worker 仅在已有 validation 与当前配置完全匹配时跳过；
+- 配置变化时复用已有 dense trajectories，仅重采 counterfactual bank。
+
+因此下一步应在当前 100 题数据上重采 12-window bank，不需要重新生成 dense trajectories：
+
+```bash
+export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
+export RASP_PHASE_B_LIMIT_PER_SOURCE=100
+export RASP_PHASE_B_SHARD_SIZE=10
+export RASP_PHASE_B_GPU_COUNT=8
+export RASP_PHASE_B_MAX_BOUNDARIES_PER_EXAMPLE=12
+bash scripts/44_collect_rasp_phase_b_aligned_bank.sh
+```
+
+新 worker 会输出 `RECOLLECT config changed` 并复用 `01_trajectories.jsonl`。12-window 重采完成后，
+再决定是否扩到 500 题以及正式进入 Phase B2。多任务训练代码可以并行开发，但当前前 96-token
+bank 只用于诊断，不能作为正式 Phase B2 方法结论。
+
 ### Phase C：覆盖 policy-induced states
 
 第一轮 window bank 来自 dense trajectory。训练初版 policy 后，再从 policy rollout 中采集状态并加入

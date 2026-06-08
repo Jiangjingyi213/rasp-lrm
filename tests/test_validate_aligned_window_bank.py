@@ -37,7 +37,11 @@ class ValidateAlignedWindowBankTest(unittest.TestCase):
             (root / "hidden.pt").touch()
             summary = validate_aligned_window_bank(
                 {
-                    "aligned_window_bank": {"ratios": [0.0, 0.1]},
+                    "aligned_window_bank": {
+                        "ratios": [0.0, 0.1],
+                        "window_tokens": 16,
+                        "max_boundaries_per_example": 12,
+                    },
                     "paths": {
                         "counterfactuals": str(root / "counterfactuals.jsonl"),
                         "probe_dataset": str(root / "probe.jsonl"),
@@ -47,6 +51,7 @@ class ValidateAlignedWindowBankTest(unittest.TestCase):
             )
         self.assertEqual(summary["status"], "ok")
         self.assertEqual(summary["boundaries"], 1)
+        self.assertEqual(summary["configured_max_boundaries_per_example"], 12)
 
 
 if __name__ == "__main__":
