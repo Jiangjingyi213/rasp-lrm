@@ -11,6 +11,7 @@ from src.rasp.phase_b2 import (
     PhaseB2MultiTaskNet,
     indices_for_split,
     predict_phase_b2,
+    validate_phase_b2_manifest,
 )
 from src.rasp.train_policy import causal_action_risk_indices_from_risks, selection_metrics
 from src.utils.io import read_json, write_json
@@ -30,6 +31,7 @@ def main() -> None:
     if metadata.get("schema") != PHASE_B2_SCHEMA or int(metadata["seed"]) != int(manifest["seed"]):
         raise ValueError("Phase B2 checkpoint and manifest do not match")
     dataset = PhaseB2Dataset(args.dataset, args.hidden_states, metadata["feature_set"])
+    validate_phase_b2_manifest(dataset.rows, manifest, int(metadata["seed"]))
     indices = indices_for_split(dataset.rows, manifest, "test")
     rows = [dataset.rows[index] for index in indices]
     hidden = dataset.hidden[torch.tensor(indices)]
@@ -44,6 +46,8 @@ def main() -> None:
         "schema": PHASE_B2_SCHEMA,
         "variant": metadata["variant"],
         "seed": metadata["seed"],
+        "checkpoint_selection_split": metadata.get("checkpoint_selection_split"),
+        "split_problem_counts": metadata.get("split_problem_counts"),
         "test_problems": len({(row["dataset"], row["id"]) for row in rows}),
         "test_boundaries": len(rows),
         "risk_roc_auc": float(roc_auc_score(labels, scores)),

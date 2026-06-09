@@ -2,8 +2,8 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-runs/rasp_phase_b2}"
-VARIANTS="${PHASE_B2_VARIANTS:-hidden_multitask hidden_flip_only uncertainty_multitask}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-runs/rasp_phase_b2_v2}"
+VARIANTS="${PHASE_B2_VARIANTS:-hidden_multitask hidden_flip_only uncertainty_multitask uncertainty_flip_only position_flip_only ratio_only_flip_only}"
 
 for seed in ${PHASE_B2_SEEDS:-1 2 3}; do
   for variant in ${VARIANTS}; do

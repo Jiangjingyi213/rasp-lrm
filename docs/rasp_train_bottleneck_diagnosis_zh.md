@@ -395,6 +395,85 @@ bash scripts/47_eval_rasp_phase_b2.sh
 3. calibration constraints 是否跨三 seed 全部满足；
 4. B15/B20 在保持低 flip 时能否获得有效 ratio，而不是退化到接近 dense。
 
+### Phase B2 三 seed 结果
+
+`runs/rasp_phase_b2/` 已完整产生 9 个 checkpoint、9 个 train metrics 和 9 个 test eval。数据为
+164 个问题、1901 个完整 16-token boundary、11406 个非零 action rows，其中 558 个 final-flip
+正例。
+
+| variant | ROC-AUC | PR-AUC | B15 ratio / flip | B20 ratio / flip |
+|---|---:|---:|---:|---:|
+| hidden-flip-only | 0.6099 | 0.0694 | 0.0923 / 0.0180 | 0.1647 / 0.0236 |
+| hidden-multitask | 0.6202 | 0.0736 | 0.0826 / 0.0202 | 0.1659 / 0.0247 |
+| uncertainty-multitask | 0.6450 | 0.0802 | 0.0808 / 0.0236 | 0.1195 / 0.0257 |
+
+结论不是“多任务成功”，而是：
+
+1. drift 辅助目标只给 hidden 风险排序带来小幅提升，没有稳定改善 controller；
+2. uncertainty-only 的平均风险排序最好，尚无证据证明 hidden state 提供稳定额外信息；
+3. hidden-flip-only 当前 controller trade-off 最好，但 seed 间方差过大。seed 2 在 B15/B20
+   的 test flip 为 `0.0407/0.0441`，而 seed 1/3 明显更低；
+4. 无风险限制、只耗尽 causal budget 的 test baseline，B15/B20 平均 flip 约为
+   `0.0446/0.0513`；安全 oracle 几乎可在零 flip 下用满预算，说明 action 空间存在潜力，但当前
+   policy 尚未学会稳定识别安全 action。
+
+所有 calibration constraints 都显示满足，但这不表示 test constraints 满足。更重要的是，当前
+训练循环每个 epoch 使用 calibration loss 选择 best checkpoint，之后又用同一 calibration split
+选择 threshold，导致 calibration reuse。下一轮执行顺序必须是：
+
+1. manifest 增加独立 validation split，validation 只用于 checkpoint selection；
+2. calibration 只用于 threshold / risk constraint，test 始终只评估一次；
+3. 增加 position-only、ratio-only、RASP-Zero residual 对照；
+4. 无泄漏重跑三 seed 后，再决定是否扩大 bank 或进入 Phase C。
+
+在完成上述修复前，不进入在线 rollout。若无泄漏实验中 hidden 仍不能稳定超过简单特征，应触发
+停止条件，接受当前 hidden signal 不足。
+
+### Phase B2 v2 无泄漏重跑实现
+
+上述修复已经实现，默认输出目录改为 `runs/rasp_phase_b2_v2/`，不会覆盖第一轮诊断结果：
+
+- manifest schema 升级为 `rasp_phase_b2_multitask_v2`；
+- split 改为 problem-level、dataset/positive 分层的 `60/10/15/15`
+  train/validation/calibration/test；当前 164 题实际得到 `97/17/25/25`；
+- validation 只负责 best-checkpoint selection；
+- calibration 只负责 controller threshold 与 problem-fold constraint；
+- test 只在训练和校准完成后评估；
+- 新增 `ratio_only_flip_only`、`position_flip_only`、`uncertainty_flip_only`，用于判断 hidden 与
+  drift 辅助目标是否真的超过简单特征。
+
+aligned bank 当前没有保存可直接复用的 RASP-Zero score，因此本轮不伪造 residual 对照。若要做
+RASP-Zero residual，必须先定义并保存与 aligned boundary 一致的 zero-score。
+
+服务器运行：
+
+```bash
+export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
+bash scripts/45_prepare_rasp_phase_b2_data.sh
+
+mkdir -p logs
+variants=(
+  hidden_multitask hidden_flip_only
+  uncertainty_multitask uncertainty_flip_only
+  position_flip_only ratio_only_flip_only
+)
+for i in "${!variants[@]}"; do
+  variant="${variants[$i]}"
+  nohup env CUDA_VISIBLE_DEVICES="$i" PHASE_B2_VARIANTS="$variant" PHASE_B2_SEEDS="1 2 3" \
+    bash scripts/46_train_rasp_phase_b2.sh \
+    > "logs/rasp_phase_b2_v2_${variant}.log" 2>&1 &
+done
+```
+
+六个日志均完成后执行：
+
+```bash
+bash scripts/47_eval_rasp_phase_b2.sh
+```
+
+只有 `comparison_summary.csv` 中 `all_checkpoints_selected_on_validation=True`，且 hidden 在三 seed
+上稳定超过 ratio/position/uncertainty 基线并形成 controller Pareto 增益，才进入 Phase C。
+
 ### Phase C：覆盖 policy-induced states
 
 第一轮 window bank 来自 dense trajectory。训练初版 policy 后，再从 policy rollout 中采集状态并加入

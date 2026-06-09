@@ -13,7 +13,7 @@ METRICS = ["average_selected_ratio", "budget_utilization", "flip_rate"]
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", default="runs/rasp_phase_b2")
+    parser.add_argument("--root", default="runs/rasp_phase_b2_v2")
     args = parser.parse_args()
     root = Path(args.root)
     raw, grouped = [], defaultdict(list)
@@ -27,6 +27,7 @@ def main() -> None:
                 "budget": budget,
                 "risk_roc_auc": result["risk_roc_auc"],
                 "risk_pr_auc": result["risk_pr_auc"],
+                "checkpoint_selection_split": result.get("checkpoint_selection_split"),
                 **metrics,
             }
             raw.append(row)
@@ -42,6 +43,9 @@ def main() -> None:
             output[f"{metric}_std"] = statistics.stdev(values) if len(values) > 1 else 0.0
         output["all_calibration_constraints_satisfied"] = all(
             bool(row["calibration_constraints_satisfied"]) for row in rows
+        )
+        output["all_checkpoints_selected_on_validation"] = all(
+            row.get("checkpoint_selection_split") == "validation" for row in rows
         )
         summary.append(output)
     for name, rows in (("comparison_raw.csv", raw), ("comparison_summary.csv", summary)):

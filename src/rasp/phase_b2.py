@@ -15,11 +15,14 @@ from src.rasp.train_policy import causal_action_risk_indices_from_risks, selecti
 from src.utils.io import read_jsonl
 
 
-PHASE_B2_SCHEMA = "rasp_phase_b2_multitask_v1"
+PHASE_B2_SCHEMA = "rasp_phase_b2_multitask_v2"
 PHASE_B2_VARIANTS = {
     "hidden_multitask": ("hidden", True),
     "hidden_flip_only": ("hidden", False),
     "uncertainty_multitask": ("uncertainty", True),
+    "uncertainty_flip_only": ("uncertainty", False),
+    "position_flip_only": ("position", False),
+    "ratio_only_flip_only": ("ratio_only", False),
 }
 
 
@@ -32,6 +35,10 @@ def build_phase_b2_state_features(
     row: dict[str, Any],
     feature_set: str,
 ) -> torch.Tensor:
+    if feature_set == "ratio_only":
+        return torch.tensor([0.0], dtype=torch.float32)
+    if feature_set == "position":
+        return torch.tensor([float(row.get("position", 0.0))], dtype=torch.float32)
     if feature_set == "uncertainty":
         return torch.tensor(
             [
@@ -60,27 +67,82 @@ def stratified_problem_split(rows: list[dict[str, Any]], seed: int) -> dict[str,
     for key, values in by_problem.items():
         positive = any(any(bool(value) for value in row["candidate_flipped"][1:]) for row in values)
         strata[(key[0], positive)].append(key)
-    split = {"train": [], "calibration": [], "test": []}
+    split = {"train": [], "validation": [], "calibration": [], "test": []}
     rng = random.Random(seed)
     for keys in strata.values():
         keys = sorted(keys)
         rng.shuffle(keys)
-        holdout = max(2, int(round(len(keys) * 0.30))) if len(keys) >= 3 else max(0, len(keys) - 1)
-        holdout = min(holdout, max(0, len(keys) - 1))
-        calibration = holdout // 2
-        split["calibration"].extend(keys[:calibration])
-        split["test"].extend(keys[calibration:holdout])
-        split["train"].extend(keys[holdout:])
+        count = len(keys)
+        if count < 4:
+            raise ValueError(
+                "Phase B2 four-way stratified split requires at least four problems "
+                f"per dataset/positive stratum, got {count}"
+            )
+        validation_count = max(1, int(round(count * 0.10)))
+        calibration_count = max(1, int(round(count * 0.15)))
+        test_count = max(1, int(round(count * 0.15)))
+        holdout_count = validation_count + calibration_count + test_count
+        while holdout_count >= count:
+            largest = max(
+                ("validation", validation_count),
+                ("calibration", calibration_count),
+                ("test", test_count),
+                key=lambda item: item[1],
+            )[0]
+            if largest == "validation" and validation_count > 1:
+                validation_count -= 1
+            elif largest == "calibration" and calibration_count > 1:
+                calibration_count -= 1
+            elif test_count > 1:
+                test_count -= 1
+            else:
+                raise ValueError(f"Cannot create non-empty Phase B2 train split for stratum of size {count}")
+            holdout_count = validation_count + calibration_count + test_count
+        validation_end = validation_count
+        calibration_end = validation_end + calibration_count
+        test_end = calibration_end + test_count
+        split["validation"].extend(keys[:validation_end])
+        split["calibration"].extend(keys[validation_end:calibration_end])
+        split["test"].extend(keys[calibration_end:test_end])
+        split["train"].extend(keys[test_end:])
     return {
         "schema": PHASE_B2_SCHEMA,
         "seed": seed,
-        "split_strategy": "problem_level_dataset_and_positive_stratified_70_15_15",
+        "split_strategy": "problem_level_dataset_and_positive_stratified_60_10_15_15",
         "split_problem_keys": {
             name: [list(key) for key in sorted(keys)]
             for name, keys in split.items()
         },
         "problem_counts": {name: len(keys) for name, keys in split.items()},
     }
+
+
+def validate_phase_b2_manifest(rows: list[dict[str, Any]], manifest: dict[str, Any], seed: int) -> None:
+    if manifest.get("schema") != PHASE_B2_SCHEMA or int(manifest.get("seed", -1)) != int(seed):
+        raise ValueError("Phase B2 manifest schema or seed mismatch")
+    expected = {"train", "validation", "calibration", "test"}
+    split_keys = manifest.get("split_problem_keys", {})
+    if set(split_keys) != expected:
+        raise ValueError(f"Phase B2 manifest must contain exactly {sorted(expected)}")
+    known = {problem_key(row) for row in rows}
+    seen: set[tuple[str, str]] = set()
+    actual_counts: dict[str, int] = {}
+    for split in sorted(expected):
+        raw_keys = [(str(dataset), str(problem_id)) for dataset, problem_id in split_keys[split]]
+        keys = set(raw_keys)
+        if len(keys) != len(raw_keys):
+            raise ValueError(f"Phase B2 manifest split {split} contains duplicate problems")
+        if not keys:
+            raise ValueError(f"Phase B2 manifest split {split} is empty")
+        overlap = seen.intersection(keys)
+        if overlap:
+            raise ValueError(f"Phase B2 manifest contains cross-split problems: {sorted(overlap)[:3]}")
+        seen.update(keys)
+        actual_counts[split] = len(keys)
+    if seen != known:
+        raise ValueError("Phase B2 manifest does not cover exactly the dataset problems")
+    if manifest.get("problem_counts") != actual_counts:
+        raise ValueError("Phase B2 manifest problem_counts do not match split contents")
 
 
 def indices_for_split(rows: list[dict[str, Any]], manifest: dict[str, Any], split: str) -> list[int]:

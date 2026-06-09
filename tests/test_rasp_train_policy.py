@@ -23,8 +23,10 @@ from src.rasp.fair_benchmark import (
 from src.rasp.train_controller import RaspTrainPolicyController
 from src.rasp.phase_b2 import (
     PhaseB2MultiTaskNet,
+    build_phase_b2_state_features,
     multitask_loss,
     stratified_problem_split,
+    validate_phase_b2_manifest,
 )
 from src.rasp.train_policy import (
     POLICY_FEATURE_SCHEMA,
@@ -128,7 +130,7 @@ class RaspTrainPolicyTest(unittest.TestCase):
     def test_phase_b2_split_is_problem_disjoint_and_stratified(self) -> None:
         rows = []
         for dataset in ("gsm8k", "math_train"):
-            for problem in range(20):
+            for problem in range(40):
                 rows.append(
                     {
                         "dataset": dataset,
@@ -139,13 +141,29 @@ class RaspTrainPolicyTest(unittest.TestCase):
         manifest = stratified_problem_split(rows, seed=1)
         split_sets = {
             name: {tuple(value) for value in manifest["split_problem_keys"][name]}
-            for name in ("train", "calibration", "test")
+            for name in ("train", "validation", "calibration", "test")
         }
-        self.assertTrue(split_sets["train"].isdisjoint(split_sets["calibration"]))
-        self.assertTrue(split_sets["train"].isdisjoint(split_sets["test"]))
-        self.assertTrue(split_sets["calibration"].isdisjoint(split_sets["test"]))
+        for name, values in split_sets.items():
+            others = set().union(*(other for other_name, other in split_sets.items() if other_name != name))
+            self.assertTrue(values.isdisjoint(others))
         for split in split_sets.values():
             self.assertEqual({key[0] for key in split}, {"gsm8k", "math_train"})
+        validate_phase_b2_manifest(rows, manifest, seed=1)
+        self.assertEqual(manifest["split_strategy"], "problem_level_dataset_and_positive_stratified_60_10_15_15")
+        broken = {**manifest, "split_problem_keys": {**manifest["split_problem_keys"]}}
+        broken["split_problem_keys"]["validation"] = broken["split_problem_keys"]["train"]
+        with self.assertRaises(ValueError):
+            validate_phase_b2_manifest(rows, broken, seed=1)
+
+    def test_phase_b2_simple_feature_baselines(self) -> None:
+        row = {"position": 0.25, "entropy": 0.5, "confidence": 0.75}
+        hidden = torch.zeros(4)
+        self.assertEqual(build_phase_b2_state_features(hidden, row, "ratio_only").tolist(), [0.0])
+        self.assertEqual(build_phase_b2_state_features(hidden, row, "position").tolist(), [0.25])
+        self.assertEqual(
+            build_phase_b2_state_features(hidden, row, "uncertainty").tolist(),
+            [0.5, 0.75, 0.25],
+        )
 
     def test_phase_b2_multitask_loss_is_finite(self) -> None:
         model = PhaseB2MultiTaskNet(dim=4, hidden_dim=8)

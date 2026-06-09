@@ -213,8 +213,30 @@ Phase B2 多任务原型代码已实现。它以 raw paired final flip 为主目
 hidden cosine drift 为辅助回归目标；默认比较 hidden-multitask、hidden-flip-only 和
 uncertainty-multitask。数据准备会过滤 incomplete-window boundaries，并生成 dataset/positive
 分层的三 seed problem manifests。入口为 `scripts/45_prepare_rasp_phase_b2_data.sh` 至
-`scripts/48_summarize_rasp_phase_b2.py`。下一步在服务器运行三 seed 原型，判断 drift 辅助目标与
-hidden state 是否真正带来稳定 controller 增益。
+`scripts/48_summarize_rasp_phase_b2.py`。
+
+Phase B2 三 seed 原型已完成，结果位于 `runs/rasp_phase_b2/`。主要结论：
+
+- 风险预测仍弱：hidden-flip-only、hidden-multitask、uncertainty-multitask 的 test ROC-AUC
+  分别为 `0.6099/0.6202/0.6450`，PR-AUC 为 `0.0694/0.0736/0.0802`；
+- drift 多任务相对 hidden-flip-only 只有小幅预测增益，且没有形成稳定 controller 增益；
+- uncertainty-only 反而取得最高平均 AUC，当前 164 个问题上尚无证据证明 hidden state 提供了
+  稳定的额外短窗口安全信号；
+- hidden-flip-only 的平均 controller 结果为 B15 `ratio/flip=0.0923/0.0180`，
+  B20 `0.1647/0.0236`，但 seed 间方差很大；seed 2 的 test flip 上升到
+  `0.0407/0.0441`；
+- 所有 calibration constraints 虽显示满足，但该状态只描述 calibration split，不能代表 test
+  稳定满足。当前训练还使用同一 calibration split 做 best-checkpoint early stopping 和 threshold
+  calibration，存在 calibration reuse，必须修复后重跑。
+
+因此当前不能进入在线 rollout，也不应直接把 Phase C 数据聚合作为下一步。先增加独立 validation
+split，重跑无泄漏 Phase B2，并补 position-only / ratio-only / RASP-Zero residual 公平对照；
+若 hidden 仍不能稳定超过简单特征，应接受当前 hidden signal 不足，而不是继续扩大 policy。
+
+Phase B2 v2 无泄漏重跑代码已实现，默认写入 `runs/rasp_phase_b2_v2/`。四路分层 split 为
+train/validation/calibration/test，当前数据实际为 `97/17/25/25` 个问题；新增 ratio-only、
+position-only、uncertainty-flip-only 对照。服务器命令与验收条件见
+[`rasp_train_bottleneck_diagnosis_zh.md`](rasp_train_bottleneck_diagnosis_zh.md)。
 
 ## 5. 建议优先阅读
 

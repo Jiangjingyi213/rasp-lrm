@@ -16,6 +16,7 @@ from src.rasp.phase_b2 import (
     indices_for_split,
     multitask_loss,
     predict_phase_b2,
+    validate_phase_b2_manifest,
 )
 from src.utils.io import ensure_dir, read_json, write_json
 from src.utils.seed import set_seed
@@ -82,12 +83,12 @@ def main() -> None:
     hidden_drift_weight = args.hidden_drift_weight if multitask else 0.0
     dataset = PhaseB2Dataset(args.dataset, args.hidden_states, feature_set)
     manifest = read_json(args.manifest)
-    if manifest.get("schema") != PHASE_B2_SCHEMA or int(manifest["seed"]) != args.seed:
-        raise ValueError("Phase B2 manifest schema or seed mismatch")
+    validate_phase_b2_manifest(dataset.rows, manifest, args.seed)
     train_indices = indices_for_split(dataset.rows, manifest, "train")
+    validation_indices = indices_for_split(dataset.rows, manifest, "validation")
     calibration_indices = indices_for_split(dataset.rows, manifest, "calibration")
     train_loader = DataLoader(Subset(dataset, train_indices), batch_size=args.batch_size, shuffle=True)
-    calibration_loader = DataLoader(Subset(dataset, calibration_indices), batch_size=args.batch_size)
+    validation_loader = DataLoader(Subset(dataset, validation_indices), batch_size=args.batch_size)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dim = int(dataset[0][0].numel())
     model = PhaseB2MultiTaskNet(dim, args.hidden_dim).to(device)
@@ -115,7 +116,7 @@ def main() -> None:
             loss.backward()
             optimizer.step()
         metrics = evaluate(
-            model, calibration_loader, device, positive_weight, divergence_weight, hidden_drift_weight
+            model, validation_loader, device, positive_weight, divergence_weight, hidden_drift_weight
         )
         if metrics["loss"] < best["loss"]:
             best = {**metrics, "epoch": epoch}
@@ -145,6 +146,8 @@ def main() -> None:
         "positive_weight": positive_weight,
         "divergence_weight": divergence_weight,
         "hidden_drift_weight": hidden_drift_weight,
+        "checkpoint_selection_split": "validation",
+        "split_problem_counts": manifest["problem_counts"],
         "best": best,
         "calibration": calibration,
     }
