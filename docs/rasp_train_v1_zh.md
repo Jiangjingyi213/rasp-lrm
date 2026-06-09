@@ -431,3 +431,15 @@ Phase B1 smoke 已完成并通过：10/10 shard 为 `status=ok`，dense replay f
 6888 条 counterfactual rows，非零动作正例率为 `4.00%`。但实际仍只采到前 6 个窗口，原因是旧
 断点续跑逻辑未检查 validation 与新 max-boundary 配置是否匹配。该逻辑已经修复；下一步复用现有
 dense trajectories 重采 12-window bank，再进入 Phase B2。
+
+12-window 重采已完成，结果暂存于 `runs/未命名/`。20/20 shard 均通过 validation，共有 164 个
+dense-correct problems、1926 个 boundary、13482 条 rows。非零动作 final-flip 正例为
+`561/11556 = 4.85%`；后 6 个窗口 flip rate 为 `5.75%`，高于前 6 个窗口的 `4.00%`。局部
+token/hidden drift 与最终 flip 只有弱相关，因此 Phase B2 使用 raw final flip 主目标和 drift
+辅助目标。当前数据足够进入三-seed、多任务 Phase B2 原型训练，但不足以作为最终正式规模。
+
+Phase B2 多任务原型已实现。训练共享 state-action encoder，并使用 final flip 分类、token
+divergence 回归和 hidden cosine drift 回归三个 head；controller 只读取 final-flip risk。
+默认三 seed 对比 hidden-multitask、hidden-flip-only 与 uncertainty-multitask，使用分层
+problem split 和 calibration problem-fold 最坏 flip 约束。执行与验收说明见
+[`rasp_train_bottleneck_diagnosis_zh.md`](rasp_train_bottleneck_diagnosis_zh.md)。

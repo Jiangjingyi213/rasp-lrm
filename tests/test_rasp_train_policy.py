@@ -21,6 +21,11 @@ from src.rasp.fair_benchmark import (
     monotonic_risk_envelope,
 )
 from src.rasp.train_controller import RaspTrainPolicyController
+from src.rasp.phase_b2 import (
+    PhaseB2MultiTaskNet,
+    multitask_loss,
+    stratified_problem_split,
+)
 from src.rasp.train_policy import (
     POLICY_FEATURE_SCHEMA,
     ActionRiskPolicyNet,
@@ -119,6 +124,48 @@ class RaspTrainPolicyTest(unittest.TestCase):
         self.assertEqual(tuple(logits.shape), (2, len(DEFAULT_RATIOS)))
         risks = monotonic_risk_envelope([[0.1, 0.4, 0.2, 0.8]])
         self.assertEqual(risks, [[0.1, 0.4, 0.4, 0.8]])
+
+    def test_phase_b2_split_is_problem_disjoint_and_stratified(self) -> None:
+        rows = []
+        for dataset in ("gsm8k", "math_train"):
+            for problem in range(20):
+                rows.append(
+                    {
+                        "dataset": dataset,
+                        "id": str(problem),
+                        "candidate_flipped": [False, problem % 2 == 0],
+                    }
+                )
+        manifest = stratified_problem_split(rows, seed=1)
+        split_sets = {
+            name: {tuple(value) for value in manifest["split_problem_keys"][name]}
+            for name in ("train", "calibration", "test")
+        }
+        self.assertTrue(split_sets["train"].isdisjoint(split_sets["calibration"]))
+        self.assertTrue(split_sets["train"].isdisjoint(split_sets["test"]))
+        self.assertTrue(split_sets["calibration"].isdisjoint(split_sets["test"]))
+        for split in split_sets.values():
+            self.assertEqual({key[0] for key in split}, {"gsm8k", "math_train"})
+
+    def test_phase_b2_multitask_loss_is_finite(self) -> None:
+        model = PhaseB2MultiTaskNet(dim=4, hidden_dim=8)
+        outputs = model(torch.zeros(2, 4), torch.tensor(DEFAULT_RATIOS))
+        flipped = torch.zeros(2, len(DEFAULT_RATIOS))
+        flipped[:, -1] = 1.0
+        divergence = torch.tensor(DEFAULT_RATIOS).unsqueeze(0).expand(2, -1)
+        drift = divergence.clone()
+        loss, parts = multitask_loss(
+            outputs,
+            flipped,
+            divergence,
+            drift,
+            torch.tensor(DEFAULT_RATIOS).unsqueeze(0).expand(2, -1),
+            positive_weight=5.0,
+            divergence_weight=0.5,
+            hidden_drift_weight=0.5,
+        )
+        self.assertTrue(torch.isfinite(loss))
+        self.assertGreater(parts["flip_loss"], 0.0)
 
     def test_shared_training_requires_equivalent_action_labels(self) -> None:
         row = {

@@ -272,6 +272,129 @@ bash scripts/44_collect_rasp_phase_b_aligned_bank.sh
 再决定是否扩到 500 题以及正式进入 Phase B2。多任务训练代码可以并行开发，但当前前 96-token
 bank 只用于诊断，不能作为正式 Phase B2 方法结论。
 
+#### Phase B1 12-Window Bank 结果
+
+12-window 重采已完成，当前结果暂存于 `runs/未命名/`。20/20 shard 均通过严格 validation：
+
+```text
+configured window tokens = 16
+configured max boundaries = 12
+dense trajectories = 200
+dense-correct problems = 164
+fixed-window boundaries = 1926
+counterfactual rows = 13482
+nonzero-action rows = 11556
+nonzero final-flip positives = 561 (4.85%)
+dense replay flip rate = 0
+```
+
+按 ratio 汇总：
+
+| Ratio | Final flip | Token divergence | Hidden L2 drift |
+|---:|---:|---:|---:|
+| 0.02 | 0.0125 | 0.0525 | 20.52 |
+| 0.05 | 0.0228 | 0.0891 | 33.79 |
+| 0.10 | 0.0332 | 0.1311 | 48.78 |
+| 0.20 | 0.0514 | 0.2223 | 71.56 |
+| 0.30 | 0.0774 | 0.2937 | 89.44 |
+| 0.40 | 0.0940 | 0.3617 | 105.77 |
+
+后 6 个窗口提供了重要的新风险信号。非零动作 final-flip rate 从前 6 窗口的 `4.00%` 上升至
+后 6 窗口的 `5.75%`；但后半程平均 token divergence 反而更低。这说明局部 drift 大小不能直接
+替代最终风险，policy 必须结合 boundary state、位置与 action 预测 final flip。
+
+当前共有：
+
+```text
+positive problems = 108 / 164
+positive boundaries = 299 / 1926
+boundary-level non-monotonic flip = 142 / 1926 (7.37%)
+```
+
+Final flip 与 token divergence/hidden L2 的相关系数仅为约 `0.114/0.128`。因此 Phase B2 应把
+drift 作为辅助目标，而不是安全标签本身；主标签继续使用 raw paired final flip，并由 controller
+对 ratio 风险做 cumulative-max。
+
+当前数据已足够进入 Phase B2 多任务原型训练。由于只有 164 个问题，不足以作为最终论文规模，
+训练评估必须使用 dataset/positive-rate 分层 problem split、至少三个 seed 和 out-of-fold
+calibration；原型有效后再扩大至 500 题。
+
+另有 `25/1926` 个 boundary 在完整 16-token action window 结束前遇到 EOS，对应 149 条
+`action_duration_tokens < 16` 的 rows。这不是采集错误，但暴露时长与其余 action 不同。Phase B2
+首轮训练与公平评估应过滤这些 incomplete-window boundaries，并将其保留为单独的尾部行为分析。
+
+### Phase B2：多任务原型实现
+
+Phase B2 多任务训练代码已完成：
+
+```text
+src/rasp/phase_b2.py
+src/main_prepare_rasp_phase_b2_data.py
+src/main_train_rasp_phase_b2.py
+src/main_eval_rasp_phase_b2.py
+scripts/45_prepare_rasp_phase_b2_data.sh
+scripts/46_train_rasp_phase_b2.sh
+scripts/47_eval_rasp_phase_b2.sh
+scripts/48_summarize_rasp_phase_b2.py
+```
+
+训练目标：
+
+```text
+L = weighted BCE(final paired flip)
+  + lambda_div * SmoothL1(window token divergence)
+  + lambda_hidden * SmoothL1(window-end hidden cosine distance)
+```
+
+共享 state-action encoder 输出三个 head。Final flip 是 controller 唯一使用的风险；drift 只作为训练
+辅助信号。ratio=0 不进入 flip BCE 和类别权重计算，避免大量恒定安全 control 淹没正例。
+
+默认比较：
+
+```text
+hidden_multitask
+hidden_flip_only
+uncertainty_multitask
+```
+
+数据准备会把每个 boundary 的 7 条 action rows 合并成一个 multi-action 样本，并整体过滤
+incomplete-window boundary。Split 使用 dataset 与 problem 是否含正例的分层 70/15/15
+problem-level manifest。Threshold calibration 只使用训练未见的 calibration problems，并要求
+calibration 内各 problem fold 的最坏 flip rate 同时满足约束。
+
+执行：
+
+```bash
+mv runs/未命名 runs/rasp_phase_b_aligned_bank_12w
+export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
+bash scripts/45_prepare_rasp_phase_b2_data.sh
+```
+
+三个 seed 可分别占用三张 GPU：
+
+```bash
+mkdir -p logs
+for item in "0 1" "1 2" "2 3"; do
+  set -- ${item}
+  nohup env CUDA_VISIBLE_DEVICES="$1" PHASE_B2_SEEDS="$2" \
+    bash scripts/46_train_rasp_phase_b2.sh \
+    > "logs/rasp_phase_b2_seed_$2.log" 2>&1 &
+done
+```
+
+训练全部完成后：
+
+```bash
+bash scripts/47_eval_rasp_phase_b2.sh
+```
+
+输出汇总为 `runs/rasp_phase_b2/comparison_summary.csv`。验收重点不是单一 AUC，而是：
+
+1. `hidden_multitask` 是否稳定优于 `hidden_flip_only`；
+2. hidden 是否稳定优于 uncertainty-only；
+3. calibration constraints 是否跨三 seed 全部满足；
+4. B15/B20 在保持低 flip 时能否获得有效 ratio，而不是退化到接近 dense。
+
 ### Phase C：覆盖 policy-induced states
 
 第一轮 window bank 来自 dense trajectory。训练初版 policy 后，再从 policy rollout 中采集状态并加入
