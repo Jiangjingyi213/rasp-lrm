@@ -474,6 +474,103 @@ bash scripts/47_eval_rasp_phase_b2.sh
 只有 `comparison_summary.csv` 中 `all_checkpoints_selected_on_validation=True`，且 hidden 在三 seed
 上稳定超过 ratio/position/uncertainty 基线并形成 controller Pareto 增益，才进入 Phase C。
 
+首次 v2 训练同步后、test eval 前发现 `position_flip_only` 与 `ratio_only_flip_only` 完全相同。
+审计确认原因是 `PhaseB2MultiTaskNet` 对一维 state 使用 `LayerNorm(1)`，会把 position 恒定归零。
+代码已改为一维 state 跳过 LayerNorm。必须重训这两个一维 variant，再执行 test eval；其余四个
+variant checkpoint 不受该修复影响。
+
+### Phase B2 v2 结果异常的根因审查
+
+进一步端到端审查后，v2 不再作为最终裁决实验，原因分为任务变化与代码问题两类。
+
+任务变化解释了大部分 AUC 落差：
+
+- 旧永久干预 bank 的 nonzero raw-flip 正例率为 `19.63%`，`50.62%` boundary 至少含一个正例；
+- aligned 16-token bank 的对应数值只有 `4.89%` 和 `15.57%`；
+- 旧任务中一次 action 长期影响后续生成，更容易由当前状态预测；aligned 任务只干预一个短窗口，
+  随后恢复 dense，最终答案是否 flip 更稀疏、更容易恢复，也更接近真实 credit assignment 难题；
+- v2 hidden nonlinear 有约 52 万个输入投影参数，但只有 97 个训练问题，最佳 validation epoch
+  通常为 1–2；uncertainty 模型最佳 epoch 约 33–40，符合 hidden 模型快速过拟合。
+
+同时确认了四个实现问题：
+
+1. single-window collector 的第一个生成 token 来自 action 前的 dense logits；真正受 action
+   影响的是后续第 `2–17` 个 token，但旧 `window_ids` 记录的是第 `1–16` 个 token。因此 final
+   flip 主标签仍反映 action 后果，但 token-divergence 辅助标签错位；
+2. Phase B2 把 position 写成 `boundary_index / 11`，而 runtime 使用
+   `generated_tokens / max_new_tokens`。以当前 `max_new_tokens=768` 为例，第 12 个 boundary
+   实际 position 约为 `176/768=0.229`，旧数据却写成 `1.0`；
+3. nonlinear encoder 对整段输入做 LayerNorm，既会让一维 position 恒为零，也会把 hidden、
+   entropy、confidence、position 和 domain one-hot 混合归一化，导致 hidden 与简单特征对照
+   难以解释；
+4. 旧 manifest 所谓 positive-rate 分层实际只区分“是否含任意正例”。三个 seed 的 validation
+   action-positive rate 在 `3.96%–7.48%` 之间，近乎翻倍，放大了 early stopping 与 calibration
+   方差。
+
+上述问题已按 Phase B2 v3 修复：
+
+- collector 记录真正由 action 产生的后续 token decisions；
+- row 与 validator 强制保存并核对 runtime-aligned position、max-new-tokens 和 window alignment；
+- worker 断点检查会拒绝旧 alignment，避免错误 shard 被静默跳过；
+- Phase B2 schema 升级为 `rasp_phase_b2_multitask_v3`，移除混合输入 LayerNorm；
+- 增加 hidden/uncertainty/position/ratio-only 的 linear 与 nonlinear 对照，区分“hidden 无信号”
+  与“小样本 nonlinear 过拟合”；
+- split 与 calibration folds 改按 dataset 内 `zero / positive-low / positive-high` 风险负担分层，
+  不再只按是否含正例二分。
+
+因此下一步必须先重采 `runs/rasp_phase_b_aligned_bank_v2/`，再训练
+`runs/rasp_phase_b2_v3/`；不要继续评估或引用尚未完成的 v2 test。
+
+服务器执行顺序：
+
+```bash
+export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
+export RASP_PHASE_B_LIMIT_PER_SOURCE=100
+export RASP_PHASE_B_SHARD_SIZE=10
+export RASP_PHASE_B_GPU_COUNT=8
+export RASP_PHASE_B_MAX_BOUNDARIES_PER_EXAMPLE=12
+export RASP_PHASE_B_RUN_ROOT=runs/rasp_phase_b_aligned_bank_v2
+bash scripts/44_collect_rasp_phase_b_aligned_bank.sh
+```
+
+所有新版 shard validation 为 `ok` 后：
+
+```bash
+SOURCE_ROOT=runs/rasp_phase_b_aligned_bank_v2 \
+OUTPUT_ROOT=runs/rasp_phase_b2_v3 \
+bash scripts/45_prepare_rasp_phase_b2_data.sh
+```
+
+训练优先先跑六个裁决 variant，而不是一次跑满十个：
+
+```bash
+mkdir -p logs
+variants=(
+  hidden_flip_linear hidden_flip_only
+  uncertainty_flip_linear uncertainty_flip_only
+  position_flip_linear ratio_only_flip_linear
+)
+for i in "${!variants[@]}"; do
+  variant="${variants[$i]}"
+  nohup env CUDA_VISIBLE_DEVICES="$i" PHASE_B2_VARIANTS="$variant" PHASE_B2_SEEDS="1 2 3" \
+    bash scripts/46_train_rasp_phase_b2.sh \
+    > "logs/rasp_phase_b2_v3_${variant}.log" 2>&1 &
+done
+```
+
+只有 hidden 至少在 linear 或受控容量 nonlinear 中稳定超过 uncertainty/position，才继续跑
+multitask 与 Phase C；否则停止扩张 learned hidden policy。
+
+六个裁决 variant 训练完成后，使用同一列表评估：
+
+```bash
+PHASE_B2_VARIANTS="hidden_flip_linear hidden_flip_only uncertainty_flip_linear uncertainty_flip_only position_flip_linear ratio_only_flip_linear" \
+bash scripts/47_eval_rasp_phase_b2.sh
+```
+
+数据准备还会强制检查同一 boundary 的所有 candidate action 是否共享完全相同的 pre-action hidden、
+entropy、confidence 与 position，避免 hidden/action 对齐错误被静默吞掉。
+
 ### Phase C：覆盖 policy-induced states
 
 第一轮 window bank 来自 dense trajectory。训练初版 policy 后，再从 policy rollout 中采集状态并加入

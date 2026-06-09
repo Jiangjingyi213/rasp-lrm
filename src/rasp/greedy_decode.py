@@ -46,6 +46,12 @@ def _synchronize_if_cuda(device: torch.device) -> None:
         torch.cuda.synchronize(device)
 
 
+def is_affected_window_decision(step: int, window_tokens: int) -> bool:
+    """Return whether a generated token decision was produced by the window action."""
+
+    return 0 < int(step) <= int(window_tokens)
+
+
 @torch.no_grad()
 def greedy_decode_runtime(
     model,
@@ -179,15 +185,17 @@ def greedy_decode_single_window_counterfactual(
     eos_ids = tokenizer.eos_token_id
     eos_ids = {int(eos_ids)} if isinstance(eos_ids, int) else {int(item) for item in (eos_ids or [])}
     generated_ids: list[int] = []
-    window_ids: list[int] = []
+    affected_window_ids: list[int] = []
     window_end_hidden = None
     remaining = max_new_tokens - len(forced_prefix_ids)
     for step in range(remaining):
         next_token = torch.argmax(outputs.logits[:, -1, :], dim=-1)
         token_id = int(next_token.item())
         generated_ids.append(token_id)
-        if step < window_tokens:
-            window_ids.append(token_id)
+        # The first token comes from the dense boundary logits. Processing it
+        # under the action affects the following token decision.
+        if is_affected_window_decision(step, window_tokens):
+            affected_window_ids.append(token_id)
         if token_id in eos_ids:
             break
         outputs = model(
@@ -207,7 +215,7 @@ def greedy_decode_single_window_counterfactual(
         "completion": tokenizer.decode([*forced_prefix_ids, *generated_ids], skip_special_tokens=True).strip(),
         "continuation": tokenizer.decode(generated_ids, skip_special_tokens=True).strip(),
         "generated_ids": generated_ids,
-        "window_ids": window_ids,
+        "window_ids": affected_window_ids,
         "window_end_hidden": window_end_hidden,
         "boundary_observation": observation,
         "runtime_mlp": summarize_runtime_mlp(model),

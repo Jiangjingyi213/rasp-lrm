@@ -22,6 +22,7 @@ from src.rasp.fair_benchmark import (
 )
 from src.rasp.train_controller import RaspTrainPolicyController
 from src.rasp.phase_b2 import (
+    PhaseB2LinearFlipNet,
     PhaseB2MultiTaskNet,
     build_phase_b2_state_features,
     multitask_loss,
@@ -149,7 +150,10 @@ class RaspTrainPolicyTest(unittest.TestCase):
         for split in split_sets.values():
             self.assertEqual({key[0] for key in split}, {"gsm8k", "math_train"})
         validate_phase_b2_manifest(rows, manifest, seed=1)
-        self.assertEqual(manifest["split_strategy"], "problem_level_dataset_and_positive_stratified_60_10_15_15")
+        self.assertEqual(
+            manifest["split_strategy"],
+            "problem_level_dataset_and_positive_burden_stratified_60_10_15_15",
+        )
         broken = {**manifest, "split_problem_keys": {**manifest["split_problem_keys"]}}
         broken["split_problem_keys"]["validation"] = broken["split_problem_keys"]["train"]
         with self.assertRaises(ValueError):
@@ -184,6 +188,20 @@ class RaspTrainPolicyTest(unittest.TestCase):
         )
         self.assertTrue(torch.isfinite(loss))
         self.assertGreater(parts["flip_loss"], 0.0)
+
+    def test_phase_b2_linear_flip_model_shape(self) -> None:
+        model = PhaseB2LinearFlipNet(dim=4)
+        outputs = model(torch.zeros(2, 4), torch.tensor(DEFAULT_RATIOS))
+        self.assertEqual(tuple(outputs["flip_logits"].shape), (2, len(DEFAULT_RATIOS)))
+
+    def test_phase_b2_one_dimensional_state_is_not_erased(self) -> None:
+        model = PhaseB2MultiTaskNet(dim=1, hidden_dim=8)
+        model.eval()
+        ratios = torch.tensor(DEFAULT_RATIOS)
+        with torch.no_grad():
+            first = model(torch.tensor([[0.0]]), ratios)["flip_logits"]
+            second = model(torch.tensor([[1.0]]), ratios)["flip_logits"]
+        self.assertFalse(torch.equal(first, second))
 
     def test_shared_training_requires_equivalent_action_labels(self) -> None:
         row = {

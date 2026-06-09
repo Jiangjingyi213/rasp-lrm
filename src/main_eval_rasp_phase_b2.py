@@ -8,7 +8,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from src.rasp.phase_b2 import (
     PHASE_B2_SCHEMA,
     PhaseB2Dataset,
-    PhaseB2MultiTaskNet,
+    build_phase_b2_model,
     indices_for_split,
     predict_phase_b2,
     validate_phase_b2_manifest,
@@ -35,7 +35,7 @@ def main() -> None:
     indices = indices_for_split(dataset.rows, manifest, "test")
     rows = [dataset.rows[index] for index in indices]
     hidden = dataset.hidden[torch.tensor(indices)]
-    model = PhaseB2MultiTaskNet(metadata["dim"], metadata["hidden_dim"])
+    model = build_phase_b2_model(metadata["model_type"], metadata["dim"], metadata["hidden_dim"])
     model.load_state_dict(checkpoint["model"])
     predictions = predict_phase_b2(
         model, rows, hidden, metadata["ratios"], metadata["feature_set"], torch.device("cpu")

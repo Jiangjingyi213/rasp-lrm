@@ -22,7 +22,11 @@ class ValidateAlignedWindowBankTest(unittest.TestCase):
                         "ratio": ratio,
                         "flipped": False,
                         "action_scope": "single_fixed_window_then_dense",
+                        "action_window_alignment": "affected_next_token_decisions_v2",
                         "ranking_scope": "initial_prompt_prefill_fixed",
+                        "generated_tokens_at_boundary": 0,
+                        "position": 0.0,
+                        "max_new_tokens": 512,
                         "window_token_divergence": 0.0,
                         "window_end_hidden_l2": 0.0,
                         "boundary_token_source": "trajectory_generated_token_ids",
@@ -52,6 +56,7 @@ class ValidateAlignedWindowBankTest(unittest.TestCase):
         self.assertEqual(summary["status"], "ok")
         self.assertEqual(summary["boundaries"], 1)
         self.assertEqual(summary["configured_max_boundaries_per_example"], 12)
+        self.assertEqual(summary["action_window_alignment"], "affected_next_token_decisions_v2")
 
 
 if __name__ == "__main__":

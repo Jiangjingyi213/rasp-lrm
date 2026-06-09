@@ -458,3 +458,9 @@ Phase B2 v2 已完成代码修复：使用独立 train/validation/calibration/te
 validation 只选择 checkpoint，calibration 只选择 threshold；同时增加 ratio-only、
 position-only、uncertainty-flip-only 对照。新结果默认写入 `runs/rasp_phase_b2_v2/`，不覆盖
 第一轮结果。
+
+后续审查确认 v2 仍不能作为最终裁决：aligned collector 的 token-divergence window 有一位错位，
+position 使用 `boundary_index/11` 而不是 runtime 的 `generated_tokens/max_new_tokens`，输入
+LayerNorm 还会抹除一维 position 并混合归一化不同类型特征。Phase B2 v3 已修复上述问题，增加
+linear/nonlinear 对照，并要求重采新版 aligned bank。旧实验高 AUC 的主要背景是永久干预 bank
+正例率约 `19.63%`，而短窗口 aligned bank 仅约 `4.89%`，二者不是同一难度的预测任务。

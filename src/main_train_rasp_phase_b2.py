@@ -11,7 +11,7 @@ from src.rasp.phase_b2 import (
     PHASE_B2_SCHEMA,
     PHASE_B2_VARIANTS,
     PhaseB2Dataset,
-    PhaseB2MultiTaskNet,
+    build_phase_b2_model,
     calibrate_problem_folds,
     indices_for_split,
     multitask_loss,
@@ -78,7 +78,7 @@ def main() -> None:
     if len(args.budgets) != len(args.max_flip_rates):
         raise ValueError("Budgets and max flip rates must have matching lengths")
     set_seed(args.seed)
-    feature_set, multitask = PHASE_B2_VARIANTS[args.variant]
+    feature_set, model_type, multitask = PHASE_B2_VARIANTS[args.variant]
     divergence_weight = args.divergence_weight if multitask else 0.0
     hidden_drift_weight = args.hidden_drift_weight if multitask else 0.0
     dataset = PhaseB2Dataset(args.dataset, args.hidden_states, feature_set)
@@ -91,7 +91,7 @@ def main() -> None:
     validation_loader = DataLoader(Subset(dataset, validation_indices), batch_size=args.batch_size)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dim = int(dataset[0][0].numel())
-    model = PhaseB2MultiTaskNet(dim, args.hidden_dim).to(device)
+    model = build_phase_b2_model(model_type, dim, args.hidden_dim).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-2)
     train_flips = torch.stack([dataset[index][1] for index in train_indices])[:, 1:]
     positives = float(train_flips.sum())
@@ -137,6 +137,7 @@ def main() -> None:
         "schema": PHASE_B2_SCHEMA,
         "variant": args.variant,
         "feature_set": feature_set,
+        "model_type": model_type,
         "multitask": multitask,
         "seed": args.seed,
         "manifest": str(args.manifest),

@@ -11,7 +11,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "configs/generated_rasp_phase_b_aligned_bank"
-RUN_ROOT = "runs/rasp_phase_b_aligned_bank"
+RUN_ROOT = os.environ.get("RASP_PHASE_B_RUN_ROOT", "runs/rasp_phase_b_aligned_bank_v2")
 SOURCES = (
     ("gsm8k_train", "configs/exp_rasp_phase_b_aligned_bank_gsm8k_train.yaml"),
     ("math_train", "configs/exp_rasp_phase_b_aligned_bank_math_train.yaml"),

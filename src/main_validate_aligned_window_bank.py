@@ -20,6 +20,7 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
     ratios = [float(value) for value in cfg.get("ratios", [])]
     expected = {f"{value:.8f}" for value in ratios}
     errors = []
+    max_new_tokens = int(config.get("generation", {}).get("max_new_tokens", 512))
     if len(rows) != len(probe_rows):
         errors.append("Counterfactual and probe row counts differ")
     grouped: dict[tuple[str, str, int], list[dict[str, Any]]] = defaultdict(list)
@@ -27,6 +28,13 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         grouped[_key(row)].append(row)
         if row.get("action_scope") != "single_fixed_window_then_dense":
             errors.append("Aligned bank contains a non-window action scope")
+            break
+        if row.get("action_window_alignment") != "affected_next_token_decisions_v2":
+            errors.append("Aligned bank contains legacy or unknown action-window alignment")
+            break
+        expected_position = int(row.get("generated_tokens_at_boundary", -1)) / max(1, max_new_tokens)
+        if int(row.get("max_new_tokens", -1)) != max_new_tokens or abs(float(row.get("position", -1.0)) - expected_position) > 1e-9:
+            errors.append("Aligned bank position does not match runtime generated_tokens/max_new_tokens")
             break
         if row.get("ranking_scope") != "initial_prompt_prefill_fixed":
             errors.append("Aligned bank contains a non-runtime ranking scope")
@@ -71,8 +79,10 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         "dense_control_paired_flip_rate": dense_flip_rate,
         "dense_replay_flip_rate_from_baseline": replay_flip_rate,
         "configured_window_tokens": int(cfg.get("window_tokens", 16)),
+        "configured_max_new_tokens": max_new_tokens,
         "configured_max_boundaries_per_example": cfg.get("max_boundaries_per_example"),
         "action_scope": "single_fixed_window_then_dense",
+        "action_window_alignment": "affected_next_token_decisions_v2",
         "ranking_scope": "initial_prompt_prefill_fixed",
         "boundary_token_sources": token_sources,
     }

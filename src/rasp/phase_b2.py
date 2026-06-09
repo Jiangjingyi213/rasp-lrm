@@ -15,19 +15,48 @@ from src.rasp.train_policy import causal_action_risk_indices_from_risks, selecti
 from src.utils.io import read_jsonl
 
 
-PHASE_B2_SCHEMA = "rasp_phase_b2_multitask_v2"
+PHASE_B2_SCHEMA = "rasp_phase_b2_multitask_v3"
 PHASE_B2_VARIANTS = {
-    "hidden_multitask": ("hidden", True),
-    "hidden_flip_only": ("hidden", False),
-    "uncertainty_multitask": ("uncertainty", True),
-    "uncertainty_flip_only": ("uncertainty", False),
-    "position_flip_only": ("position", False),
-    "ratio_only_flip_only": ("ratio_only", False),
+    "hidden_multitask": ("hidden", "nonlinear", True),
+    "hidden_flip_only": ("hidden", "nonlinear", False),
+    "hidden_flip_linear": ("hidden", "linear", False),
+    "uncertainty_multitask": ("uncertainty", "nonlinear", True),
+    "uncertainty_flip_only": ("uncertainty", "nonlinear", False),
+    "uncertainty_flip_linear": ("uncertainty", "linear", False),
+    "position_flip_only": ("position", "nonlinear", False),
+    "position_flip_linear": ("position", "linear", False),
+    "ratio_only_flip_only": ("ratio_only", "nonlinear", False),
+    "ratio_only_flip_linear": ("ratio_only", "linear", False),
 }
 
 
 def boundary_key(row: dict[str, Any]) -> tuple[str, str, int]:
     return (*problem_key(row), int(row["boundary_index"]))
+
+
+def problem_risk_strata(rows: list[dict[str, Any]]) -> dict[tuple[str, str], str]:
+    by_problem: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_problem[problem_key(row)].append(row)
+    positive_by_dataset: dict[str, list[tuple[float, tuple[str, str]]]] = defaultdict(list)
+    output: dict[tuple[str, str], str] = {}
+    for key, values in by_problem.items():
+        labels = [bool(label) for row in values for label in row["candidate_flipped"][1:]]
+        rate = sum(int(label) for label in labels) / max(1, len(labels))
+        if rate <= 0.0:
+            output[key] = "zero"
+        else:
+            positive_by_dataset[key[0]].append((rate, key))
+    for dataset, values in positive_by_dataset.items():
+        ordered = sorted(values, key=lambda item: (item[0], item[1]))
+        if len(ordered) < 8:
+            for _rate, key in ordered:
+                output[key] = "positive"
+            continue
+        midpoint = len(ordered) // 2
+        for index, (_rate, key) in enumerate(ordered):
+            output[key] = "positive_low" if index < midpoint else "positive_high"
+    return output
 
 
 def build_phase_b2_state_features(
@@ -63,10 +92,10 @@ def stratified_problem_split(rows: list[dict[str, Any]], seed: int) -> dict[str,
     by_problem: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_problem[problem_key(row)].append(row)
-    strata: dict[tuple[str, bool], list[tuple[str, str]]] = defaultdict(list)
-    for key, values in by_problem.items():
-        positive = any(any(bool(value) for value in row["candidate_flipped"][1:]) for row in values)
-        strata[(key[0], positive)].append(key)
+    risk_strata = problem_risk_strata(rows)
+    strata: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
+    for key in by_problem:
+        strata[(key[0], risk_strata[key])].append(key)
     split = {"train": [], "validation": [], "calibration": [], "test": []}
     rng = random.Random(seed)
     for keys in strata.values():
@@ -108,7 +137,7 @@ def stratified_problem_split(rows: list[dict[str, Any]], seed: int) -> dict[str,
     return {
         "schema": PHASE_B2_SCHEMA,
         "seed": seed,
-        "split_strategy": "problem_level_dataset_and_positive_stratified_60_10_15_15",
+        "split_strategy": "problem_level_dataset_and_positive_burden_stratified_60_10_15_15",
         "split_problem_keys": {
             name: [list(key) for key in sorted(keys)]
             for name, keys in split.items()
@@ -180,7 +209,6 @@ class PhaseB2MultiTaskNet(nn.Module):
     def __init__(self, dim: int, hidden_dim: int = 256) -> None:
         super().__init__()
         self.state_encoder = nn.Sequential(
-            nn.LayerNorm(dim),
             nn.Linear(dim, hidden_dim),
             nn.GELU(),
             nn.Dropout(0.1),
@@ -206,6 +234,29 @@ class PhaseB2MultiTaskNet(nn.Module):
             "token_divergence": torch.sigmoid(self.divergence_head(shared).squeeze(-1)),
             "hidden_drift": torch.sigmoid(self.hidden_drift_head(shared).squeeze(-1)),
         }
+
+
+class PhaseB2LinearFlipNet(nn.Module):
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.flip_head = nn.Linear(dim + 2, 1)
+
+    def forward(self, features: torch.Tensor, ratios: torch.Tensor) -> dict[str, torch.Tensor]:
+        if ratios.ndim == 1:
+            ratios = ratios.unsqueeze(0).expand(features.shape[0], -1)
+        expanded = features.unsqueeze(1).expand(-1, ratios.shape[1], -1)
+        action = torch.stack([ratios, ratios.square()], dim=-1)
+        logits = self.flip_head(torch.cat([expanded, action], dim=-1)).squeeze(-1)
+        zeros = torch.zeros_like(logits)
+        return {"flip_logits": logits, "token_divergence": zeros, "hidden_drift": zeros}
+
+
+def build_phase_b2_model(model_type: str, dim: int, hidden_dim: int) -> nn.Module:
+    if model_type == "linear":
+        return PhaseB2LinearFlipNet(dim)
+    if model_type == "nonlinear":
+        return PhaseB2MultiTaskNet(dim, hidden_dim)
+    raise ValueError(f"Unknown Phase B2 model type: {model_type}")
 
 
 def multitask_loss(
@@ -284,10 +335,10 @@ def calibrate_problem_folds(
         by_problem[problem_key(row)].append(index)
     problems = sorted(by_problem)
     fold_indices = [[] for _ in range(max(1, min(folds, len(problems))))]
-    strata: dict[tuple[str, bool], list[tuple[str, str]]] = defaultdict(list)
-    for key, indices in by_problem.items():
-        positive = any(any(bool(value) for value in rows[index]["candidate_flipped"][1:]) for index in indices)
-        strata[(key[0], positive)].append(key)
+    risk_strata = problem_risk_strata(rows)
+    strata: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
+    for key in by_problem:
+        strata[(key[0], risk_strata[key])].append(key)
     rng = random.Random(seed)
     offset = 0
     for keys in strata.values():

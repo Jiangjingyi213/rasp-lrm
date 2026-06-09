@@ -10,6 +10,7 @@ from src.pruning.mlp_pruner import mlp_intermediate_channel_mask
 from src.rasp.activation_ranker import keep_mask_from_ranking, rank_intermediate_neurons
 from src.rasp.mlp_runtime import RuntimeMaskedQwen3MLP
 from src.main_collect_aligned_window_bank import boundary_positions, token_divergence
+from src.rasp.greedy_decode import is_affected_window_decision
 from src.segmentation.rule_segmenter import segment_text
 
 
@@ -114,6 +115,10 @@ class RaspZeroRuntimeTest(unittest.TestCase):
         self.assertEqual(boundary_positions(50, 16, None), [0, 16, 32, 48])
         self.assertEqual(boundary_positions(50, 16, 2), [0, 16])
         self.assertAlmostEqual(token_divergence([1, 2, 3], [1, 4, 3]), 1 / 3)
+
+    def test_aligned_window_records_only_action_affected_decisions(self) -> None:
+        affected = [step for step in range(20) if is_affected_window_decision(step, 16)]
+        self.assertEqual(affected, list(range(1, 17)))
 
 
 if __name__ == "__main__":

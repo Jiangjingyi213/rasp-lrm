@@ -25,6 +25,7 @@ def main() -> None:
         validation = read_json(root / "07_aligned_window_bank_validation.json")
         if (
             validation.get("status") != "ok"
+            or validation.get("action_window_alignment") != "affected_next_token_decisions_v2"
             or validation.get("configured_window_tokens") != 16
             or validation.get("configured_max_boundaries_per_example") != 12
         ):
@@ -38,7 +39,10 @@ def main() -> None:
             if int(row["action_duration_tokens"]) < int(row["window_tokens"]):
                 filtered_incomplete.add(key)
             grouped[key].append(row)
-            hidden_by_boundary.setdefault(key, hidden[index])
+            current_hidden = hidden[index]
+            if key in hidden_by_boundary and not torch.equal(hidden_by_boundary[key], current_hidden):
+                raise ValueError(f"{key}: candidate actions do not share the same pre-action boundary hidden state")
+            hidden_by_boundary[key] = current_hidden
     output_rows, output_hidden = [], []
     for key, values in sorted(grouped.items()):
         if key in filtered_incomplete:
@@ -48,6 +52,10 @@ def main() -> None:
         if ratios != DEFAULT_RATIOS:
             raise ValueError(f"{key}: incomplete or unexpected ratio grid {ratios}")
         reference = ordered[0]
+        for row in ordered[1:]:
+            for field in ("entropy", "confidence", "position", "generated_tokens_at_boundary"):
+                if abs(float(row[field]) - float(reference[field])) > 1e-9:
+                    raise ValueError(f"{key}: candidate actions disagree on pre-action field {field}")
         output_rows.append(
             {
                 "dataset": reference.get("dataset"),
@@ -56,7 +64,7 @@ def main() -> None:
                 "segment_id": int(reference["boundary_index"]),
                 "segment_index": int(reference["boundary_index"]),
                 "generated_tokens_at_boundary": int(reference["generated_tokens_at_boundary"]),
-                "position": int(reference["boundary_index"]) / max(1, 11),
+                "position": float(reference["position"]),
                 "entropy": float(reference["entropy"]),
                 "confidence": float(reference["confidence"]),
                 "candidate_ratios": ratios,
