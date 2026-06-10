@@ -29,6 +29,12 @@ from src.rasp.phase_b2 import (
     stratified_problem_split,
     validate_phase_b2_manifest,
 )
+from src.rasp.phase_b25 import (
+    PhaseB25ActionNet,
+    boundary_any_flip_metrics,
+    fit_phase_b25_transform,
+    transform_phase_b25_features,
+)
 from src.rasp.train_policy import (
     POLICY_FEATURE_SCHEMA,
     ActionRiskPolicyNet,
@@ -202,6 +208,43 @@ class RaspTrainPolicyTest(unittest.TestCase):
             first = model(torch.tensor([[0.0]]), ratios)["flip_logits"]
             second = model(torch.tensor([[1.0]]), ratios)["flip_logits"]
         self.assertFalse(torch.equal(first, second))
+
+    def test_phase_b25_transform_is_fit_on_train_and_reusable(self) -> None:
+        rows = [
+            {"entropy": float(index), "confidence": 0.5, "position": index / 10}
+            for index in range(6)
+        ]
+        hidden = torch.arange(24, dtype=torch.float32).reshape(6, 4)
+        transform = fit_phase_b25_transform(rows, hidden, [0, 1, 2, 3], pca_dim=2)
+        uncertainty, hidden_pca = transform_phase_b25_features(rows, hidden, transform)
+        self.assertEqual(transform["fit_split"], "train")
+        self.assertEqual(transform["fit_row_count"], 4)
+        self.assertEqual(tuple(uncertainty.shape), (6, 3))
+        self.assertEqual(tuple(hidden_pca.shape), (6, 2))
+        self.assertTrue(torch.allclose(uncertainty[:4].mean(dim=0), torch.zeros(3), atol=1e-5))
+
+    def test_phase_b25_variants_produce_action_logits(self) -> None:
+        ratios = torch.tensor(DEFAULT_RATIOS)
+        uncertainty = torch.zeros(2, 3)
+        hidden_pca = torch.zeros(2, 4)
+        for variant in (
+            "uncertainty_nonlinear",
+            "hidden_pca_linear",
+            "hidden_pca_nonlinear",
+            "uncertainty_hidden_residual",
+        ):
+            model = PhaseB25ActionNet(variant, hidden_pca_dim=4, model_dim=8)
+            logits = model(uncertainty, hidden_pca, ratios)
+            self.assertEqual(tuple(logits.shape), (2, len(DEFAULT_RATIOS)))
+
+    def test_phase_b25_boundary_any_flip_metrics(self) -> None:
+        rows = [
+            {"candidate_flipped": [False, False, True]},
+            {"candidate_flipped": [False, False, False]},
+        ]
+        labels, scores = boundary_any_flip_metrics(rows, [[0.0, 0.2, 0.8], [0.0, 0.1, 0.3]])
+        self.assertEqual(labels, [1, 0])
+        self.assertEqual(scores, [0.8, 0.3])
 
     def test_shared_training_requires_equivalent_action_labels(self) -> None:
         row = {

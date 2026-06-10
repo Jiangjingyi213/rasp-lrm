@@ -571,6 +571,193 @@ bash scripts/47_eval_rasp_phase_b2.sh
 数据准备还会强制检查同一 boundary 的所有 candidate action 是否共享完全相同的 pre-action hidden、
 entropy、confidence 与 position，避免 hidden/action 对齐错误被静默吞掉。
 
+### Phase B2 v3 数据验收
+
+新版 aligned bank 与 Phase B2 v3 数据准备已完成，可以启动裁决训练：
+
+- `runs/rasp_phase_b_aligned_bank_v2/` 的 20/20 shard validation 均为 `ok`；
+- 全部 shard 使用 `affected_next_token_decisions_v2`，`max_new_tokens=768`，dense paired flip 与
+  dense replay flip 均为 `0`；
+- 原始 bank 为 164 个 dense-correct problems、1926 个 boundary、13482 条 action rows；
+- 过滤 27 个不足完整 affected window 的 boundary 后，v3 数据为 1899 个 boundary、
+  11394 个 nonzero action rows、558 个 final-flip 正例；
+- hidden/action 强一致检查通过，ratio grid 完整，dense action flip 为 `0`；
+- 修复 window alignment 后，`36.2%` 的 nonzero token-divergence 标签发生变化，平均 divergence
+  从 `0.1925` 升至 `0.2150`；position 最大值从错误的 `1.0` 修正为 `176/768=0.2292`；
+- final-flip 正例仍为 558，说明主标签稳定，修复主要影响局部辅助标签与 runtime feature 定义；
+- ratio `0.02 -> 0.40` 时，flip `1.26% -> 9.43%`、token divergence
+  `0.0597 -> 0.4027`、hidden cosine drift `0.0684 -> 0.4348`，action 强度关系健康。
+
+三 seed 均为 `100/16/24/24` 个 train/validation/calibration/test problems，数据源组成一致。
+train action-positive rate 已稳定到 `4.49%–4.79%`；validation/test 因仅有 16/24 个问题仍存在
+波动，最终必须报告三 seed 均值与方差。
+
+四张 GPU 可用以下队列一次完成六个裁决 variant：
+
+```bash
+mkdir -p logs
+
+nohup env CUDA_VISIBLE_DEVICES=0 \
+  PHASE_B2_VARIANTS="hidden_flip_linear position_flip_linear" PHASE_B2_SEEDS="1 2 3" \
+  bash scripts/46_train_rasp_phase_b2.sh > logs/rasp_phase_b2_v3_gpu0.log 2>&1 &
+
+nohup env CUDA_VISIBLE_DEVICES=1 \
+  PHASE_B2_VARIANTS="hidden_flip_only" PHASE_B2_SEEDS="1 2 3" \
+  bash scripts/46_train_rasp_phase_b2.sh > logs/rasp_phase_b2_v3_gpu1.log 2>&1 &
+
+nohup env CUDA_VISIBLE_DEVICES=2 \
+  PHASE_B2_VARIANTS="uncertainty_flip_linear ratio_only_flip_linear" PHASE_B2_SEEDS="1 2 3" \
+  bash scripts/46_train_rasp_phase_b2.sh > logs/rasp_phase_b2_v3_gpu2.log 2>&1 &
+
+nohup env CUDA_VISIBLE_DEVICES=3 \
+  PHASE_B2_VARIANTS="uncertainty_flip_only" PHASE_B2_SEEDS="1 2 3" \
+  bash scripts/46_train_rasp_phase_b2.sh > logs/rasp_phase_b2_v3_gpu3.log 2>&1 &
+```
+
+### Phase B2 v3 裁决结果
+
+六个裁决 variant 已完整产生 18/18 checkpoint、18/18 train metrics 和 18/18 test eval，
+且全部 checkpoint 均由 validation split 选择。三 seed 测试集聚合结果如下：
+
+| variant | ROC-AUC | PR-AUC | budget 0.15 utilization / flip | budget 0.20 utilization / flip |
+|---|---:|---:|---:|---:|
+| uncertainty nonlinear | `0.627 ± 0.057` | `0.098 ± 0.022` | `0.527 / 0.0169` | `0.587 / 0.0241` |
+| uncertainty linear | `0.591 ± 0.121` | `0.070 ± 0.014` | `0.400 / 0.0131` | `0.513 / 0.0240` |
+| hidden/combined nonlinear | `0.555 ± 0.060` | `0.083 ± 0.019` | `0.802 / 0.0276` | `0.751 / 0.0278` |
+| hidden/combined linear | `0.510 ± 0.051` | `0.063 ± 0.017` | `0.811 / 0.0314` | `0.877 / 0.0408` |
+| position linear | `0.553 ± 0.113` | `0.070 ± 0.030` | `0.267 / 0.0060` | `0.605 / 0.0207` |
+| ratio-only linear | `0.568 ± 0.118` | `0.067 ± 0.031` | `0.000 / 0.0000` | `0.333 / 0.0147` |
+
+这里的 `hidden` feature 实际为 raw hidden、entropy、confidence、position 和 dataset one-hot
+的 combined 输入，并非纯 hidden。即使包含 uncertainty 信息，combined nonlinear 仍低于
+uncertainty nonlinear；combined linear 更接近随机。当前表示下，raw hidden 没有提供稳定的
+跨问题泛化增益。
+
+训练行为也支持该判断：三个 hidden nonlinear checkpoint 均在 epoch `1–2` 被 validation loss
+选中，hidden linear 为 epoch `1/2/10`；相比之下，uncertainty nonlinear 在 epoch `31/36/37`
+才达到最佳点。2055 维 combined 输入相对 100 个训练问题明显更容易早期过拟合。
+
+controller 结果不能只看平均 utilization：
+
+- budget `0.15` 下 hidden nonlinear 的 seed 3 test flip 为 `5.13%`，超过目标上限 `4%`；
+- `all_calibration_constraints_satisfied=True` 仅表示 calibration split 满足约束，不表示 test
+  split 也满足约束；零剪枝同样会被记为满足约束；
+- 部分 seed 的 budget `0.20` utilization 反而低于 `0.15`，说明只有 24 个 calibration problems
+  时阈值选择仍不稳定；
+- action-cell AUC 中同一 boundary 的六个 action 高度相关，因此三 seed 波动比单个 AUC 更值得重视。
+
+**裁决：当前不进入 Phase C，不运行 multitask 扩张。** Phase C 会采集当前 policy-induced
+states；在 policy 尚未稳定、raw hidden 尚未证明增益时执行，只会放大一个未通过裁决的策略。
+下一步应先做一个受控的 Phase B2.5：固定 uncertainty nonlinear 为有效基线，验证低维/正则化
+hidden residual 是否能在同一 split 上稳定增加 test ROC-AUC、PR-AUC，并改善受约束 controller
+Pareto。只有 raw hidden 的增量价值通过三 seed 裁决后，才进入 Phase C。
+
+该结果不推翻 Motivation 的原始结论。Motivation hidden probe 使用 problem-level OOF，覆盖
+1342 个问题，五折 ROC-AUC 均约为 `0.812–0.843`，没有发现 problem leakage；它支持的是
+“hidden 编码长期、强结构扰动下的 state fragility”。Phase B2 v3 检验的是只作用一个
+16-token window、随后恢复 dense 的 MLP action 是否仍造成最终答案 flip。两者的主要差异为：
+
+- Motivation 同时包含 layer/attention/MLP 等强扰动与 `0.2/0.4/0.6` ratio，正例率约 `45.8%`；
+- aligned Phase B2 只使用 MLP intermediate action 与较短 horizon，正例率仅约 `4.9%`；
+- Motivation 有 1342 个 problem-level OOF 问题；Phase B2 每个 seed 只有 100 个训练问题、
+  16 个 validation、24 个 calibration 和 24 个 test；
+- 长期 fragility 可以被当前状态稳定预测，不代表短期扰动恢复后仍会造成不可恢复答案错误。
+
+当前 aligned-bank **数据与评估协议可接受**：action 确实生效、dense replay 为零 flip、
+pre-action hidden 在同 boundary 各 ratio 完全一致、problem splits 互斥、test 不参与训练或
+checkpoint selection。当前尚不足以最终裁决的是 **hidden 模型设计**：v3 没有纯 hidden 对照，
+没有 train-only 标准化/低维投影，也没有 uncertainty + hidden residual；2055 维 combined 输入
+直接对比 3 维 uncertainty，容易把“小样本下未学到”误判成“hidden 没有信息”。
+
+Phase B2.5 应按以下顺序完成后再决定是否停止 hidden 路线：
+
+1. 固定同一 manifest，增加纯 hidden、uncertainty-only、uncertainty + hidden residual；
+2. 所有标准化与降维仅在 train problems 拟合，比较强正则 linear、低维投影和小容量 residual；
+3. 同时报告 action-level final-flip 与 boundary-level any-flip，区分 state fragility 与 ratio 风险；
+4. 使用 validation 选模型、calibration 选阈值、test 只做一次报告，并给出 problem bootstrap CI；
+5. 若当前 bank 上出现稳定增量，再扩大 dense-correct problem 数；否则不直接投入昂贵 Phase C。
+
+### Phase B2.5 实现与执行
+
+Phase B2.5 已作为独立链路实现，不覆盖 `runs/rasp_phase_b2_v3/`：
+
+```text
+src/rasp/phase_b25.py
+src/main_train_rasp_phase_b25.py
+src/main_eval_rasp_phase_b25.py
+scripts/49_train_rasp_phase_b25.sh
+scripts/50_eval_rasp_phase_b25.sh
+scripts/51_summarize_rasp_phase_b25.py
+```
+
+固定使用 v3 的 dataset 与三个 manifest，比较四个受控 variant：
+
+- `uncertainty_nonlinear`：标准化后的 entropy/confidence/position 小容量基线；
+- `hidden_pca_linear`：纯 hidden，train-only 标准化 + PCA + 强正则线性 action-risk；
+- `hidden_pca_nonlinear`：纯 hidden，train-only PCA + 小容量 nonlinear action-risk；
+- `uncertainty_hidden_residual`：uncertainty/action 基线加低容量 hidden-PCA/action residual。
+
+默认 PCA/model dim 均为 `32`。所有标准化和 PCA 仅由 manifest 的 train rows 拟合，变换状态随
+checkpoint 保存；eval 会拒绝非 train-only transform。测试同时报告：
+
+```text
+action ROC-AUC / PR-AUC
+boundary any-flip ROC-AUC / PR-AUC
+problem-level bootstrap 95% CI
+B15/B20 controller utilization / flip
+```
+
+服务器更新代码后先运行两 epoch smoke：
+
+```bash
+OUTPUT_ROOT=runs/rasp_phase_b25_smoke \
+PHASE_B25_VARIANTS="uncertainty_hidden_residual" PHASE_B25_SEEDS="1" PHASE_B25_EPOCHS="2" \
+bash scripts/49_train_rasp_phase_b25.sh
+
+OUTPUT_ROOT=runs/rasp_phase_b25_smoke \
+PHASE_B25_VARIANTS="uncertainty_hidden_residual" PHASE_B25_SEEDS="1" \
+bash scripts/50_eval_rasp_phase_b25.sh
+```
+
+确认 smoke 产生 `policy.pt`、`train_metrics.json`、`eval.json` 和 `comparison_summary.csv` 后，
+再启动正式四卡实验。
+
+四张 GPU 可分别运行一个 variant：
+
+```bash
+mkdir -p logs
+
+nohup env CUDA_VISIBLE_DEVICES=0 PHASE_B25_VARIANTS="uncertainty_nonlinear" \
+  bash scripts/49_train_rasp_phase_b25.sh > logs/rasp_phase_b25_uncertainty.log 2>&1 &
+
+nohup env CUDA_VISIBLE_DEVICES=1 PHASE_B25_VARIANTS="hidden_pca_linear" \
+  bash scripts/49_train_rasp_phase_b25.sh > logs/rasp_phase_b25_hidden_linear.log 2>&1 &
+
+nohup env CUDA_VISIBLE_DEVICES=2 PHASE_B25_VARIANTS="hidden_pca_nonlinear" \
+  bash scripts/49_train_rasp_phase_b25.sh > logs/rasp_phase_b25_hidden_nonlinear.log 2>&1 &
+
+nohup env CUDA_VISIBLE_DEVICES=3 PHASE_B25_VARIANTS="uncertainty_hidden_residual" \
+  bash scripts/49_train_rasp_phase_b25.sh > logs/rasp_phase_b25_residual.log 2>&1 &
+```
+
+四项训练结束后评估：
+
+```bash
+bash scripts/50_eval_rasp_phase_b25.sh
+```
+
+预期产生 12 个 checkpoint、12 个 train metrics、12 个 eval，以及：
+
+```text
+runs/rasp_phase_b25/comparison_raw.csv
+runs/rasp_phase_b25/comparison_summary.csv
+runs/rasp_phase_b25/comparison_summary.json
+```
+
+准入 Phase C 的必要条件是 `uncertainty_hidden_residual` 在三 seed 上相对
+`uncertainty_nonlinear` 稳定改善 action/boundary 排序，并在相近 test flip 下改善 controller
+utilization；单 seed 提升、bootstrap CI 大量重叠或依赖更低 ratio 均不算通过。
+
 ### Phase C：覆盖 policy-induced states
 
 第一轮 window bank 来自 dense trajectory。训练初版 policy 后，再从 policy rollout 中采集状态并加入

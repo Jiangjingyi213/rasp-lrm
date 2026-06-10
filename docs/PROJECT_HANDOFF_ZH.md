@@ -250,6 +250,33 @@ LayerNorm 破坏简单特征对照，以及 split 只按“是否有正例”而
 重采 `runs/rasp_phase_b_aligned_bank_v2/`，再训练 `runs/rasp_phase_b2_v3/`；v2 不执行正式
 test，也不作为 hidden signal 的停止结论。
 
+Phase B2 v3 数据已验收通过：新版 aligned bank 20/20 shard 均为 `ok`，164 个问题产生 1899 个
+完整 affected-window boundary、11394 个 nonzero action rows 和 558 个 final-flip 正例；
+hidden/action 强一致检查通过。window 修复改变了 `36.2%` 的 token-divergence 标签，position
+最大值从错误的 `1.0` 修正为 runtime 对齐的 `0.2292`，final-flip 主标签保持不变。现在可以启动
+六个 linear/nonlinear 裁决 variant，四卡队列命令见
+[`rasp_train_bottleneck_diagnosis_zh.md`](rasp_train_bottleneck_diagnosis_zh.md)。
+
+Phase B2 v3 六个裁决 variant 已完成。uncertainty nonlinear 在 test 上最佳：
+ROC-AUC `0.627 ± 0.057`、PR-AUC `0.098 ± 0.022`；hidden/combined nonlinear 仅为
+`0.555 ± 0.060`、`0.083 ± 0.019`，hidden/combined linear 接近随机。当前 `hidden` variant
+实际包含 raw hidden 与 uncertainty/position/dataset 特征，但 raw hidden 仍未带来稳定增益；
+高维 combined checkpoint 也普遍在 epoch `1–2` 停止，显示明显过拟合。当前裁决为：
+**不进入 Phase C、不运行 multitask 扩张，先执行低维/正则化 hidden residual 的 Phase B2.5
+受控诊断。**
+
+注意该裁决不等于推翻 Motivation。Motivation 的 1342-problem、problem-level OOF hidden probe
+五折 ROC-AUC 稳定在 `0.812–0.843`，证明 hidden 能表示永久/强结构扰动下的状态脆弱性。
+Phase B2 v3 检验的是仅作用 16 token、随后恢复 dense 的 MLP 动作是否造成最终答案 flip，属于
+更稀疏且可恢复的新任务。当前 aligned 数据语义、hidden/action 对齐和 split/test 隔离正确；
+尚未充分的是 hidden 模型裁决协议：缺少纯 hidden、train-only 标准化/降维、以及相对 uncertainty
+基线的 residual 增量对照。
+
+Phase B2.5 受控诊断链路已实现，默认输出 `runs/rasp_phase_b25/`。它固定复用 v3 数据与 split，
+比较 uncertainty baseline、纯 hidden PCA linear/nonlinear、以及 uncertainty + 低容量 hidden/action residual；
+所有标准化/PCA 仅在 train rows 拟合。测试新增 boundary any-flip 与 problem-bootstrap 95% CI。
+执行命令与 Phase C 准入标准见 `rasp_train_bottleneck_diagnosis_zh.md`。
+
 ## 5. 建议优先阅读
 
 - Motivation 全链路与专业概念解释：  
