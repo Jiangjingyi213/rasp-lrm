@@ -10,8 +10,8 @@ from sklearn.metrics import confusion_matrix, f1_score, recall_score
 from torch import nn
 
 
-STAGES = ["setup", "reasoning", "verification", "final"]
-STAGE_PROBE_SCHEMA = "rasp_stage_probe_s1_v2"
+STAGES = ["setup", "reasoning", "final"]
+STAGE_PROBE_SCHEMA = "rasp_stage_probe_s1_v3"
 STAGE_VARIANTS = {
     "position_only": "linear",
     "uncertainty_only": "nonlinear",
@@ -86,8 +86,10 @@ def problem_stage_split(rows: list[dict[str, Any]], seed: int) -> dict[str, Any]
             key: Counter(str(rows[index]["stage"]) for index in by_problem[key])
             for key in keys
         }
-        # Place rare-stage problems first, then greedily fill each split's
-        # problem quota while balancing stage counts.
+        # Place rare-stage problems first, then assign them to the split with
+        # the largest normalized stage deficit. Absolute-count distance puts
+        # nearly every rare-stage problem in train because train has the
+        # largest target, which silently destroys validation/test coverage.
         rarity = Counter(stage for counts in stage_counts.values() for stage in counts)
         keys.sort(key=lambda key: (sum(rarity[s] for s in stage_counts[key]), tie_break[key]))
         assigned_counts = {name: Counter() for name in split_keys}
@@ -103,29 +105,28 @@ def problem_stage_split(rows: list[dict[str, Any]], seed: int) -> dict[str, Any]
         dataset_split_keys = {name: [] for name in split_keys}
         for key in keys:
             candidates = [name for name in split_keys if len(dataset_split_keys[name]) < targets[name]]
-            selected = min(
+            selected = max(
                 candidates,
                 key=lambda name: (
                     sum(
-                        abs(
-                            assigned_counts[name][stage]
-                            + stage_counts[key][stage]
-                            - desired[name][stage]
-                        )
+                        max(0.0, desired[name][stage] - assigned_counts[name][stage])
+                        / max(1.0, desired[name][stage])
+                        * stage_counts[key][stage]
+                        / max(1, rarity[stage])
                         for stage in STAGES
                     ),
-                    len(dataset_split_keys[name]) / targets[name],
-                    name,
+                    -len(dataset_split_keys[name]) / targets[name],
+                    tie_break[key],
                 ),
             )
             dataset_split_keys[selected].append(key)
             assigned_counts[selected].update(stage_counts[key])
         for name in split_keys:
             split_keys[name].extend(dataset_split_keys[name])
-    return {
+    manifest = {
         "schema": STAGE_PROBE_SCHEMA,
         "seed": seed,
-        "split_strategy": "problem_level_dataset_balanced_stage_greedy_70_15_15",
+        "split_strategy": "problem_level_dataset_balanced_normalized_stage_deficit_70_15_15",
         "split_problem_keys": {
             name: [list(key) for key in sorted(keys)] for name, keys in split_keys.items()
         },
@@ -141,6 +142,8 @@ def problem_stage_split(rows: list[dict[str, Any]], seed: int) -> dict[str, Any]
             for name, keys in split_keys.items()
         },
     }
+    validate_stage_manifest(rows, manifest, seed)
+    return manifest
 
 
 def indices_for_stage_split(rows: list[dict[str, Any]], manifest: dict[str, Any], split: str) -> list[int]:
@@ -181,6 +184,12 @@ def validate_stage_manifest(
         raise ValueError(
             f"Stage manifest problem coverage mismatch: missing={len(missing)}, unknown={len(unknown)}"
         )
+    global_stages = {str(row["stage"]) for row in rows}
+    for split in ("train", "validation", "test"):
+        split_stages = set(manifest.get("stage_counts", {}).get(split, {}))
+        missing_stages = global_stages - split_stages
+        if missing_stages:
+            raise ValueError(f"Stage manifest split {split} is missing stages: {sorted(missing_stages)}")
 
 
 def fit_stage_transform(
@@ -278,9 +287,21 @@ class StageProbeNet(nn.Module):
 
 def stage_metrics(labels: list[int], predictions: list[int]) -> dict[str, Any]:
     recalls = recall_score(labels, predictions, labels=list(range(len(STAGES))), average=None, zero_division=0)
+    setup_index = stage_index("setup")
+    reasoning_index = stage_index("reasoning")
+    setup_rows = sum(label == setup_index for label in labels)
     return {
         "macro_f1": float(f1_score(labels, predictions, labels=list(range(len(STAGES))), average="macro", zero_division=0)),
         "per_stage_recall": {stage: float(value) for stage, value in zip(STAGES, recalls)},
+        "setup_to_reasoning_rate": (
+            sum(
+                label == setup_index and prediction == reasoning_index
+                for label, prediction in zip(labels, predictions)
+            )
+            / setup_rows
+            if setup_rows
+            else 0.0
+        ),
         "confusion_matrix": confusion_matrix(
             labels, predictions, labels=list(range(len(STAGES)))
         ).tolist(),

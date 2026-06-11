@@ -342,6 +342,19 @@ matrix 必须重点检查 `setup -> reasoning`；S1 通过前仍不采集 S2 ban
 `configs/stage_audits/s1_operational_v2_labels.csv`；训练脚本会自动应用标签并验证，服务器不需要
 手工再次填写 CSV。
 
+四类 S1 首轮训练已完成但审查后作废。全量 verification 仅 11 条；旧 problem split 还将
+validation/test 分布切坏：validation 没有 final，test 没有 verification 且约 `98.7%` 为
+reasoning。因此 checkpoint 选择和 held-out 结果均无效，不能据此宣称 hidden 通过。split 已改为
+normalized stage deficit，并新增每类最少 100 行与每 split 全 stage 覆盖硬 gate。下一步将
+verification 改为显式规则触发的 dense override，hidden probe 仅学习样本充足的
+setup/reasoning/final；现有四类 checkpoint 全部作废，仍不进入 S2。
+
+S1 v3 三类 learned-stage 链路已实现，默认输出到
+`runs/07_stage_aware/03_s1_three_stage_probe/`。数据准备会排除显式 verification 并写入
+`01_verification_dense_overrides.jsonl`，修复后的 split 强制三个 split 覆盖
+setup/reasoning/final。正式 gate 新增每个 seed 的 `setup -> reasoning <= 10%`，防止 controller
+在 setup 阶段过早剪枝。下一步只生成并审核 v3 的新审计 CSV；审核标签同步前不启动训练。
+
 ## 5. 建议优先阅读
 
 ### 产物目录约定

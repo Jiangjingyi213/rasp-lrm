@@ -2,11 +2,13 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-runs/07_stage_aware/02_s1_operational_stage_probe}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-runs/07_stage_aware/03_s1_three_stage_probe}"
 VARIANTS="${STAGE_PROBE_VARIANTS:-position_only uncertainty_only hidden_pca_linear hidden_pca_nonlinear hidden_uncertainty}"
+AUDIT_LABELS="${STAGE_AUDIT_LABELS:-configs/stage_audits/s1_three_stage_v3_labels.csv}"
 
 "${PYTHON}" scripts/62_apply_rasp_stage_audit_labels.py \
-  --audit "${OUTPUT_ROOT}/data/02_stage_manual_audit.csv"
+  --audit "${OUTPUT_ROOT}/data/02_stage_manual_audit.csv" \
+  --labels "${AUDIT_LABELS}"
 "${PYTHON}" scripts/61_validate_rasp_stage_audit.py \
   --audit "${OUTPUT_ROOT}/data/02_stage_manual_audit.csv"
 

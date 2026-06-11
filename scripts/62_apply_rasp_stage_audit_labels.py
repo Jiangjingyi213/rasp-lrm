@@ -17,15 +17,21 @@ def main() -> None:
     parser.add_argument("--audit", required=True)
     parser.add_argument(
         "--labels",
-        default="configs/stage_audits/s1_operational_v2_labels.csv",
+        default="configs/stage_audits/s1_three_stage_v3_labels.csv",
     )
     args = parser.parse_args()
 
     audit_path = Path(args.audit)
+    labels_path = Path(args.labels)
+    if not labels_path.exists():
+        raise SystemExit(
+            f"Reviewed audit labels not found: {labels_path}. "
+            "Complete and sync the independent audit before training."
+        )
     with audit_path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
         fieldnames = list(rows[0])
-    with Path(args.labels).open(newline="", encoding="utf-8") as handle:
+    with labels_path.open(newline="", encoding="utf-8") as handle:
         labels = {key(row): row for row in csv.DictReader(handle)}
     audit_keys = {key(row) for row in rows}
     if audit_keys != set(labels):

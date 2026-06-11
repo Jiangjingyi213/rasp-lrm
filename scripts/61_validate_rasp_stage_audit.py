@@ -5,7 +5,7 @@ import csv
 from pathlib import Path
 
 
-STAGES = {"setup", "reasoning", "verification", "final"}
+STAGES = {"setup", "reasoning", "final"}
 
 
 def main() -> None:

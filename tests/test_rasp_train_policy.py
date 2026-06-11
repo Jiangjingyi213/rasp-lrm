@@ -415,6 +415,8 @@ class RaspTrainPolicyTest(unittest.TestCase):
         self.assertTrue(split_sets["train"].isdisjoint(split_sets["test"]))
         self.assertTrue(split_sets["validation"].isdisjoint(split_sets["test"]))
         self.assertEqual(len(indices_for_stage_split(rows, first, "test")), 18)
+        for split in ("train", "validation", "test"):
+            self.assertEqual(set(first["stage_counts"][split]), {"setup", "reasoning", "final"})
 
     def test_stage_transform_is_train_only_and_variants_have_expected_dims(self) -> None:
         rows = [
@@ -435,11 +437,12 @@ class RaspTrainPolicyTest(unittest.TestCase):
         self.assertEqual(tuple(transform_stage_features(rows, hidden, transform, "hidden_uncertainty").shape), (10, 5))
 
     def test_stage_probe_metrics_include_all_stages(self) -> None:
-        metrics = stage_metrics([0, 1, 2, 3, 4], [0, 1, 2, 2, 4])
-        self.assertEqual(len(metrics["per_stage_recall"]), 4)
-        self.assertEqual(len(metrics["confusion_matrix"]), 4)
+        metrics = stage_metrics([0, 1, 2, 0], [1, 1, 2, 0])
+        self.assertEqual(len(metrics["per_stage_recall"]), 3)
+        self.assertEqual(len(metrics["confusion_matrix"]), 3)
+        self.assertEqual(metrics["setup_to_reasoning_rate"], 0.5)
         model = StageProbeNet(dim=3, model_type="linear")
-        self.assertEqual(tuple(model(torch.zeros(2, 3)).shape), (2, 4))
+        self.assertEqual(tuple(model(torch.zeros(2, 3)).shape), (2, 3))
 
     def test_operational_stage_classifier_avoids_keyword_false_positives(self) -> None:
         self.assertEqual(classify_operational_stage("Final answer: \\\\boxed{4}", 4, 5), "final")

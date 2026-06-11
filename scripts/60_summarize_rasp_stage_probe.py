@@ -8,7 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 
 
-KEY_RECALLS = ("setup", "reasoning", "verification", "final")
+KEY_RECALLS = ("setup", "reasoning", "final")
 REQUIRED_VARIANTS = (
     "position_only",
     "uncertainty_only",
@@ -20,11 +20,12 @@ REQUIRED_SEEDS = 3
 MAX_MACRO_F1_STD = 0.05
 REQUIRED_AUDIT_ROWS = 100
 REQUIRED_AUDIT_AGREEMENT = 0.80
+MAX_SETUP_TO_REASONING_RATE = 0.10
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", default="runs/07_stage_aware/02_s1_operational_stage_probe")
+    parser.add_argument("--root", default="runs/07_stage_aware/03_s1_three_stage_probe")
     args = parser.parse_args()
     root = Path(args.root)
     raw, grouped = [], defaultdict(list)
@@ -35,6 +36,7 @@ def main() -> None:
             "variant": result["variant"],
             "macro_f1": result["macro_f1"],
             "mean_max_probability": result["mean_max_probability"],
+            "setup_to_reasoning_rate": result["setup_to_reasoning_rate"],
             **{f"recall_{stage}": value for stage, value in result["per_stage_recall"].items()},
         }
         raw.append(row)
@@ -45,7 +47,7 @@ def main() -> None:
     for variant, rows in sorted(grouped.items()):
         output = {"variant": variant, "seeds": len({int(row["seed"]) for row in rows})}
         recall_metrics = sorted(key for key in rows[0] if key.startswith("recall_"))
-        for metric in ["macro_f1", "mean_max_probability", *recall_metrics]:
+        for metric in ["macro_f1", "mean_max_probability", "setup_to_reasoning_rate", *recall_metrics]:
             values = [float(value[metric]) for value in rows]
             output[f"{metric}_mean"] = statistics.mean(values)
             output[f"{metric}_std"] = statistics.stdev(values) if len(values) > 1 else 0.0
@@ -92,11 +94,15 @@ def main() -> None:
         "required_macro_f1_std_max": MAX_MACRO_F1_STD,
         "required_manual_audit_rows": REQUIRED_AUDIT_ROWS,
         "required_manual_label_agreement": REQUIRED_AUDIT_AGREEMENT,
+        "required_setup_to_reasoning_rate_max": MAX_SETUP_TO_REASONING_RATE,
         "valid_manual_audit_rows": len(valid_audited),
         "manual_label_agreement": audit_agreement,
         "macro_f1_gate_passed": best_hidden["macro_f1_mean"] - simple_best >= 0.05,
         "key_stage_recall_gate_passed": all(
             best_hidden[f"recall_{stage}_min"] >= 0.70 for stage in KEY_RECALLS
+        ),
+        "setup_safety_gate_passed": (
+            best_hidden["setup_to_reasoning_rate_max"] <= MAX_SETUP_TO_REASONING_RATE
         ),
         "three_seed_stability_gate_passed": (
             all(
@@ -115,6 +121,7 @@ def main() -> None:
         for name in (
             "macro_f1_gate_passed",
             "key_stage_recall_gate_passed",
+            "setup_safety_gate_passed",
             "three_seed_stability_gate_passed",
             "manual_audit_gate_passed",
         )
