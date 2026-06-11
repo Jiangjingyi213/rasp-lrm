@@ -758,6 +758,118 @@ runs/rasp_phase_b25/comparison_summary.json
 `uncertainty_nonlinear` 稳定改善 action/boundary 排序，并在相近 test flip 下改善 controller
 utilization；单 seed 提升、bootstrap CI 大量重叠或依赖更低 ratio 均不算通过。
 
+### Phase B2.5 结果与裁决
+
+Phase B2.5 已完整产生 12/12 checkpoint、12/12 train metrics 和 12/12 test eval。全部
+checkpoint 由 validation 选择，全部标准化/PCA 仅在 train rows 拟合。三 seed 聚合结果：
+
+| variant | action ROC / PR | boundary ROC / PR | B15 utilization / flip | B20 utilization / flip |
+|---|---:|---:|---:|---:|
+| uncertainty nonlinear | `0.553 / 0.077` | `0.508 / 0.196` | `0.601 / 0.0182` | `0.649 / 0.0255` |
+| hidden PCA linear | `0.459 / 0.046` | `0.450 / 0.152` | `0.670 / 0.0276` | `0.781 / 0.0434` |
+| hidden PCA nonlinear | `0.565 / 0.079` | `0.544 / 0.214` | `0.867 / 0.0265` | `0.881 / 0.0314` |
+| uncertainty + hidden residual | `0.520 / 0.068` | `0.501 / 0.191` | `0.817 / 0.0288` | `0.741 / 0.0338` |
+
+降维缓解了 raw hidden 的立即过拟合：hidden PCA nonlinear 的最佳 epoch 为 `6/8/31`，相比 v3
+高维 combined nonlinear 的 `1/2/2` 更健康。它相对本轮 uncertainty baseline 的平均 action ROC
+提高约 `0.011`、boundary ROC 提高约 `0.035`，说明 hidden 并非完全没有短窗口 fragility 信号。
+但增益不稳定：
+
+- action ROC 仅 seed 1 明显胜出，seed 2/3 均低于 uncertainty；
+- action PR 平均只提高约 `0.003`；
+- 所有 problem-bootstrap 95% CI 都很宽且大量重叠；
+- 更高 utilization 同时伴随更高 flip，没有形成稳定 Pareto 优势。
+
+用于检验增量价值的 residual 更明确失败：相对同轮 uncertainty baseline，三个 seed 的 action
+ROC 分别下降约 `0.049/0.019/0.032`，平均 action/boundary ROC 分别下降约 `0.033/0.007`；
+B15/B20 虽使用更多 ratio，但 flip 也分别增加约 `0.0106/0.0084`。因此当前
+`uncertainty_hidden_residual` 不通过 Phase C 准入条件。
+
+另外，B2.5 的小容量/full-batch uncertainty baseline action ROC 为 `0.553`，弱于 v3 已有最佳
+uncertainty nonlinear 的 `0.627`。所以 B2.5 只用于同轮 hidden 增量诊断，不能替代 v3 最强
+baseline；B2.5 最好的 hidden PCA nonlinear `0.565` 仍明显低于项目当前最强 uncertainty router。
+
+该结果仍有一个实验边界：当前 residual 与 uncertainty 主分支联合从零训练，而不是冻结完全相同的
+uncertainty checkpoint 后仅训练 residual。因此它可靠地否定当前联合 residual 结构，但还不是
+hidden 增量信息的最终统计检验。下一步只应做一次低成本的 B2.5b：
+
+1. 固定每 seed 已训练的 uncertainty baseline；
+2. 冻结 baseline，只在 train split 学习零初始化的小容量 hidden/action residual；
+3. 使用 validation 选择 residual 强度，并在同一 test predictions 上做 paired problem bootstrap；
+4. 若三 seed paired delta 仍不为正，则停止 hidden router 路线，不进入 Phase C。
+
+**当前裁决：不进入 Phase C。** 不扩大 bank、不运行 multitask，也不继续调 PCA/model dim。
+
+### Phase B2.5b 冻结基线残差实验
+
+最终低成本裁决链路已实现：
+
+```text
+src/rasp/phase_b25b.py
+src/main_train_rasp_phase_b25b.py
+src/main_eval_rasp_phase_b25b.py
+scripts/52_train_rasp_phase_b25b.sh
+scripts/53_eval_rasp_phase_b25b.sh
+scripts/54_summarize_rasp_phase_b25b.py
+```
+
+每个 seed 直接加载并冻结 v3 的 `uncertainty_flip_only/policy.pt`。B2.5b 只训练
+train-only hidden PCA + ratio residual，最后一层严格零初始化；validation 同时选择 epoch 与
+`alpha ∈ {0, 0.25, 0.5, 0.75, 1}`。`alpha=0` 始终作为候选，因此 residual 无法通过 validation
+选择时会精确退回原始 uncertainty baseline。正式 residual checkpoint 会内嵌冻结 baseline，
+确保 eval 使用与训练时完全相同的基线权重。
+
+Test 使用同一组 problems 和同一组 bootstrap 重采样，直接报告 combined 相对 frozen baseline 的：
+
+```text
+paired action ROC/PR delta + 95% CI
+paired boundary ROC/PR delta + 95% CI
+B15/B20 baseline vs combined ratio / flip
+```
+
+先运行单 seed 两 epoch smoke：
+
+```bash
+OUTPUT_ROOT=runs/rasp_phase_b25b_smoke PHASE_B25B_SEEDS="1" PHASE_B25B_EPOCHS="2" \
+bash scripts/52_train_rasp_phase_b25b.sh
+
+OUTPUT_ROOT=runs/rasp_phase_b25b_smoke PHASE_B25B_SEEDS="1" \
+bash scripts/53_eval_rasp_phase_b25b.sh
+```
+
+Smoke 完成后，三张 GPU 并行正式运行：
+
+```bash
+mkdir -p logs
+
+nohup env CUDA_VISIBLE_DEVICES=0 PHASE_B25B_SEEDS="1" \
+  bash scripts/52_train_rasp_phase_b25b.sh > logs/rasp_phase_b25b_seed1.log 2>&1 &
+
+nohup env CUDA_VISIBLE_DEVICES=1 PHASE_B25B_SEEDS="2" \
+  bash scripts/52_train_rasp_phase_b25b.sh > logs/rasp_phase_b25b_seed2.log 2>&1 &
+
+nohup env CUDA_VISIBLE_DEVICES=2 PHASE_B25B_SEEDS="3" \
+  bash scripts/52_train_rasp_phase_b25b.sh > logs/rasp_phase_b25b_seed3.log 2>&1 &
+```
+
+训练完成后统一评估：
+
+```bash
+bash scripts/53_eval_rasp_phase_b25b.sh
+```
+
+结果写入 `runs/rasp_phase_b25b/`，正式验收文件为：
+
+```text
+comparison_raw.csv
+comparison_summary.csv
+comparison_summary.json
+```
+
+只有三个 seed 的 paired action delta 稳定为正，且 controller 在相近或更低 flip 下增加 ratio，
+才允许进入 Phase C。否则执行预先定义的停止条件：停止 hidden router，转向 uncertainty /
+conservative RASP-Zero 在线主线。
+
 ### Phase C：覆盖 policy-induced states
 
 第一轮 window bank 来自 dense trajectory。训练初版 policy 后，再从 policy rollout 中采集状态并加入

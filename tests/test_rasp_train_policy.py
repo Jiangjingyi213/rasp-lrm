@@ -35,6 +35,7 @@ from src.rasp.phase_b25 import (
     fit_phase_b25_transform,
     transform_phase_b25_features,
 )
+from src.rasp.phase_b25b import HiddenActionResidual, combined_risks
 from src.rasp.train_policy import (
     POLICY_FEATURE_SCHEMA,
     ActionRiskPolicyNet,
@@ -245,6 +246,15 @@ class RaspTrainPolicyTest(unittest.TestCase):
         labels, scores = boundary_any_flip_metrics(rows, [[0.0, 0.2, 0.8], [0.0, 0.1, 0.3]])
         self.assertEqual(labels, [1, 0])
         self.assertEqual(scores, [0.8, 0.3])
+
+    def test_phase_b25b_residual_is_zero_initialized_and_alpha_zero_reproduces_base(self) -> None:
+        model = HiddenActionResidual(hidden_pca_dim=4, model_dim=8)
+        residual = model(torch.randn(2, 4), torch.tensor(DEFAULT_RATIOS))
+        self.assertTrue(torch.equal(residual, torch.zeros_like(residual)))
+        base_logits = torch.randn(2, len(DEFAULT_RATIOS))
+        base = combined_risks(base_logits, residual, alpha=0.0)
+        combined = combined_risks(base_logits, torch.randn_like(residual), alpha=0.0)
+        self.assertEqual(base, combined)
 
     def test_shared_training_requires_equivalent_action_labels(self) -> None:
         row = {
