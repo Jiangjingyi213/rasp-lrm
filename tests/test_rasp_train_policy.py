@@ -37,6 +37,15 @@ from src.rasp.phase_b25 import (
 )
 from src.rasp.phase_b25b import HiddenActionResidual, combined_risks
 from src.rasp.phase_b2_controller import PhaseB2UncertaintyController
+from src.rasp.stage_probe import (
+    StageProbeNet,
+    fit_stage_transform,
+    indices_for_stage_split,
+    problem_stage_split,
+    stage_metrics,
+    transform_stage_features,
+    validate_stage_manifest,
+)
 from src.rasp.train_policy import (
     POLICY_FEATURE_SCHEMA,
     ActionRiskPolicyNet,
@@ -381,6 +390,55 @@ class RaspTrainPolicyTest(unittest.TestCase):
                 0.0,
             )
             self.assertIn("outside_policy_horizon", controller.last_decision["cap_reasons"])
+
+    def test_stage_probe_split_is_problem_disjoint_and_seeded(self) -> None:
+        rows = [
+            {
+                "dataset": dataset,
+                "id": str(problem),
+                "stage": ("planning", "derivation", "final")[segment],
+            }
+            for dataset in ("gsm8k", "math500")
+            for problem in range(20)
+            for segment in range(3)
+        ]
+        first = problem_stage_split(rows, seed=1)
+        second = problem_stage_split(rows, seed=2)
+        validate_stage_manifest(rows, first, seed=1)
+        self.assertNotEqual(first["split_problem_keys"], second["split_problem_keys"])
+        split_sets = {
+            split: {tuple(key) for key in first["split_problem_keys"][split]}
+            for split in ("train", "validation", "test")
+        }
+        self.assertTrue(split_sets["train"].isdisjoint(split_sets["validation"]))
+        self.assertTrue(split_sets["train"].isdisjoint(split_sets["test"]))
+        self.assertTrue(split_sets["validation"].isdisjoint(split_sets["test"]))
+        self.assertEqual(len(indices_for_stage_split(rows, first, "test")), 18)
+
+    def test_stage_transform_is_train_only_and_variants_have_expected_dims(self) -> None:
+        rows = [
+            {
+                "position": index / 9,
+                "entropy": float(index),
+                "confidence": 1.0 - index / 10,
+            }
+            for index in range(10)
+        ]
+        hidden = torch.arange(60, dtype=torch.float32).reshape(10, 6)
+        transform = fit_stage_transform(rows, hidden, list(range(7)), pca_dim=3)
+        self.assertEqual(transform["fit_split"], "train")
+        self.assertEqual(transform["fit_row_count"], 7)
+        self.assertEqual(tuple(transform_stage_features(rows, hidden, transform, "position_only").shape), (10, 1))
+        self.assertEqual(tuple(transform_stage_features(rows, hidden, transform, "uncertainty_only").shape), (10, 2))
+        self.assertEqual(tuple(transform_stage_features(rows, hidden, transform, "hidden_pca_linear").shape), (10, 3))
+        self.assertEqual(tuple(transform_stage_features(rows, hidden, transform, "hidden_uncertainty").shape), (10, 5))
+
+    def test_stage_probe_metrics_include_all_stages(self) -> None:
+        metrics = stage_metrics([0, 1, 2, 3, 4], [0, 1, 2, 2, 4])
+        self.assertEqual(len(metrics["per_stage_recall"]), 5)
+        self.assertEqual(len(metrics["confusion_matrix"]), 5)
+        model = StageProbeNet(dim=3, model_type="linear")
+        self.assertEqual(tuple(model(torch.zeros(2, 3)).shape), (2, 5))
 
 
 if __name__ == "__main__":

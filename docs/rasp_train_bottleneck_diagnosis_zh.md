@@ -940,6 +940,33 @@ Smoke 只做故障与方向检查。若 dense-correct flip 没有明显失控且
 三个 checkpoint seed 和更大 paired sample；若 uncertainty 在线同样没有 Pareto，则主线回到
 conservative RASP-Zero，并开始真实 reduced-weight backend，不再继续 learned router。
 
+### Phase B3 首轮结果与裁决
+
+20 题 paired smoke 已完整产生两数据集的 dense/B15/B20 trajectories、runtime summary 与 paired
+comparison。结果如下：
+
+| dataset | dense acc | B15 acc / ratio / D+→P- | B20 acc / ratio / D+→P- |
+|---|---:|---:|---:|
+| GSM8K | `0.75` | `0.60 / 0.044 / 3` | `0.55 / 0.051 / 4` |
+| MATH500（原始 matcher） | `0.45` | `0.35 / 0.031 / 2` | `0.45 / 0.036 / 1` |
+| MATH500（修正 categorical matcher） | `0.45` | `0.40 / 0.031 / 1` | `0.50 / 0.036 / 0` |
+
+MATH500 的 Evelyn 样例中，policy 明确回答 Evelyn，但未使用 boxed short answer，旧 matcher 将其
+错误记为 wrong；该 categorical final-answer 假阴性已修复。该修复不影响 GSM8K 的失败结论。
+
+实现审查未发现 ratio mask、固定 prefill ranking、checkpoint 特征、threshold、单调风险包络、
+prefix budget 或 192-token horizon 接线错误。失败的主要原因是训练/在线 action exposure 不同：
+
+- aligned bank 每个样本只在一个 16-token window 施加动作，之后恢复 dense；
+- online rollout 在前 192 token 连续施加多个动作；
+- 第一个动作已经是 B15 `0.10`、B20 `0.20`，前 64 token 几乎每个窗口都被剪；
+- 后续观察来自 policy-induced state，但训练 bank 只包含 dense trajectory state。
+
+**当前裁决：不扩三 seed和大样本。** GSM8K 已在很低全程 ratio 下出现明显真实 accuracy 损失，
+足以否定当前连续窗口 uncertainty rollout。下一步只执行一个低成本因果诊断：比较“每题只允许
+一个在线剪枝窗口”与当前连续窗口。若单窗口同样产生不可接受 flip，停止 learned router；若单窗口
+安全而连续窗口失败，则累积状态漂移假设成立，再决定是否值得做最小化 state aggregation。
+
 ### Phase C：覆盖 policy-induced states
 
 第一轮 window bank 来自 dense trajectory。训练初版 policy 后，再从 policy rollout 中采集状态并加入

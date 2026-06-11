@@ -4,11 +4,16 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+from src.metrics.answer_match import answer_match
 from src.utils.io import read_jsonl, write_json
 
 
 def _key(row: dict[str, Any]) -> tuple[str, str]:
     return (str(row.get("dataset") or "unknown"), str(row["id"]))
+
+
+def _correct(row: dict[str, Any]) -> bool:
+    return answer_match(str(row.get("completion", "")), str(row.get("gold", "")))
 
 
 def main() -> None:
@@ -31,8 +36,8 @@ def main() -> None:
         )
 
     paired = [(dense_by_key[key], policy_by_key[key]) for key in sorted(dense_by_key)]
-    dense_correct = sum(int(bool(dense["correct"])) for dense, _policy in paired)
-    policy_correct = sum(int(bool(policy["correct"])) for _dense, policy in paired)
+    dense_correct = sum(int(_correct(dense)) for dense, _policy in paired)
+    policy_correct = sum(int(_correct(policy)) for _dense, policy in paired)
     dense_correct_policy_wrong = [
         {
             "dataset": dense.get("dataset"),
@@ -45,10 +50,10 @@ def main() -> None:
             .get("average_decode_pruning_ratio"),
         }
         for dense, policy in paired
-        if bool(dense["correct"]) and not bool(policy["correct"])
+        if _correct(dense) and not _correct(policy)
     ]
     dense_wrong_policy_correct = sum(
-        int(not bool(dense["correct"]) and bool(policy["correct"]))
+        int(not _correct(dense) and _correct(policy))
         for dense, policy in paired
     )
     output = {
@@ -57,6 +62,7 @@ def main() -> None:
         "dense_accuracy": dense_correct / len(paired) if paired else None,
         "policy_correct": policy_correct,
         "policy_accuracy": policy_correct / len(paired) if paired else None,
+        "correctness_recomputed_from_completion": True,
         "dense_correct_policy_wrong_count": len(dense_correct_policy_wrong),
         "dense_wrong_policy_correct_count": dense_wrong_policy_correct,
         "dense_correct_policy_wrong": dense_correct_policy_wrong,

@@ -15,5 +15,6 @@
 - `05_phase_b/02_phase_b2/`：Phase B2、v2、v3。
 - `05_phase_b/03_phase_b25/`：Phase B2.5 与 B2.5b。
 - `06_phase_b3_online/`：当前 uncertainty paired online 验证。
+- `07_stage_aware/`：Stage-aware hidden controller 主线。
 
 使用 `bash scripts/56_organize_experiment_artifacts.sh` 可重复整理从服务器同步回来的旧顶层产物。

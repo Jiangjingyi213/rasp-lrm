@@ -154,4 +154,11 @@ def answer_match(prediction: str, gold: str) -> bool:
     gold_frac = _as_fraction(gold_answer)
     if pred_frac is not None and gold_frac is not None:
         return pred_frac == gold_frac
-    return pred.lower() == gold_answer.lower()
+    if pred.lower() == gold_answer.lower():
+        return True
+    # MATH contains short categorical answers such as person names. A model
+    # may place the correct category in a final-answer sentence without boxing
+    # it, so accept a single alphabetic gold token only as a whole word.
+    if re.fullmatch(r"[A-Za-z]+", gold_answer):
+        return bool(re.search(rf"\b{re.escape(gold_answer)}\b", pred, re.IGNORECASE))
+    return False

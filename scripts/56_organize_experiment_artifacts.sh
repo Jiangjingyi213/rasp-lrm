@@ -34,12 +34,14 @@ mkdir -p \
   "${RUNS_ROOT}/05_phase_b/02_phase_b2" \
   "${RUNS_ROOT}/05_phase_b/03_phase_b25" \
   "${RUNS_ROOT}/06_phase_b3_online" \
+  "${RUNS_ROOT}/07_stage_aware" \
   "${LOGS_ROOT}/01_motivation" \
   "${LOGS_ROOT}/02_baselines" \
   "${LOGS_ROOT}/03_rasp_zero" \
   "${LOGS_ROOT}/04_rasp_train" \
   "${LOGS_ROOT}/05_phase_b" \
-  "${LOGS_ROOT}/06_phase_b3_online"
+  "${LOGS_ROOT}/06_phase_b3_online" \
+  "${LOGS_ROOT}/07_stage_aware"
 
 move_entry "${RUNS_ROOT}/cache" "${RUNS_ROOT}/00_shared"
 move_entry "${RUNS_ROOT}/data" "${RUNS_ROOT}/00_shared"

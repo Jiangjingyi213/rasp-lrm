@@ -305,6 +305,26 @@ calibration threshold、单调风险包络与因果 prefix budget，不读取 hi
 为在线 accuracy/ratio Pareto。由于 v3 bank 只覆盖前 12 个窗口，smoke 在前 192 token 后强制
 恢复 dense，避免训练范围外外推；它不代表进入 Phase C，也不能把 logical mask 描述为真实加速。
 
+Phase B3 首轮 20 题 paired online smoke 已完成。GSM8K dense/B15/B20 accuracy 为
+`0.75/0.60/0.55`，在全程平均逻辑 ratio 仅 `0.044/0.051` 时仍产生 `3/4` 个真实
+dense-correct flip，未形成在线 Pareto。MATH500 原始统计为 `0.45/0.35/0.45`，其中 Evelyn
+样例属于 categorical final-answer 匹配假阴性；修正匹配器后应解释为 `0.45/0.40/0.50`，但样本
+仍过小且 B20 有一进一出。审查未发现 runtime masking/controller 接线错误；核心失配是离线 bank
+只评估“单个 16-token window 后恢复 dense”，在线却连续施加多个窗口，导致未训练过的累积状态
+漂移。当前不扩三 seed/大样本，也不直接进入完整 Phase C；下一步仅做单窗口在线 vs 连续窗口在线
+暴露消融，若单窗口仍不安全则停止 learned router，若仅连续窗口失败才重新讨论最小化 state
+aggregation。
+
+项目主线随后收束为 Stage-Aware Hidden Controller。停止把 hidden 直接用于短窗口 final-flip
+精确预测，改为先验证 hidden 能否稳定识别 reasoning stage。Phase S1 已实现：从正式 Motivation
+数据按 problem/segment 去重，比较 position、uncertainty、hidden-PCA 与 hidden+uncertainty，
+使用 problem-level train/validation/test、train-only 标准化/PCA、三 seed macro-F1/recall 裁决；
+planning、derivation、final recall 必须在每个 seed 均不低于 `0.70`。
+S1 硬门槛还包括最佳 hidden macro-F1 跨 seed 标准差不超过 `0.05`，以及至少 100 条人工 stage
+审计且规则标签一致率不低于 `0.80`。
+执行与准入条件见 [`rasp_stage_aware_mainline_zh.md`](rasp_stage_aware_mainline_zh.md)。S1 未通过前
+不采集 S2 bank、不实现 S3 controller。
+
 ## 5. 建议优先阅读
 
 ### 产物目录约定
@@ -317,8 +337,10 @@ runs/05_phase_b/01_aligned_banks/   # aligned banks
 runs/05_phase_b/02_phase_b2/        # Phase B2/v2/v3
 runs/05_phase_b/03_phase_b25/       # Phase B2.5/B2.5b
 runs/06_phase_b3_online/             # 当前 paired online
+runs/07_stage_aware/                 # Stage-aware hidden 主线
 logs/05_phase_b/
 logs/06_phase_b3_online/
+logs/07_stage_aware/
 ```
 
 服务器同步旧格式结果或执行 `git pull` 后，先运行：

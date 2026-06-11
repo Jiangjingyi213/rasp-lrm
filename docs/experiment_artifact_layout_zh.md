@@ -11,6 +11,7 @@
 | `runs/04_rasp_train/` | RASP-Train v1/v2/v2.1 与 fair benchmark |
 | `runs/05_phase_b/` | aligned banks、Phase B2/v2/v3、B2.5/B2.5b |
 | `runs/06_phase_b3_online/` | 当前 uncertainty paired online 验证 |
+| `runs/07_stage_aware/` | Stage-aware hidden controller 主线 |
 
 日志对应写入：
 
@@ -21,6 +22,7 @@ logs/03_rasp_zero/
 logs/04_rasp_train/
 logs/05_phase_b/
 logs/06_phase_b3_online/
+logs/07_stage_aware/
 ```
 
 服务器同步旧目录后执行：
