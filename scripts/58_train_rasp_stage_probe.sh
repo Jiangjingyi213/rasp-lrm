@@ -5,6 +5,8 @@ PYTHON="${PYTHON:-python3}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-runs/07_stage_aware/02_s1_operational_stage_probe}"
 VARIANTS="${STAGE_PROBE_VARIANTS:-position_only uncertainty_only hidden_pca_linear hidden_pca_nonlinear hidden_uncertainty}"
 
+"${PYTHON}" scripts/62_apply_rasp_stage_audit_labels.py \
+  --audit "${OUTPUT_ROOT}/data/02_stage_manual_audit.csv"
 "${PYTHON}" scripts/61_validate_rasp_stage_audit.py \
   --audit "${OUTPUT_ROOT}/data/02_stage_manual_audit.csv"
 

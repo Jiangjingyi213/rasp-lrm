@@ -338,6 +338,9 @@ stage probe。已将不可稳定区分的 planning/derivation 合并为 operatio
 verification/final 分别为 `96.4%/62.5%/90.9%/100%`。主要残余错误为规则将只列条件或定义变量的
 setup 片段误标为 reasoning。当前允许启动四类 S1 probe 三 seed 训练，但 held-out confusion
 matrix 必须重点检查 `setup -> reasoning`；S1 通过前仍不采集 S2 bank。
+由于 `runs/` 不受 Git 管理，人工标签已同步保存为
+`configs/stage_audits/s1_operational_v2_labels.csv`；训练脚本会自动应用标签并验证，服务器不需要
+手工再次填写 CSV。
 
 ## 5. 建议优先阅读
 
