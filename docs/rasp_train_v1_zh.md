@@ -507,3 +507,9 @@ B2.5 最佳 hidden PCA nonlinear action ROC `0.565` 仍低于 v3 最强 uncertai
 residual；validation 选择 epoch 和 residual alpha，并允许 `alpha=0` 原样退回 baseline。Test
 通过 paired problem bootstrap 直接报告 action/boundary ROC/PR 增量与 controller 差异。若三
 seed 不形成稳定正增量，则停止 hidden router，后续在线主线使用 uncertainty/conservative RASP-Zero。
+
+Phase B2.5b 最终结果触发停止条件：三 seed action ROC delta 为
+`0.0000 / +0.0121 / -0.0644`，平均 `-0.0174 ± 0.0411`，所有 paired 95% CI 均未稳定为正；
+seed 1 validation 直接选择 `alpha=0`。因此停止 hidden router，不进入 Phase C，也不继续调
+hidden 模型。Motivation 的 hidden fragility 结论仍保留，但在线短窗口控制主线转向 v3
+uncertainty router 与 conservative RASP-Zero 的 paired online 验证。

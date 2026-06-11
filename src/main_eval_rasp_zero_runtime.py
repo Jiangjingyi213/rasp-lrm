@@ -17,6 +17,7 @@ from src.rasp.budget_controller import ConfidenceThresholdController, FixedRatio
 from src.rasp.greedy_decode import greedy_decode_runtime
 from src.rasp.metrics import summarize_runtime_rows
 from src.rasp.mlp_runtime import apply_runtime_mlp_masking_qwen3
+from src.rasp.phase_b2_controller import PhaseB2UncertaintyController
 from src.rasp.train_controller import RaspTrainPolicyController
 from src.utils.io import ensure_dir, read_yaml, write_json, write_jsonl
 from src.utils.seed import set_seed
@@ -59,6 +60,21 @@ def _build_controller(config: dict, generation_config: dict, runtime_layers: lis
             target_average_ratio=float(config.get("target_average_ratio", 0.20)),
             max_new_tokens=int(generation_config.get("max_new_tokens", 512)),
             window_tokens=int(config.get("window_tokens", 16)),
+            default_max_ratio=float(config.get("default_max_ratio", max(config.get("ratios", [0.40])))),
+            early_tokens=int(config.get("early_tokens", 0)),
+            early_max_ratio=config.get("early_max_ratio"),
+            high_entropy_threshold=config.get("high_entropy_threshold"),
+            high_entropy_max_ratio=config.get("high_entropy_max_ratio"),
+            low_confidence_threshold=config.get("low_confidence_threshold"),
+            low_confidence_max_ratio=config.get("low_confidence_max_ratio"),
+            risk_threshold=config.get("risk_threshold"),
+        )
+    if controller == "phase_b2_uncertainty":
+        return PhaseB2UncertaintyController(
+            checkpoint_path=config["policy_checkpoint"],
+            target_average_ratio=float(config.get("target_average_ratio", 0.20)),
+            max_new_tokens=int(generation_config.get("max_new_tokens", 512)),
+            policy_horizon_tokens=config.get("policy_horizon_tokens"),
             default_max_ratio=float(config.get("default_max_ratio", max(config.get("ratios", [0.40])))),
             early_tokens=int(config.get("early_tokens", 0)),
             early_max_ratio=config.get("early_max_ratio"),
@@ -124,7 +140,11 @@ def main() -> None:
         "method": (
             "rasp_train_runtime_v2_1"
             if runtime_cfg.get("controller") == "rasp_train_policy"
-            else "rasp_zero_runtime_v0"
+            else (
+                "rasp_phase_b2_uncertainty_runtime_v1"
+                if runtime_cfg.get("controller") == "phase_b2_uncertainty"
+                else "rasp_zero_runtime_v0"
+            )
         ),
         "backend": "logical_mask_v0",
         "controller": runtime_cfg.get("controller", "fixed"),
@@ -132,6 +152,7 @@ def main() -> None:
         "policy_checkpoint": runtime_cfg.get("policy_checkpoint"),
         "risk_threshold": getattr(controller, "risk_threshold", runtime_cfg.get("risk_threshold")),
         "target_average_ratio": runtime_cfg.get("target_average_ratio"),
+        "policy_horizon_tokens": runtime_cfg.get("policy_horizon_tokens"),
         "default_max_ratio": runtime_cfg.get("default_max_ratio"),
         "early_tokens": runtime_cfg.get("early_tokens"),
         "early_max_ratio": runtime_cfg.get("early_max_ratio"),

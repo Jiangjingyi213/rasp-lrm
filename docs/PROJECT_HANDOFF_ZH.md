@@ -290,6 +290,21 @@ Phase B2.5b 冻结基线残差链路已实现。它直接冻结 v3 每 seed 的
 `alpha=0` 精确退回 baseline，test 使用 paired problem bootstrap 报告增量。输出默认位于
 `runs/rasp_phase_b25b/`，执行与停止条件见瓶颈诊断文档。
 
+Phase B2.5b 已完成并触发最终停止条件。三 seed action ROC delta 为
+`0.0000 / +0.0121 / -0.0644`，平均 `-0.0174 ± 0.0411`；所有 paired 95% CI 均未形成稳定正增量。
+seed 1 validation 选择 `alpha=0`，seed 3 residual 明显降低 action ROC 并提高 B15 flip。因此停止
+hidden router，不进入 Phase C，不再扩大 hidden bank 或训练 multitask。后续主线使用 v3
+`uncertainty_flip_only` 与 conservative RASP-Zero 进行 paired online 验证；hidden probe 仅保留
+为长期/强扰动 fragility 的分析模块。
+
+Phase B2 uncertainty 在线入口已经补齐。`src/rasp/phase_b2_controller.py` 会直接加载 v3
+`uncertainty_flip_only/policy.pt`，严格复用 `[entropy, confidence, position]`、checkpoint
+calibration threshold、单调风险包络与因果 prefix budget，不读取 hidden state。统一 runtime
+入口新增 `controller: phase_b2_uncertainty`，首轮 paired smoke 使用
+`scripts/55_eval_phase_b2_uncertainty_online_smoke.sh`。这一步用于验证离线短窗口风险信号能否转化
+为在线 accuracy/ratio Pareto。由于 v3 bank 只覆盖前 12 个窗口，smoke 在前 192 token 后强制
+恢复 dense，避免训练范围外外推；它不代表进入 Phase C，也不能把 logical mask 描述为真实加速。
+
 ## 5. 建议优先阅读
 
 - Motivation 全链路与专业概念解释：  

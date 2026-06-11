@@ -36,6 +36,7 @@ from src.rasp.phase_b25 import (
     transform_phase_b25_features,
 )
 from src.rasp.phase_b25b import HiddenActionResidual, combined_risks
+from src.rasp.phase_b2_controller import PhaseB2UncertaintyController
 from src.rasp.train_policy import (
     POLICY_FEATURE_SCHEMA,
     ActionRiskPolicyNet,
@@ -325,6 +326,61 @@ class RaspTrainPolicyTest(unittest.TestCase):
             )
             self.assertLessEqual(ratio, 0.05)
             self.assertLessEqual(ratio, 0.1)
+
+    def test_phase_b2_uncertainty_runtime_controller_uses_calibration_and_no_hidden(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model = PhaseB2MultiTaskNet(dim=3, hidden_dim=8)
+            checkpoint = {
+                "model": model.state_dict(),
+                "metadata": {
+                    "schema": "rasp_phase_b2_multitask_v3",
+                    "variant": "uncertainty_flip_only",
+                    "feature_set": "uncertainty",
+                    "model_type": "nonlinear",
+                    "dim": 3,
+                    "hidden_dim": 8,
+                    "seed": 1,
+                    "ratios": DEFAULT_RATIOS,
+                    "calibration": {"0.10": {"threshold": 1.0}},
+                },
+            }
+            torch.save(checkpoint, root / "policy.pt")
+            controller = PhaseB2UncertaintyController(
+                checkpoint_path=str(root / "policy.pt"),
+                target_average_ratio=0.10,
+                max_new_tokens=128,
+                policy_horizon_tokens=64,
+                early_tokens=64,
+                early_max_ratio=0.05,
+            )
+            ratio = controller.choose_ratio(
+                RuntimeObservation(
+                    generated_tokens=0,
+                    entropy=0.1,
+                    confidence=0.9,
+                    hidden_state=None,
+                )
+            )
+            self.assertLessEqual(ratio, 0.05)
+            self.assertAlmostEqual(float(controller.risk_threshold), 1.0)
+            risks = [
+                item["predicted_risk"]
+                for item in controller.last_decision["candidate_scores"]
+            ]
+            self.assertEqual(risks, sorted(risks))
+            self.assertEqual(
+                controller.choose_ratio(
+                    RuntimeObservation(
+                        generated_tokens=64,
+                        entropy=0.1,
+                        confidence=0.9,
+                        hidden_state=None,
+                    )
+                ),
+                0.0,
+            )
+            self.assertIn("outside_policy_horizon", controller.last_decision["cap_reasons"])
 
 
 if __name__ == "__main__":

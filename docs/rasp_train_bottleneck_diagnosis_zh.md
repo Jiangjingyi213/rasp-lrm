@@ -870,6 +870,76 @@ comparison_summary.json
 才允许进入 Phase C。否则执行预先定义的停止条件：停止 hidden router，转向 uncertainty /
 conservative RASP-Zero 在线主线。
 
+### Phase B2.5b 最终结果与停止裁决
+
+B2.5b 已完整产生 3/3 checkpoint、3/3 train metrics 和 3/3 test eval，全部冻结 v3
+`uncertainty_flip_only`，PCA 只在 train rows 拟合，epoch/alpha 只由 validation 选择。
+
+| seed | alpha | action ROC delta | paired 95% CI | boundary ROC delta | paired 95% CI |
+|---|---:|---:|---:|---:|---:|
+| 1 | `0.00` | `0.0000` | `[0.0000, 0.0000]` | `0.0000` | `[0.0000, 0.0000]` |
+| 2 | `0.25` | `+0.0121` | `[-0.0248, +0.0643]` | `+0.0278` | `[-0.0136, +0.0704]` |
+| 3 | `0.75` | `-0.0644` | `[-0.1756, +0.1178]` | `+0.0068` | `[-0.1085, +0.1525]` |
+
+三 seed 平均 action ROC delta 为 `-0.0174 ± 0.0411`，boundary ROC delta 为
+`+0.0115 ± 0.0145`，但所有 paired CI 均未形成稳定正增量。seed 1 validation 直接选择
+`alpha=0`，说明 hidden residual 无法改善该 seed；seed 2 有小幅正增量但 CI 跨零；seed 3
+action ROC 明显下降。
+
+Controller 同样不形成稳定 Pareto：
+
+- B15 ratio `0.0790 -> 0.0928`，但 flip `0.0169 -> 0.0182`；
+- B20 ratio `0.1174 -> 0.1202`，flip 基本不变，但增量极小且跨 seed 不稳定；
+- seed 3 B15 residual 将 flip 从 `2.93%` 提高到 `4.03%`。
+
+**最终裁决：执行停止条件。** 当前 aligned short-window 任务上，没有证据证明 hidden 能为
+uncertainty router 提供稳定、可泛化的增量价值。停止 hidden router，不进入 Phase C，不再扩大
+hidden bank、调 PCA/model dim 或训练 multitask。Motivation 中 hidden 对长期/强扰动 fragility
+的结论继续保留，但不将其外推为短窗口在线 action router。
+
+后续主线转向：
+
+1. 以 v3 `uncertainty_flip_only` 和 conservative RASP-Zero 作为在线候选；
+2. 在相同预算下进行 paired online accuracy/flip/ratio 验证；
+3. 明确 logical masking 仅报告理论 reduction，随后推进真实 reduced-weight backend；
+4. 将 hidden fragility probe 保留为分析与解释模块，而不是在线控制器。
+
+### Phase B3：uncertainty paired online 验证
+
+当前第一优先级不是继续训练 router，而是检查 v3 uncertainty 离线信号是否能在真实自回归 rollout
+中保持安全。现有旧 `rasp_train_policy` 在线入口依赖 hidden checkpoint，不能回答这个问题；
+现已新增 `phase_b2_uncertainty` controller，严格复用 v3 checkpoint 的特征、校准 threshold、
+单调风险包络和因果 prefix budget。v3 bank 只覆盖前 12 个窗口，因此 smoke 设置
+`policy_horizon_tokens: 192`，超出已观测范围后强制恢复 dense，禁止无依据外推。
+
+先在两张 GPU 上并行运行 20 题 paired smoke：
+
+```bash
+mkdir -p logs
+
+nohup env CUDA_VISIBLE_DEVICES=0 PHASE_B2_ONLINE_DATASETS="gsm8k" \
+  bash scripts/55_eval_phase_b2_uncertainty_online_smoke.sh \
+  > logs/phase_b2_uncertainty_online_gsm8k.log 2>&1 &
+
+nohup env CUDA_VISIBLE_DEVICES=1 PHASE_B2_ONLINE_DATASETS="math500" \
+  bash scripts/55_eval_phase_b2_uncertainty_online_smoke.sh \
+  > logs/phase_b2_uncertainty_online_math500.log 2>&1 &
+```
+
+结果位于 `runs/rasp_phase_b2_uncertainty_online_smoke/{gsm8k,math500}/`。每个数据集检查：
+
+```text
+dense/00_runtime_summary.json
+b15/00_runtime_summary.json
+b15/14_paired_dense_comparison.json
+b20/00_runtime_summary.json
+b20/14_paired_dense_comparison.json
+```
+
+Smoke 只做故障与方向检查。若 dense-correct flip 没有明显失控且实际 average ratio 非零，再扩到
+三个 checkpoint seed 和更大 paired sample；若 uncertainty 在线同样没有 Pareto，则主线回到
+conservative RASP-Zero，并开始真实 reduced-weight backend，不再继续 learned router。
+
 ### Phase C：覆盖 policy-induced states
 
 第一轮 window bank 来自 dense trajectory。训练初版 policy 后，再从 policy rollout 中采集状态并加入
