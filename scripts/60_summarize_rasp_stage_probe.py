@@ -8,7 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 
 
-KEY_RECALLS = ("planning", "derivation", "final")
+KEY_RECALLS = ("setup", "reasoning", "verification", "final")
 REQUIRED_VARIANTS = (
     "position_only",
     "uncertainty_only",
@@ -24,7 +24,7 @@ REQUIRED_AUDIT_AGREEMENT = 0.80
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", default="runs/07_stage_aware/01_s1_stage_probe")
+    parser.add_argument("--root", default="runs/07_stage_aware/02_s1_operational_stage_probe")
     args = parser.parse_args()
     root = Path(args.root)
     raw, grouped = [], defaultdict(list)
@@ -75,7 +75,7 @@ def main() -> None:
     valid_audited = [
         row
         for row in audited
-        if row["audited_stage"].strip() in KEY_RECALLS + ("understanding", "verification")
+        if row["audited_stage"].strip() in KEY_RECALLS
     ]
     audit_agreement = (
         sum(row["audited_stage"].strip() == row["stage"].strip() for row in valid_audited)

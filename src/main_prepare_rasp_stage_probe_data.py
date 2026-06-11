@@ -9,8 +9,12 @@ from typing import Any
 
 import torch
 
-from src.rasp.stage_probe import STAGES, STAGE_PROBE_SCHEMA, problem_stage_split
-from src.segmentation.rule_segmenter import classify_segment
+from src.rasp.stage_probe import (
+    STAGES,
+    STAGE_PROBE_SCHEMA,
+    classify_operational_stage,
+    problem_stage_split,
+)
 from src.utils.io import ensure_dir, read_jsonl, write_json, write_jsonl
 
 
@@ -39,7 +43,7 @@ def main() -> None:
             segment_index = int(row.get("segment_index", row["segment_id"]))
             segment_text = str(row.get("segment_text", ""))
             source_stage = str(row.get("segment_type", "unknown"))
-            stage = classify_segment(segment_text, segment_index, num_segments)
+            stage = classify_operational_stage(segment_text, segment_index, num_segments)
             if stage not in STAGES:
                 continue
             if stage != source_stage:

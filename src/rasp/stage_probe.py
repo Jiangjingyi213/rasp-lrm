@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -9,8 +10,8 @@ from sklearn.metrics import confusion_matrix, f1_score, recall_score
 from torch import nn
 
 
-STAGES = ["understanding", "planning", "derivation", "verification", "final"]
-STAGE_PROBE_SCHEMA = "rasp_stage_probe_s1_v1"
+STAGES = ["setup", "reasoning", "verification", "final"]
+STAGE_PROBE_SCHEMA = "rasp_stage_probe_s1_v2"
 STAGE_VARIANTS = {
     "position_only": "linear",
     "uncertainty_only": "nonlinear",
@@ -24,6 +25,41 @@ def stage_index(stage: str) -> int:
     if stage not in STAGES:
         raise ValueError(f"Unknown reasoning stage: {stage}")
     return STAGES.index(stage)
+
+
+def classify_operational_stage(text: str, segment_index: int, num_segments: int) -> str:
+    lower = text.lower()
+    if (
+        "final answer" in lower
+        or "\\boxed" in lower
+        or segment_index == num_segments - 1 and "answer" in lower
+    ):
+        return "final"
+    explicit_verify = re.search(r"\bverify\b|\bverification\b|\bsanity check\b", lower)
+    candidate_check = re.search(r"\bcheck(?:ing)?\b", lower) and re.search(
+        r"solution|both sides|valid|perfect square|factor|equal|whether",
+        lower,
+    )
+    if segment_index > 0 and (explicit_verify or candidate_check):
+        return "verification"
+    short = len(lower) < 220
+    computation = re.search(
+        r"\$\$|\\frac|\\times|\\div|=|calculate|compute|simplif|solve|"
+        r"substitut|multiply|subtract|add |divide|factor",
+        lower,
+    )
+    strong_setup = re.search(
+        r"understand|given|we are told|we are given|define|relationship|initial|"
+        r"structure|we are asked|problem",
+        lower,
+    )
+    weak_setup = re.search(
+        r"has |costs |starts first|ratio of|as many|each .* costs",
+        lower,
+    )
+    if (segment_index == 0 and strong_setup) or (short and weak_setup and not computation):
+        return "setup"
+    return "reasoning"
 
 
 def problem_stage_split(rows: list[dict[str, Any]], seed: int) -> dict[str, Any]:

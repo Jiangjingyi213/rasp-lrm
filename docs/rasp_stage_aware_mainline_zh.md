@@ -17,7 +17,14 @@ reasoning stage recognition + fragility estimation
 
 ## 2. Phase S1：Hidden Stage Probe
 
-S1 已实现完整代码链路：
+S1 已实现完整代码链路。首轮五类规则标签人工审计失败后，当前默认使用可操作的四类 taxonomy：
+
+```text
+setup / reasoning / verification / final
+```
+
+`planning` 与 `derivation` 在模型生成的 segment 中经常同时发生，人工也无法稳定切开，因此合并为
+`reasoning`；这不是降低 gate，而是删除不可可靠观测的标签边界。
 
 ```text
 src/rasp/stage_probe.py
@@ -33,10 +40,11 @@ scripts/60_summarize_rasp_stage_probe.py
 数据准备从四个正式 Motivation run 中按 `(dataset, problem, segment)` 去重。每个 reasoning segment
 只保留一份 boundary hidden、entropy、confidence、position 和规则伪标签，不把同一 segment 的
 多个剪枝 action 当作独立 stage 样本。数据准备同时生成 100 条按 dataset/stage 分层的人工审计表。
-人工审计需要在 CSV 的 `audited_stage` 列填写五类标签；汇总器会检查规则伪标签与人工标签的一致率。
+人工审计需要在 CSV 的 `audited_stage` 列填写四类 operational 标签；汇总器会检查规则伪标签与
+人工标签的一致率。
 伪标签由当前 `rule_segmenter` 重新生成，数据摘要会记录它与 Motivation 旧缓存标签的不一致数。
 
-比较五个 variant：
+比较五个 feature variant：
 
 ```text
 position_only
@@ -54,7 +62,7 @@ S1 准入条件固定为：
 
 ```text
 最佳 hidden variant test macro-F1 比最佳简单 baseline 至少高 0.05
-planning / derivation / final 三类在每个 seed 的 recall 均 >= 0.70
+setup / reasoning / verification / final 四类在每个 seed 的 recall 均 >= 0.70
 五个 variant 均覆盖三个训练 seed，且最佳 hidden variant macro-F1 std <= 0.05
 至少完成 100 条人工审计，规则伪标签与人工标签一致率 >= 0.80
 ```
@@ -70,11 +78,22 @@ bash scripts/57_prepare_rasp_stage_probe_data.sh
 先检查并人工填写：
 
 ```text
-runs/07_stage_aware/01_s1_stage_probe/data/00_stage_data_summary.json
-runs/07_stage_aware/01_s1_stage_probe/data/02_stage_manual_audit.csv
+runs/07_stage_aware/02_s1_operational_stage_probe/data/00_stage_data_summary.json
+runs/07_stage_aware/02_s1_operational_stage_probe/data/02_stage_manual_audit.csv
 ```
 
 三张 GPU 并行训练：
+
+> 当前人工审计未通过，以下训练命令暂停执行。保留命令仅用于阶段标签修订并重新审计通过后运行。
+
+四类标签填写标准：
+
+```text
+setup         题意理解、条件提取、变量/目标建模，尚未进行主体求解
+reasoning     规划、公式选择、计算、代数推导与中间结论
+verification  对已有候选解、等式或结果进行显式复核
+final         明确输出最终答案
+```
 
 ```bash
 mkdir -p logs/07_stage_aware
@@ -98,9 +117,37 @@ bash scripts/59_eval_rasp_stage_probe.sh
 正式验收文件：
 
 ```text
-runs/07_stage_aware/01_s1_stage_probe/comparison_summary.csv
-runs/07_stage_aware/01_s1_stage_probe/s1_gate.json
+runs/07_stage_aware/02_s1_operational_stage_probe/comparison_summary.csv
+runs/07_stage_aware/02_s1_operational_stage_probe/s1_gate.json
 ```
 
 只有 `s1_gate.json` 中 `s1_passed=true` 才实施并运行 S2 runtime stage sensitivity bank。S1 未通过
 时不提前采集 S2、不实现 S3 controller，也不通过调整 gate 掩盖结果。
+
+## 4. S1 人工审计结果
+
+100 条分层样本已完成人工审计，结果位于：
+
+```text
+runs/07_stage_aware/01_s1_stage_probe/data/02_stage_manual_audit.csv
+runs/07_stage_aware/01_s1_stage_probe/data/03_stage_manual_audit_summary.json
+```
+
+规则伪标签与人工标签总体一致率仅为 `61%`，低于 `80%` 准入线。各规则类别一致率为：
+
+```text
+understanding  75%
+planning       20%
+derivation     80%
+verification   30%
+final         100%
+```
+
+主要失真是 `planning` 和 `verification` 关键词误触发：`First/Second/Step 2` 常出现在普通计算，
+`therefore/check` 也常属于推导过程而非独立验证阶段。当前人工标签中 `46%` 为 derivation，
+planning 与 verification 分别只有 `5%/6%`，说明五类阶段本身存在明显类别不平衡。
+
+**当前裁决：旧五类标签永久停止用于 S1。** 已实现四类 operational taxonomy，并将输出隔离到
+`02_s1_operational_stage_probe/`。旧 100 条仅作为规则开发诊断；新目录会生成一批独立审计样本。
+`scripts/58_train_rasp_stage_probe.sh` 在审计未达到 100 条且一致率未达到 `80%` 时会直接退出，
+因此下一步是生成并审核新 CSV，而不是启动 GPU 训练。

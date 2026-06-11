@@ -318,12 +318,21 @@ aggregation。
 项目主线随后收束为 Stage-Aware Hidden Controller。停止把 hidden 直接用于短窗口 final-flip
 精确预测，改为先验证 hidden 能否稳定识别 reasoning stage。Phase S1 已实现：从正式 Motivation
 数据按 problem/segment 去重，比较 position、uncertainty、hidden-PCA 与 hidden+uncertainty，
-使用 problem-level train/validation/test、train-only 标准化/PCA、三 seed macro-F1/recall 裁决；
-planning、derivation、final recall 必须在每个 seed 均不低于 `0.70`。
+使用 problem-level train/validation/test、train-only 标准化/PCA、三 seed macro-F1/recall 裁决。
+当前四类 operational taxonomy 的 setup、reasoning、verification、final recall 必须在每个 seed
+均不低于 `0.70`。
 S1 硬门槛还包括最佳 hidden macro-F1 跨 seed 标准差不超过 `0.05`，以及至少 100 条人工 stage
 审计且规则标签一致率不低于 `0.80`。
 执行与准入条件见 [`rasp_stage_aware_mainline_zh.md`](rasp_stage_aware_mainline_zh.md)。S1 未通过前
 不采集 S2 bank、不实现 S3 controller。
+
+S1 的 100 条分层人工审计已完成：规则伪标签总体一致率仅 `61%`，其中 planning 为 `20%`、
+verification 为 `30%`，未通过 `80%` 标签质量门槛。主要原因是顺序词与
+`therefore/check` 关键词把普通 derivation 大量误标。当前停止使用这批规则标签训练或解释
+stage probe。已将不可稳定区分的 planning/derivation 合并为 operational `reasoning`，形成
+`setup/reasoning/verification/final` 四类 taxonomy，并隔离到
+`runs/07_stage_aware/02_s1_operational_stage_probe/`。旧审计仅作为开发诊断；必须重新生成并
+审核独立样本，训练脚本会在 100 条审计与 `80%` 一致率 gate 未通过时直接退出。
 
 ## 5. 建议优先阅读
 

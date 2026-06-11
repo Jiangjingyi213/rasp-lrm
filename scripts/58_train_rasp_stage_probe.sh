@@ -2,8 +2,11 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-runs/07_stage_aware/01_s1_stage_probe}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-runs/07_stage_aware/02_s1_operational_stage_probe}"
 VARIANTS="${STAGE_PROBE_VARIANTS:-position_only uncertainty_only hidden_pca_linear hidden_pca_nonlinear hidden_uncertainty}"
+
+"${PYTHON}" scripts/61_validate_rasp_stage_audit.py \
+  --audit "${OUTPUT_ROOT}/data/02_stage_manual_audit.csv"
 
 for seed in ${STAGE_PROBE_SEEDS:-1 2 3}; do
   for variant in ${VARIANTS}; do

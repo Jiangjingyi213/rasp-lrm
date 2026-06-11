@@ -39,6 +39,7 @@ from src.rasp.phase_b25b import HiddenActionResidual, combined_risks
 from src.rasp.phase_b2_controller import PhaseB2UncertaintyController
 from src.rasp.stage_probe import (
     StageProbeNet,
+    classify_operational_stage,
     fit_stage_transform,
     indices_for_stage_split,
     problem_stage_split,
@@ -396,7 +397,7 @@ class RaspTrainPolicyTest(unittest.TestCase):
             {
                 "dataset": dataset,
                 "id": str(problem),
-                "stage": ("planning", "derivation", "final")[segment],
+                "stage": ("setup", "reasoning", "final")[segment],
             }
             for dataset in ("gsm8k", "math500")
             for problem in range(20)
@@ -435,10 +436,17 @@ class RaspTrainPolicyTest(unittest.TestCase):
 
     def test_stage_probe_metrics_include_all_stages(self) -> None:
         metrics = stage_metrics([0, 1, 2, 3, 4], [0, 1, 2, 2, 4])
-        self.assertEqual(len(metrics["per_stage_recall"]), 5)
-        self.assertEqual(len(metrics["confusion_matrix"]), 5)
+        self.assertEqual(len(metrics["per_stage_recall"]), 4)
+        self.assertEqual(len(metrics["confusion_matrix"]), 4)
         model = StageProbeNet(dim=3, model_type="linear")
-        self.assertEqual(tuple(model(torch.zeros(2, 3)).shape), (2, 5))
+        self.assertEqual(tuple(model(torch.zeros(2, 3)).shape), (2, 4))
+
+    def test_operational_stage_classifier_avoids_keyword_false_positives(self) -> None:
+        self.assertEqual(classify_operational_stage("Final answer: \\\\boxed{4}", 4, 5), "final")
+        self.assertEqual(classify_operational_stage("Step 1: Understand the given information", 0, 5), "setup")
+        self.assertEqual(classify_operational_stage("Second month: 3 * 60 = 180", 1, 5), "reasoning")
+        self.assertEqual(classify_operational_stage("Therefore, 20 + 4 = 24", 3, 5), "reasoning")
+        self.assertEqual(classify_operational_stage("Step 5: Verify both sides are equal", 4, 6), "verification")
 
 
 if __name__ == "__main__":
