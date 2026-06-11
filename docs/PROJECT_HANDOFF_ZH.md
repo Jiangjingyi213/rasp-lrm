@@ -334,6 +334,11 @@ stage probe。已将不可稳定区分的 planning/derivation 合并为 operatio
 `runs/07_stage_aware/02_s1_operational_stage_probe/`。旧审计仅作为开发诊断；必须重新生成并
 审核独立样本，训练脚本会在 100 条审计与 `80%` 一致率 gate 未通过时直接退出。
 
+四类 taxonomy 的第二批 100 条独立审计已完成并通过：总体一致率 `86%`，setup/reasoning/
+verification/final 分别为 `96.4%/62.5%/90.9%/100%`。主要残余错误为规则将只列条件或定义变量的
+setup 片段误标为 reasoning。当前允许启动四类 S1 probe 三 seed 训练，但 held-out confusion
+matrix 必须重点检查 `setup -> reasoning`；S1 通过前仍不采集 S2 bank。
+
 ## 5. 建议优先阅读
 
 ### 产物目录约定
