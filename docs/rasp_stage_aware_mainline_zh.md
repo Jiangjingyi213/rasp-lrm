@@ -244,3 +244,18 @@ bash scripts/57_prepare_rasp_stage_probe_data.sh
 # 审核 runs/07_stage_aware/03_s1_three_stage_probe/data/02_stage_manual_audit.csv
 # 审核标签同步后才运行 scripts/58_train_rasp_stage_probe.sh
 ```
+
+v3 新一批 100 条独立审计已完成，总体一致率 `85%`，通过 `80%` gate：
+
+```text
+final      100.0%
+reasoning   77.8%
+setup       78.1%
+```
+
+人工混淆中 `reasoning -> setup` 有 8 条，表示规则可能把真实 setup 当作可学习 reasoning；
+因此后续必须执行 `setup -> reasoning <= 10%` 的模型安全 gate。审核标签已同步到
+`configs/stage_audits/s1_three_stage_v3_labels.csv`。
+
+脚本使用专用环境变量 `STAGE_PROBE_ROOT`，不再读取通用 `OUTPUT_ROOT`，避免服务器残留变量将
+产物错误写入 `runs/07_stage_aware/data/`。

@@ -355,6 +355,11 @@ S1 v3 三类 learned-stage 链路已实现，默认输出到
 setup/reasoning/final。正式 gate 新增每个 seed 的 `setup -> reasoning <= 10%`，防止 controller
 在 setup 阶段过早剪枝。下一步只生成并审核 v3 的新审计 CSV；审核标签同步前不启动训练。
 
+S1 v3 的 100 条独立审计已完成，总体一致率 `85%` 并通过标签 gate；final/reasoning/setup
+规则一致率分别为 `100%/77.8%/78.1%`。人工标签已同步为
+`configs/stage_audits/s1_three_stage_v3_labels.csv`，现在允许启动三 seed 训练。由于仍存在 8 条
+真实 setup 被规则标作 reasoning，最终模型必须通过 `setup -> reasoning <= 10%` 安全 gate。
+
 ## 5. 建议优先阅读
 
 ### 产物目录约定
