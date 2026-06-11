@@ -13,7 +13,7 @@ METRICS = ["average_selected_ratio", "budget_utilization", "flip_rate"]
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", default="runs/rasp_phase_b2_v3")
+    parser.add_argument("--root", default="runs/05_phase_b/02_phase_b2/rasp_phase_b2_v3")
     args = parser.parse_args()
     root = Path(args.root)
     raw, grouped = [], defaultdict(list)

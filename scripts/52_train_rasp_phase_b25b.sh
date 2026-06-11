@@ -2,9 +2,9 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
-DATA_ROOT="${DATA_ROOT:-runs/rasp_phase_b2_v3}"
-BASE_ROOT="${BASE_ROOT:-runs/rasp_phase_b2_v3}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-runs/rasp_phase_b25b}"
+DATA_ROOT="${DATA_ROOT:-runs/05_phase_b/02_phase_b2/rasp_phase_b2_v3}"
+BASE_ROOT="${BASE_ROOT:-runs/05_phase_b/02_phase_b2/rasp_phase_b2_v3}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-runs/05_phase_b/03_phase_b25/rasp_phase_b25b}"
 
 for seed in ${PHASE_B25B_SEEDS:-1 2 3}; do
   run_dir="${OUTPUT_ROOT}/seed_${seed}/frozen_uncertainty_residual"

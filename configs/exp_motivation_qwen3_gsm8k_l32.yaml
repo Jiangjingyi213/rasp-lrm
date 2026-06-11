@@ -47,15 +47,15 @@ probe:
   val_fraction: 0.25
 
 paths:
-  run_dir: runs/motivation_qwen3_gsm8k_l32_no_l0
-  trajectories: runs/motivation_qwen3_gsm8k_l32_no_l0/01_trajectories.jsonl
-  segments: runs/motivation_qwen3_gsm8k_l32_no_l0/02_segments.jsonl
-  counterfactuals: runs/motivation_qwen3_gsm8k_l32_no_l0/03_counterfactuals.jsonl
-  entropy_auc: runs/motivation_qwen3_gsm8k_l32_no_l0/04_entropy_auc.json
-  probe_dataset: runs/motivation_qwen3_gsm8k_l32_no_l0/05_probe_dataset.jsonl
-  probe_hidden_states: runs/motivation_qwen3_gsm8k_l32_no_l0/05_probe_hidden_states.pt
-  probe_model: runs/motivation_qwen3_gsm8k_l32_no_l0/05_probe.pt
-  probe_metrics: runs/motivation_qwen3_gsm8k_l32_no_l0/05_probe_metrics.json
-  heatmap_summary: runs/motivation_qwen3_gsm8k_l32_no_l0/06_heatmap_summary.json
-  layer_flip_rates: runs/motivation_qwen3_gsm8k_l32_no_l0/06_layer_flip_rates.csv
-  segment_layer_heatmap: runs/motivation_qwen3_gsm8k_l32_no_l0/06_segment_layer_heatmap.csv
+  run_dir: runs/01_motivation/motivation_qwen3_gsm8k_l32_no_l0
+  trajectories: runs/01_motivation/motivation_qwen3_gsm8k_l32_no_l0/01_trajectories.jsonl
+  segments: runs/01_motivation/motivation_qwen3_gsm8k_l32_no_l0/02_segments.jsonl
+  counterfactuals: runs/01_motivation/motivation_qwen3_gsm8k_l32_no_l0/03_counterfactuals.jsonl
+  entropy_auc: runs/01_motivation/motivation_qwen3_gsm8k_l32_no_l0/04_entropy_auc.json
+  probe_dataset: runs/01_motivation/motivation_qwen3_gsm8k_l32_no_l0/05_probe_dataset.jsonl
+  probe_hidden_states: runs/01_motivation/motivation_qwen3_gsm8k_l32_no_l0/05_probe_hidden_states.pt
+  probe_model: runs/01_motivation/motivation_qwen3_gsm8k_l32_no_l0/05_probe.pt
+  probe_metrics: runs/01_motivation/motivation_qwen3_gsm8k_l32_no_l0/05_probe_metrics.json
+  heatmap_summary: runs/01_motivation/motivation_qwen3_gsm8k_l32_no_l0/06_heatmap_summary.json
+  layer_flip_rates: runs/01_motivation/motivation_qwen3_gsm8k_l32_no_l0/06_layer_flip_rates.csv
+  segment_layer_heatmap: runs/01_motivation/motivation_qwen3_gsm8k_l32_no_l0/06_segment_layer_heatmap.csv

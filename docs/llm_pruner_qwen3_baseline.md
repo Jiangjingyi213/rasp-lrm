@@ -71,7 +71,7 @@ export LLM_PRUNER_PHYSICAL_PRUNING=false
 export LLM_PRUNER_LAYERS=4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27
 
 nohup bash scripts/18_eval_llm_pruner_mlp_qwen3_budget_sweep.sh \
-  > logs/llm_pruner_mlp_qwen3_gpu0.log 2>&1 &
+  > logs/02_baselines/llm_pruner_mlp_qwen3_gpu0.log 2>&1 &
 ```
 
 The script now requires an explicit diagnostic opt-in:
@@ -89,8 +89,8 @@ p05, p20, p40, p60
 Default outputs:
 
 ```text
-runs/llm_pruner_mlp_formal/eval_llm_pruner_mlp_l2_ulum_p05_qwen3_gsm8k_budget/
-runs/llm_pruner_mlp_formal/eval_llm_pruner_mlp_l2_ulum_p20_qwen3_gsm8k_budget/
+runs/02_baselines/llm_pruner_mlp_formal/eval_llm_pruner_mlp_l2_ulum_p05_qwen3_gsm8k_budget/
+runs/02_baselines/llm_pruner_mlp_formal/eval_llm_pruner_mlp_l2_ulum_p20_qwen3_gsm8k_budget/
 ...
 ```
 

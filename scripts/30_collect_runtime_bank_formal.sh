@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
 PYTHON="${PYTHON:-/home/cike/jjy/envs/rasp_qwen3/bin/python}"
-LOG_DIR="${LOG_DIR:-logs/rasp_zero_runtime_bank_formal}"
+LOG_DIR="${LOG_DIR:-logs/03_rasp_zero/rasp_zero_runtime_bank_formal}"
 CONFIG_DIR="configs/generated_runtime_bank_formal"
 GPU_COUNT="${RASP_BANK_GPU_COUNT:-4}"
 mkdir -p "${LOG_DIR}"

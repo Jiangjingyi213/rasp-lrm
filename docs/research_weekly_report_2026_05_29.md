@@ -11,7 +11,7 @@
 
 1. **完成 Qwen3 motivation 实验的正式统计与图表整理。**
    - 在 GSM8K 与 MATH500 上完成 dense generation、reasoning segmentation、counterfactual pruning、oracle analysis、risk probe 与 heatmap summary。
-   - 对当前所有 counterfactual 结果进行了系统聚合，形成 `runs/motivation_analysis/motivation_report.md`。
+   - 对当前所有 counterfactual 结果进行了系统聚合，形成 `runs/01_motivation/motivation_analysis/motivation_report.md`。
    - 生成了 paper-ready motivation figures，包括 stage × module heatmap、stage × ratio heatmap、module × ratio heatmap、oracle gap、entropy/probe comparison 等。
 
 2. **完成 Dense Qwen3 / GRIFFIN-style / FLAP-MLP baseline 的正式结果整理。**
@@ -140,8 +140,8 @@
 
 当前图像文件位于：
 
-- `runs/motivation_analysis/figures/`
-- `runs/motivation_analysis/paper_figures/`
+- `runs/01_motivation/motivation_analysis/figures/`
+- `runs/01_motivation/motivation_analysis/paper_figures/`
 
 其中 paper-ready 图像包括：
 
@@ -251,7 +251,7 @@ Stage 结果是当前 motivation 中非常直观的一部分。不同 reasoning 
 
 对应文件：
 
-- `runs/motivation_analysis/paper_figures/fig1_reasoning_stage_sensitivity_heatmaps.pdf`
+- `runs/01_motivation/motivation_analysis/paper_figures/fig1_reasoning_stage_sensitivity_heatmaps.pdf`
 - `.png`
 - `.svg`
 
@@ -282,7 +282,7 @@ Stage 结果是当前 motivation 中非常直观的一部分。不同 reasoning 
 
 对应文件：
 
-- `runs/motivation_analysis/paper_figures/fig1b_module_ratio_heatmap.pdf`
+- `runs/01_motivation/motivation_analysis/paper_figures/fig1b_module_ratio_heatmap.pdf`
 
 这张图展示不同 module 与 ratio 组合下的 flip rate。
 
@@ -307,7 +307,7 @@ Stage 结果是当前 motivation 中非常直观的一部分。不同 reasoning 
 
 对应文件：
 
-- `runs/motivation_analysis/paper_figures/fig2_oracle_gap.pdf`
+- `runs/01_motivation/motivation_analysis/paper_figures/fig2_oracle_gap.pdf`
 
 当前 oracle 结果：
 
@@ -335,7 +335,7 @@ Stage 结果是当前 motivation 中非常直观的一部分。不同 reasoning 
 
 对应文件：
 
-- `runs/motivation_analysis/paper_figures/fig3_entropy_not_enough.pdf`
+- `runs/01_motivation/motivation_analysis/paper_figures/fig3_entropy_not_enough.pdf`
 
 这张图包含两个信息：
 
@@ -369,7 +369,7 @@ Stage 结果是当前 motivation 中非常直观的一部分。不同 reasoning 
 
 对应文件：
 
-- `runs/motivation_analysis/paper_figures/fig5_counterfactual_proxy_pareto.pdf`
+- `runs/01_motivation/motivation_analysis/paper_figures/fig5_counterfactual_proxy_pareto.pdf`
 
 这张图是 proxy Pareto，不是真实 latency/FLOPs Pareto。它基于 counterfactual action 的结构激活 proxy 来展示不同 action 在风险和剪枝强度之间的关系。
 

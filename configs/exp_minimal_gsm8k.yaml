@@ -39,12 +39,12 @@ probe:
   val_fraction: 0.2
 
 paths:
-  run_dir: runs/minimal_gsm8k_qwen1_5b
-  trajectories: runs/minimal_gsm8k_qwen1_5b/01_trajectories.jsonl
-  segments: runs/minimal_gsm8k_qwen1_5b/02_segments.jsonl
-  counterfactuals: runs/minimal_gsm8k_qwen1_5b/03_counterfactuals.jsonl
-  entropy_auc: runs/minimal_gsm8k_qwen1_5b/04_entropy_auc.json
-  probe_dataset: runs/minimal_gsm8k_qwen1_5b/05_probe_dataset.jsonl
-  probe_hidden_states: runs/minimal_gsm8k_qwen1_5b/05_probe_hidden_states.pt
-  probe_model: runs/minimal_gsm8k_qwen1_5b/05_probe.pt
-  probe_metrics: runs/minimal_gsm8k_qwen1_5b/05_probe_metrics.json
+  run_dir: runs/01_motivation/minimal_gsm8k_qwen1_5b
+  trajectories: runs/01_motivation/minimal_gsm8k_qwen1_5b/01_trajectories.jsonl
+  segments: runs/01_motivation/minimal_gsm8k_qwen1_5b/02_segments.jsonl
+  counterfactuals: runs/01_motivation/minimal_gsm8k_qwen1_5b/03_counterfactuals.jsonl
+  entropy_auc: runs/01_motivation/minimal_gsm8k_qwen1_5b/04_entropy_auc.json
+  probe_dataset: runs/01_motivation/minimal_gsm8k_qwen1_5b/05_probe_dataset.jsonl
+  probe_hidden_states: runs/01_motivation/minimal_gsm8k_qwen1_5b/05_probe_hidden_states.pt
+  probe_model: runs/01_motivation/minimal_gsm8k_qwen1_5b/05_probe.pt
+  probe_metrics: runs/01_motivation/minimal_gsm8k_qwen1_5b/05_probe_metrics.json

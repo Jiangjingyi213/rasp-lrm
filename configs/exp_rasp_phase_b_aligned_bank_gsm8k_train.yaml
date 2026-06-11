@@ -25,10 +25,10 @@ aligned_window_bank:
   max_boundaries_per_example: 12
   max_dense_replay_flip_rate: 0.05
 paths:
-  run_dir: runs/rasp_phase_b_aligned_bank/template_gsm8k_train
-  trajectories: runs/rasp_phase_b_aligned_bank/template_gsm8k_train/01_trajectories.jsonl
-  counterfactuals: runs/rasp_phase_b_aligned_bank/template_gsm8k_train/03_aligned_window_counterfactuals.jsonl
-  probe_dataset: runs/rasp_phase_b_aligned_bank/template_gsm8k_train/05_probe_dataset.jsonl
-  probe_hidden_states: runs/rasp_phase_b_aligned_bank/template_gsm8k_train/05_probe_hidden_states.pt
-  aligned_window_bank_summary: runs/rasp_phase_b_aligned_bank/template_gsm8k_train/06_aligned_window_bank_summary.json
-  aligned_window_bank_validation: runs/rasp_phase_b_aligned_bank/template_gsm8k_train/07_aligned_window_bank_validation.json
+  run_dir: runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank/template_gsm8k_train
+  trajectories: runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank/template_gsm8k_train/01_trajectories.jsonl
+  counterfactuals: runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank/template_gsm8k_train/03_aligned_window_counterfactuals.jsonl
+  probe_dataset: runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank/template_gsm8k_train/05_probe_dataset.jsonl
+  probe_hidden_states: runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank/template_gsm8k_train/05_probe_hidden_states.pt
+  aligned_window_bank_summary: runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank/template_gsm8k_train/06_aligned_window_bank_summary.json
+  aligned_window_bank_validation: runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank/template_gsm8k_train/07_aligned_window_bank_validation.json

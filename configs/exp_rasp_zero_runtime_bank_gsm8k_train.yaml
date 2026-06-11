@@ -49,10 +49,10 @@ counterfactual:
     top_p: 1.0
 
 paths:
-  run_dir: runs/rasp_zero_runtime_bank_formal/template_gsm8k_train
-  trajectories: runs/rasp_zero_runtime_bank_formal/template_gsm8k_train/01_trajectories.jsonl
-  segments: runs/rasp_zero_runtime_bank_formal/template_gsm8k_train/02_segments.jsonl
-  counterfactuals: runs/rasp_zero_runtime_bank_formal/template_gsm8k_train/03_counterfactuals.jsonl
-  probe_dataset: runs/rasp_zero_runtime_bank_formal/template_gsm8k_train/05_probe_dataset.jsonl
-  probe_hidden_states: runs/rasp_zero_runtime_bank_formal/template_gsm8k_train/05_probe_hidden_states.pt
-  runtime_bank_validation: runs/rasp_zero_runtime_bank_formal/template_gsm8k_train/07_runtime_bank_validation.json
+  run_dir: runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_formal/template_gsm8k_train
+  trajectories: runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_formal/template_gsm8k_train/01_trajectories.jsonl
+  segments: runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_formal/template_gsm8k_train/02_segments.jsonl
+  counterfactuals: runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_formal/template_gsm8k_train/03_counterfactuals.jsonl
+  probe_dataset: runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_formal/template_gsm8k_train/05_probe_dataset.jsonl
+  probe_hidden_states: runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_formal/template_gsm8k_train/05_probe_hidden_states.pt
+  runtime_bank_validation: runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_formal/template_gsm8k_train/07_runtime_bank_validation.json

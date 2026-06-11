@@ -5,9 +5,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
 PYTHON="${PYTHON:-/home/cike/jjy/envs/rasp_qwen3/bin/python}"
-LOG_DIR="${LOG_DIR:-logs/rasp_zero_runtime_bank_l20}"
-MARKER_DIR="${MARKER_DIR:-runs/rasp_zero_runtime_bank_l20/.markers}"
-RUN_ROOT="runs/rasp_zero_runtime_bank_l20"
+LOG_DIR="${LOG_DIR:-logs/03_rasp_zero/rasp_zero_runtime_bank_l20}"
+MARKER_DIR="${MARKER_DIR:-runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_l20/.markers}"
+RUN_ROOT="runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_l20"
 
 mkdir -p "${LOG_DIR}"
 rm -rf "${RUN_ROOT}"

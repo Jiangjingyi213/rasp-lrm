@@ -25,10 +25,10 @@ def require_plotting_libs():
 
 
 RUN_DIRS = [
-    Path("runs/formal_qwen3_gsm8k_full_s0"),
-    Path("runs/formal_qwen3_gsm8k_full_s1"),
-    Path("runs/formal_qwen3_math500_full_s0"),
-    Path("runs/formal_qwen3_math500_full_s1"),
+    Path("runs/01_motivation/formal_qwen3_gsm8k_full_s0"),
+    Path("runs/01_motivation/formal_qwen3_gsm8k_full_s1"),
+    Path("runs/01_motivation/formal_qwen3_math500_full_s0"),
+    Path("runs/01_motivation/formal_qwen3_math500_full_s1"),
 ]
 
 STAGE_ORDER = ["understanding", "planning", "derivation", "verification", "final"]
@@ -343,7 +343,7 @@ def pd_categorical(series, order):
 def write_manifest(output: Path, generated: list[str]) -> None:
     text = """# Paper Figure Manifest
 
-Generated from `runs/formal_qwen3_gsm8k_math500_combined.json` and the four formal Qwen3 motivation runs.
+Generated from `runs/01_motivation/formal_qwen3_gsm8k_math500_combined.json` and the four formal Qwen3 motivation runs.
 
 ## Figures generated from current data
 
@@ -368,9 +368,9 @@ Generated from `runs/formal_qwen3_gsm8k_math500_combined.json` and the four form
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--analysis-dir", default="runs/motivation_analysis")
-    parser.add_argument("--combined", default="runs/formal_qwen3_gsm8k_math500_combined.json")
-    parser.add_argument("--output-dir", default="runs/motivation_analysis/paper_figures")
+    parser.add_argument("--analysis-dir", default="runs/01_motivation/motivation_analysis")
+    parser.add_argument("--combined", default="runs/01_motivation/formal_qwen3_gsm8k_math500_combined.json")
+    parser.add_argument("--output-dir", default="runs/01_motivation/motivation_analysis/paper_figures")
     parser.add_argument("--formats", nargs="+", default=["png", "pdf", "svg"], choices=["png", "pdf", "svg"])
     parser.add_argument("--dpi", type=int, default=400)
     parser.add_argument("--skip-counterfactual-scan", action="store_true")

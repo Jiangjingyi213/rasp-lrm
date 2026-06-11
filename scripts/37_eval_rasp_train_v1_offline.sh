@@ -2,8 +2,8 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-runs/rasp_train_v2_1}"
-RISK_ROUTER="${RISK_ROUTER:-runs/rasp_zero_runtime_router/router.pt}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-runs/04_rasp_train/01_legacy/rasp_train_v2_1}"
+RISK_ROUTER="${RISK_ROUTER:-runs/03_rasp_zero/03_runtime_router/rasp_zero_runtime_router/router.pt}"
 
 for tag in b15 b20; do
   args=(

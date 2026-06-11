@@ -9,7 +9,7 @@ from pathlib import Path
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", default="runs/rasp_phase_b25b")
+    parser.add_argument("--root", default="runs/05_phase_b/03_phase_b25/rasp_phase_b25b")
     args = parser.parse_args()
     root = Path(args.root)
     raw = []

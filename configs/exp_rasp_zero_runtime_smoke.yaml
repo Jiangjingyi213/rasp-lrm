@@ -31,6 +31,6 @@ runtime_rasp:
   window_tokens: 16
 
 paths:
-  run_dir: runs/rasp_zero_runtime_smoke_dense
-  trajectories: runs/rasp_zero_runtime_smoke_dense/01_trajectories.jsonl
-  runtime_summary: runs/rasp_zero_runtime_smoke_dense/00_runtime_summary.json
+  run_dir: runs/03_rasp_zero/04_online_eval/rasp_zero_runtime_smoke_dense
+  trajectories: runs/03_rasp_zero/04_online_eval/rasp_zero_runtime_smoke_dense/01_trajectories.jsonl
+  runtime_summary: runs/03_rasp_zero/04_online_eval/rasp_zero_runtime_smoke_dense/00_runtime_summary.json

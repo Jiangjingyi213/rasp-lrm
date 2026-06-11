@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-runs/rasp_train_v2_1}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-runs/04_rasp_train/01_legacy/rasp_train_v2_1}"
 
 for tag in b15 b20; do
   if [[ ! -f "${OUTPUT_ROOT}/${tag}/11_rasp_train_policy_dataset.jsonl" ]] ||

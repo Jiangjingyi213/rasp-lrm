@@ -50,16 +50,16 @@ probe:
   val_fraction: 0.25
 
 paths:
-  run_dir: runs/formal_qwen3_gsm8k_l800
-  trajectories: runs/formal_qwen3_gsm8k_l800/01_trajectories.jsonl
-  segments: runs/formal_qwen3_gsm8k_l800/02_segments.jsonl
-  counterfactuals: runs/formal_qwen3_gsm8k_l800/03_counterfactuals.jsonl
-  entropy_auc: runs/formal_qwen3_gsm8k_l800/04_entropy_auc.json
-  probe_dataset: runs/formal_qwen3_gsm8k_l800/05_probe_dataset.jsonl
-  probe_hidden_states: runs/formal_qwen3_gsm8k_l800/05_probe_hidden_states.pt
-  probe_activation_features: runs/formal_qwen3_gsm8k_l800/05_probe_activation_features.pt
-  probe_model: runs/formal_qwen3_gsm8k_l800/05_probe.pt
-  probe_metrics: runs/formal_qwen3_gsm8k_l800/05_probe_metrics.json
-  heatmap_summary: runs/formal_qwen3_gsm8k_l800/06_heatmap_summary.json
-  layer_flip_rates: runs/formal_qwen3_gsm8k_l800/06_layer_flip_rates.csv
-  segment_layer_heatmap: runs/formal_qwen3_gsm8k_l800/06_segment_layer_heatmap.csv
+  run_dir: runs/01_motivation/formal_qwen3_gsm8k_l800
+  trajectories: runs/01_motivation/formal_qwen3_gsm8k_l800/01_trajectories.jsonl
+  segments: runs/01_motivation/formal_qwen3_gsm8k_l800/02_segments.jsonl
+  counterfactuals: runs/01_motivation/formal_qwen3_gsm8k_l800/03_counterfactuals.jsonl
+  entropy_auc: runs/01_motivation/formal_qwen3_gsm8k_l800/04_entropy_auc.json
+  probe_dataset: runs/01_motivation/formal_qwen3_gsm8k_l800/05_probe_dataset.jsonl
+  probe_hidden_states: runs/01_motivation/formal_qwen3_gsm8k_l800/05_probe_hidden_states.pt
+  probe_activation_features: runs/01_motivation/formal_qwen3_gsm8k_l800/05_probe_activation_features.pt
+  probe_model: runs/01_motivation/formal_qwen3_gsm8k_l800/05_probe.pt
+  probe_metrics: runs/01_motivation/formal_qwen3_gsm8k_l800/05_probe_metrics.json
+  heatmap_summary: runs/01_motivation/formal_qwen3_gsm8k_l800/06_heatmap_summary.json
+  layer_flip_rates: runs/01_motivation/formal_qwen3_gsm8k_l800/06_layer_flip_rates.csv
+  segment_layer_heatmap: runs/01_motivation/formal_qwen3_gsm8k_l800/06_segment_layer_heatmap.csv

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
-OUTPUT_DIR="${OUTPUT_DIR:-runs/rasp_zero_runtime_router}"
+OUTPUT_DIR="${OUTPUT_DIR:-runs/03_rasp_zero/03_runtime_router/rasp_zero_runtime_router}"
 export PYTHON OUTPUT_DIR
 
 bash scripts/26_prepare_runtime_router_data.sh

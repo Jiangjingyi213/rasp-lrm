@@ -45,7 +45,7 @@ for run_dir in runs:
 
 print()
 for dataset in sorted({parse_run_name(p.name)[1] for p in runs}):
-    dense_dir = Path(f"runs/eval_dense_qwen3_{dataset}_budget")
+    dense_dir = Path(f"runs/02_baselines/eval_dense_qwen3_{dataset}_budget")
     dense_rows = {r["id"]: bool(r.get("correct")) for r in load_rows(dense_dir / "01_trajectories.jsonl")}
     if not dense_rows:
         continue

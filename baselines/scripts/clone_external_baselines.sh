@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-mkdir -p external_repos external_outputs runs/external_baselines
+mkdir -p external_repos external_outputs runs/02_baselines/external_baselines
 
 clone_or_update() {
   local name="$1"

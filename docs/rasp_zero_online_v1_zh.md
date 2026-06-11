@@ -249,7 +249,7 @@ bash scripts/30_collect_runtime_bank_formal.sh
 采集结果：
 
 ```text
-runs/rasp_zero_runtime_bank_formal/
+runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_formal/
 ├── gsm8k_train_s00 ... gsm8k_train_s09
 └── math_train_s00  ... math_train_s09
 ```
@@ -284,7 +284,7 @@ bash scripts/27_train_runtime_router.sh
 关键输出：
 
 ```text
-runs/rasp_zero_runtime_router/
+runs/03_rasp_zero/03_runtime_router/rasp_zero_runtime_router/
 ├── 00_runtime_router_data_summary.json
 ├── 08_safe_oracle_steps.jsonl
 ├── 08_budget_aware_safe_oracle_*.jsonl
@@ -314,8 +314,8 @@ Online RASP-Zero router
 本节记录当前已经跑完的一版正式 RASP-Zero Online v1 结果，来源为：
 
 ```text
-runs/rasp_zero_runtime_bank_formal/
-runs/rasp_zero_runtime_router/
+runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_formal/
+runs/03_rasp_zero/03_runtime_router/rasp_zero_runtime_router/
 ```
 
 这部分结果不是最终在线 benchmark，而是在线 RASP-Zero 前置的训练银行与第一版风险 router
@@ -614,7 +614,7 @@ bash scripts/31_eval_rasp_zero_online_calibration.sh
 该脚本会生成 `GSM8K-20 + MATH500-20` 的小型 calibration，并输出：
 
 ```text
-runs/rasp_zero_online_calibration/summary.csv
+runs/03_rasp_zero/04_online_eval/rasp_zero_online_calibration/summary.csv
 ```
 
 主要观察：
@@ -676,7 +676,7 @@ bash scripts/33_eval_rasp_zero_online_conservative_calibration.sh
 输出：
 
 ```text
-runs/rasp_zero_online_conservative_calibration/summary.csv
+runs/03_rasp_zero/04_online_eval/rasp_zero_online_conservative_calibration/summary.csv
 ```
 
 如果这一轮能让 GSM8K-20 的 accuracy 明显接近 dense，同时保留约 `5%-10%` 的理论 MLP reduction，

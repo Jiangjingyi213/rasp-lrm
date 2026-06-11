@@ -6,7 +6,7 @@ cd "${ROOT}"
 PYTHON="${PYTHON:-/home/cike/jjy/envs/rasp_qwen3/bin/python}"
 GPU_COUNT="${RASP_PHASE_B_GPU_COUNT:-8}"
 CONFIG_DIR="configs/generated_rasp_phase_b_aligned_bank"
-LOG_DIR="${LOG_DIR:-logs/rasp_phase_b_aligned_bank}"
+LOG_DIR="${LOG_DIR:-logs/05_phase_b/rasp_phase_b_aligned_bank}"
 mkdir -p "${LOG_DIR}"
 "${PYTHON}" scripts/43_prepare_rasp_phase_b_aligned_bank_configs.py
 

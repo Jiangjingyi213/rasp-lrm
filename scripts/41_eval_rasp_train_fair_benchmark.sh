@@ -2,8 +2,8 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
-SOURCE_ROOT="${SOURCE_ROOT:-runs/rasp_train_v2_1}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-runs/rasp_train_fair_benchmark}"
+SOURCE_ROOT="${SOURCE_ROOT:-runs/04_rasp_train/01_legacy/rasp_train_v2_1}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-runs/04_rasp_train/02_fair_benchmark/rasp_train_fair_benchmark}"
 VARIANTS="${FAIR_VARIANTS:-ratio_only_linear position_ratio_linear uncertainty_ratio_linear hidden_ratio_linear hidden_ratio_nonlinear}"
 LABELS="${FAIR_LABELS:-flipped unsafe}"
 

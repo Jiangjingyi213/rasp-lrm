@@ -64,10 +64,10 @@ v2 才真正对应论文中的 `Structure-sensitive Router`。
 v2 不需要重新运行 Qwen3 生成模型。它复用已经完成的四个正式 motivation shard：
 
 ```text
-runs/formal_qwen3_gsm8k_full_s0
-runs/formal_qwen3_gsm8k_full_s1
-runs/formal_qwen3_math500_full_s0
-runs/formal_qwen3_math500_full_s1
+runs/01_motivation/formal_qwen3_gsm8k_full_s0
+runs/01_motivation/formal_qwen3_gsm8k_full_s1
+runs/01_motivation/formal_qwen3_math500_full_s0
+runs/01_motivation/formal_qwen3_math500_full_s1
 ```
 
 每条 `05_probe_dataset.jsonl` 行代表一次已执行的 counterfactual ablation：
@@ -269,20 +269,20 @@ RASP-Zero v2 vs. safe_step_oracle
 
 ```bash
 cd /home/cike/jjy/rasp-lrm
-mkdir -p logs
+mkdir -p logs/03_rasp_zero
 
 export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
 export CUDA_VISIBLE_DEVICES=2
 export TOKENIZERS_PARALLELISM=false
 
 nohup bash scripts/21_rasp_zero_offline_v2.sh \
-  > logs/rasp_zero_offline_v2.log 2>&1 &
+  > logs/03_rasp_zero/rasp_zero_offline_v2.log 2>&1 &
 ```
 
 查看进度：
 
 ```bash
-tail -f logs/rasp_zero_offline_v2.log
+tail -f logs/03_rasp_zero/rasp_zero_offline_v2.log
 ```
 
 ---
@@ -290,7 +290,7 @@ tail -f logs/rasp_zero_offline_v2.log
 ## 9. 输出文件
 
 ```text
-runs/rasp_zero_offline_v2/
+runs/03_rasp_zero/01_offline/rasp_zero_offline_v2/
 ├── hidden_step_oof_scores.jsonl
 ├── hidden_step_oof_summary.json
 ├── action_conditioned_oof_scores.jsonl

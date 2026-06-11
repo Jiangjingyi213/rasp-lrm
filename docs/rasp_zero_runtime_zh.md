@@ -401,8 +401,8 @@ Runtime v0 ratio=0 的输出与 dense Qwen3 保持一致。
 结果：
 
 ```text
-runs/rasp_zero_runtime_smoke_dense/00_runtime_summary.json
-runs/rasp_zero_runtime_smoke_dense/01_trajectories.jsonl
+runs/03_rasp_zero/04_online_eval/rasp_zero_runtime_smoke_dense/00_runtime_summary.json
+runs/03_rasp_zero/04_online_eval/rasp_zero_runtime_smoke_dense/01_trajectories.jsonl
 ```
 
 ### 10.3 Deployment-aligned bank smoke
@@ -435,18 +435,18 @@ ratio=0 flip rate 是否足够低
 结果：
 
 ```text
-runs/rasp_zero_runtime_bank_gsm8k_smoke/01_trajectories.jsonl
-runs/rasp_zero_runtime_bank_gsm8k_smoke/02_segments.jsonl
-runs/rasp_zero_runtime_bank_gsm8k_smoke/03_counterfactuals.jsonl
-runs/rasp_zero_runtime_bank_gsm8k_smoke/05_probe_dataset.jsonl
-runs/rasp_zero_runtime_bank_gsm8k_smoke/05_probe_hidden_states.pt
+runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_gsm8k_smoke/01_trajectories.jsonl
+runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_gsm8k_smoke/02_segments.jsonl
+runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_gsm8k_smoke/03_counterfactuals.jsonl
+runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_gsm8k_smoke/05_probe_dataset.jsonl
+runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_gsm8k_smoke/05_probe_hidden_states.pt
 ```
 
 重点检查：
 
 ```bash
-head -n 3 runs/rasp_zero_runtime_bank_gsm8k_smoke/03_counterfactuals.jsonl
-wc -l runs/rasp_zero_runtime_bank_gsm8k_smoke/*.jsonl
+head -n 3 runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_gsm8k_smoke/03_counterfactuals.jsonl
+wc -l runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_gsm8k_smoke/*.jsonl
 ```
 
 每条 counterfactual row 应满足：
@@ -459,7 +459,7 @@ ratio in {0.00, 0.01, 0.02, 0.05, 0.10, 0.20, 0.40}
 自动校验结果：
 
 ```text
-runs/rasp_zero_runtime_bank_gsm8k_smoke/07_runtime_bank_validation.json
+runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_gsm8k_smoke/07_runtime_bank_validation.json
 ```
 
 ### 10.4 MATH500 bank smoke
@@ -472,7 +472,7 @@ bash scripts/23_collect_runtime_counterfactuals.sh \
 自动校验结果：
 
 ```text
-runs/rasp_zero_runtime_bank_math500_smoke/07_runtime_bank_validation.json
+runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_math500_smoke/07_runtime_bank_validation.json
 ```
 
 ### 10.5 四卡 Overnight 采集 GSM8K-20 + MATH500-20
@@ -507,10 +507,10 @@ configs/generated_runtime_bank_l20/math500_s1.yaml
 正式 shard 结果：
 
 ```text
-runs/rasp_zero_runtime_bank_l20/gsm8k_s0
-runs/rasp_zero_runtime_bank_l20/gsm8k_s1
-runs/rasp_zero_runtime_bank_l20/math500_s0
-runs/rasp_zero_runtime_bank_l20/math500_s1
+runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_l20/gsm8k_s0
+runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_l20/gsm8k_s1
+runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_l20/math500_s0
+runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_l20/math500_s1
 ```
 
 每个 shard 结束后都会自动生成：

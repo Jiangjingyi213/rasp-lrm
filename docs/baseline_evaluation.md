@@ -29,19 +29,19 @@ Example:
 ```bash
 python3 -m src.main_offline_baselines \
   --configs /tmp/formal_math500_full_s0.yaml /tmp/formal_math500_full_s1.yaml \
-  --output runs/formal_qwen3_math500_offline_baselines.json \
-  --summary-csv runs/formal_qwen3_math500_offline_baselines.csv \
-  --selected-output runs/formal_qwen3_math500_offline_selected_actions.jsonl
+  --output runs/01_motivation/formal_qwen3_math500_offline_baselines.json \
+  --summary-csv runs/01_motivation/formal_qwen3_math500_offline_baselines.csv \
+  --selected-output runs/01_motivation/formal_qwen3_math500_offline_selected_actions.jsonl
 ```
 
 When temporary configs are unavailable, pass counterfactual JSONL files directly:
 
 ```bash
 python3 -m src.main_offline_baselines \
-  --inputs runs/formal_qwen3_math500_full_s0/03_counterfactuals.jsonl \
-           runs/formal_qwen3_math500_full_s1/03_counterfactuals.jsonl \
-  --output runs/formal_qwen3_math500_offline_baselines.json \
-  --summary-csv runs/formal_qwen3_math500_offline_baselines.csv
+  --inputs runs/01_motivation/formal_qwen3_math500_full_s0/03_counterfactuals.jsonl \
+           runs/01_motivation/formal_qwen3_math500_full_s1/03_counterfactuals.jsonl \
+  --output runs/01_motivation/formal_qwen3_math500_offline_baselines.json \
+  --summary-csv runs/01_motivation/formal_qwen3_math500_offline_baselines.csv
 ```
 
 ## External Pruned-Model Baselines

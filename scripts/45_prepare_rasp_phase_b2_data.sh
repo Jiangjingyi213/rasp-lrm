@@ -2,8 +2,8 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
-SOURCE_ROOT="${SOURCE_ROOT:-runs/rasp_phase_b_aligned_bank_v2}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-runs/rasp_phase_b2_v3}"
+SOURCE_ROOT="${SOURCE_ROOT:-runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank_v2}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-runs/05_phase_b/02_phase_b2/rasp_phase_b2_v3}"
 if [[ ! -d "${SOURCE_ROOT}" && -d "runs/未命名" ]]; then
   SOURCE_ROOT="runs/未命名"
 fi

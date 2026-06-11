@@ -13,7 +13,7 @@ METRICS = ["average_selected_ratio", "budget_utilization", "flip_rate", "conserv
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", default="runs/rasp_train_fair_benchmark")
+    parser.add_argument("--root", default="runs/04_rasp_train/02_fair_benchmark/rasp_train_fair_benchmark")
     args = parser.parse_args()
     root = Path(args.root)
     raw = []

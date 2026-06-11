@@ -10,7 +10,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "configs" / "generated_rasp_zero_online_calibration"
-RUN_ROOT = "runs/rasp_zero_online_calibration"
+RUN_ROOT = "runs/03_rasp_zero/04_online_eval/rasp_zero_online_calibration"
 
 BASE_CONFIGS = {
     "gsm8k": ROOT / "configs" / "exp_rasp_zero_runtime_router_gsm8k_smoke.yaml",

@@ -33,10 +33,10 @@ Offline baseline policies can be evaluated from finished counterfactual tables:
 
 ```bash
 python3 -m src.main_offline_baselines \
-  --inputs runs/formal_qwen3_math500_full_s0/03_counterfactuals.jsonl \
-           runs/formal_qwen3_math500_full_s1/03_counterfactuals.jsonl \
-  --output runs/formal_qwen3_math500_offline_baselines.json \
-  --summary-csv runs/formal_qwen3_math500_offline_baselines.csv
+  --inputs runs/01_motivation/formal_qwen3_math500_full_s0/03_counterfactuals.jsonl \
+           runs/01_motivation/formal_qwen3_math500_full_s1/03_counterfactuals.jsonl \
+  --output runs/01_motivation/formal_qwen3_math500_offline_baselines.json \
+  --summary-csv runs/01_motivation/formal_qwen3_math500_offline_baselines.csv
 ```
 
 For the first reasoning-aware policy simulation over the completed GSM8K and
@@ -74,7 +74,7 @@ results on separate test problems. It must pass offline validation before
 `scripts/38_eval_rasp_train_v1_online_smoke.sh` is run. The
 online smoke includes a paired ratio-zero control and writes
 `14_paired_dense_comparison.json`. v2.1 outputs are written under
-`runs/rasp_train_v2_1/`; prior v1/v2 results remain unchanged. See
+`runs/04_rasp_train/01_legacy/rasp_train_v2_1/`; prior v1/v2 results remain unchanged. See
 `docs/rasp_train_v1_zh.md`.
 
 See `docs/baseline_evaluation.md` for the distinction between offline policy baselines and external pruned-model baselines such as LLM-Pruner/FLAP.
@@ -88,7 +88,7 @@ bash baselines/scripts/run_llm_pruner_smoke.sh
 bash baselines/scripts/run_griffin_smoke.sh
 ```
 
-Smoke reports are written under `runs/external_baselines/`.
+Smoke reports are written under `runs/02_baselines/external_baselines/`.
 
 For the Qwen3 motivation pipeline:
 
@@ -102,8 +102,8 @@ bash scripts/05_train_probe.sh "$CONFIG"
 bash scripts/06_heatmap_summary.sh "$CONFIG"
 ```
 
-The default config is `configs/exp_minimal_gsm8k.yaml` and writes all artifacts under `runs/minimal_gsm8k_qwen1_5b/`.
-The Qwen3 motivation config is `configs/exp_motivation_qwen3_gsm8k.yaml` and writes under `runs/motivation_qwen3_gsm8k_l8_no_l0/`.
+The default config is `configs/exp_minimal_gsm8k.yaml` and writes all artifacts under `runs/01_motivation/minimal_gsm8k_qwen1_5b/`.
+The Qwen3 motivation config is `configs/exp_motivation_qwen3_gsm8k.yaml` and writes under `runs/01_motivation/motivation_qwen3_gsm8k_l8_no_l0/`.
 The larger Qwen3 overnight config is `configs/exp_motivation_qwen3_gsm8k_l32.yaml`.
 No-layer-20 configs are available for `gsm8k`, `math500`, and `aime2024`; run them separately, then combine summaries with `scripts/07_collect_results.sh`.
 

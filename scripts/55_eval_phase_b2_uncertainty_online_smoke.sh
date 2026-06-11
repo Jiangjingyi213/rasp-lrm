@@ -2,8 +2,8 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
-CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-runs/rasp_phase_b2_v3}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-runs/rasp_phase_b2_uncertainty_online_smoke}"
+CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-runs/05_phase_b/02_phase_b2/rasp_phase_b2_v3}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-runs/06_phase_b3_online/rasp_phase_b2_uncertainty_online_smoke}"
 CONFIG_DIR="${CONFIG_DIR:-/tmp/rasp_phase_b2_uncertainty_online_smoke_configs}"
 SEED="${PHASE_B2_ONLINE_SEED:-1}"
 LIMIT="${PHASE_B2_ONLINE_LIMIT:-20}"

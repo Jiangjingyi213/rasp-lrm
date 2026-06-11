@@ -49,7 +49,7 @@ def build_flap_calibration_texts(bundle, tasks: list[dict], cfg: dict) -> list[s
     max_input_tokens = int(cfg.get("generation", {}).get("max_input_tokens", 2048))
     cache_path = model_cfg.get(
         "flap_calibration_cache",
-        f"runs/cache/flap_{source}_seed{int(cfg.get('seed', 1))}_n{n}_len{max_input_tokens}.json",
+        f"runs/00_shared/cache/flap_{source}_seed{int(cfg.get('seed', 1))}_n{n}_len{max_input_tokens}.json",
     )
     cache_file = Path(cache_path)
     if cache_file.exists():

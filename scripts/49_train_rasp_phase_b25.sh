@@ -2,8 +2,8 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
-DATA_ROOT="${DATA_ROOT:-runs/rasp_phase_b2_v3}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-runs/rasp_phase_b25}"
+DATA_ROOT="${DATA_ROOT:-runs/05_phase_b/02_phase_b2/rasp_phase_b2_v3}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-runs/05_phase_b/03_phase_b25/rasp_phase_b25}"
 VARIANTS="${PHASE_B25_VARIANTS:-uncertainty_nonlinear hidden_pca_linear hidden_pca_nonlinear uncertainty_hidden_residual}"
 
 for seed in ${PHASE_B25_SEEDS:-1 2 3}; do

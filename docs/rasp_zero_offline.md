@@ -820,7 +820,7 @@ risk_score
 运行脚本后会生成：
 
 ```text
-runs/rasp_zero_offline/
+runs/03_rasp_zero/01_offline/rasp_zero_offline/
 ├── hidden_probe_oof_scores.jsonl
 ├── hidden_probe_oof_summary.json
 ├── rasp_zero_offline_summary.json
@@ -1101,20 +1101,20 @@ step_safe_oracle
 
 ```bash
 cd /home/cike/jjy/rasp-lrm
-mkdir -p logs
+mkdir -p logs/03_rasp_zero
 
 export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
 export CUDA_VISIBLE_DEVICES=2
 export TOKENIZERS_PARALLELISM=false
 
 nohup bash scripts/19_rasp_zero_offline.sh \
-  > logs/rasp_zero_offline.log 2>&1 &
+  > logs/03_rasp_zero/rasp_zero_offline.log 2>&1 &
 ```
 
 查看日志：
 
 ```bash
-tail -f logs/rasp_zero_offline.log
+tail -f logs/03_rasp_zero/rasp_zero_offline.log
 ```
 
 OOF probe 相比重新生成大模型轨迹要轻量得多。Probe 训练可以使用一张 GPU，策略模拟本身主要在 CPU 上运行。

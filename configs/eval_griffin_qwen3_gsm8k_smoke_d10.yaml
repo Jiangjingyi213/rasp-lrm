@@ -28,5 +28,5 @@ generation:
   top_p: 1.0
 
 paths:
-  run_dir: runs/eval_griffin_qwen3_gsm8k_smoke_d10
-  trajectories: runs/eval_griffin_qwen3_gsm8k_smoke_d10/01_trajectories.jsonl
+  run_dir: runs/02_baselines/eval_griffin_qwen3_gsm8k_smoke_d10
+  trajectories: runs/02_baselines/eval_griffin_qwen3_gsm8k_smoke_d10/01_trajectories.jsonl

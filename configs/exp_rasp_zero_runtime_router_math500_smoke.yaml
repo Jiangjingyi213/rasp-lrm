@@ -27,13 +27,13 @@ generation:
 runtime_rasp:
   backend: logical_mask_v0
   controller: action_conditioned_risk
-  router_checkpoint: runs/rasp_zero_runtime_router/router.pt
+  router_checkpoint: runs/03_rasp_zero/03_runtime_router/rasp_zero_runtime_router/router.pt
   risk_threshold: 0.35
   target_average_ratio: 0.20
   ratios: [0.02, 0.05, 0.10, 0.20, 0.30, 0.40]
   window_tokens: 16
 
 paths:
-  run_dir: runs/eval_rasp_zero_runtime_router_math500_smoke
-  trajectories: runs/eval_rasp_zero_runtime_router_math500_smoke/01_trajectories.jsonl
-  runtime_summary: runs/eval_rasp_zero_runtime_router_math500_smoke/00_runtime_summary.json
+  run_dir: runs/03_rasp_zero/04_online_eval/eval_rasp_zero_runtime_router_math500_smoke
+  trajectories: runs/03_rasp_zero/04_online_eval/eval_rasp_zero_runtime_router_math500_smoke/01_trajectories.jsonl
+  runtime_summary: runs/03_rasp_zero/04_online_eval/eval_rasp_zero_runtime_router_math500_smoke/00_runtime_summary.json

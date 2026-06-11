@@ -21,7 +21,8 @@ Thumbs.db
 
 # Large outputs
 outputs/
-runs/
+runs/*
+!runs/README.md
 configs/generated_runtime_bank_l20/
 configs/generated_runtime_bank_formal/
 data/raw/

@@ -11,7 +11,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "configs" / "generated_runtime_bank_formal"
-RUN_ROOT = "runs/rasp_zero_runtime_bank_formal"
+RUN_ROOT = "runs/03_rasp_zero/02_runtime_banks/rasp_zero_runtime_bank_formal"
 SOURCES = (
     ("gsm8k_train", "configs/exp_rasp_zero_runtime_bank_gsm8k_train.yaml"),
     ("math_train", "configs/exp_rasp_zero_runtime_bank_math_train.yaml"),

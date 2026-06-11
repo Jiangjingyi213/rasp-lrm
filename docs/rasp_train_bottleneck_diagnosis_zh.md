@@ -365,7 +365,7 @@ calibration 内各 problem fold 的最坏 flip rate 同时满足约束。
 执行：
 
 ```bash
-mv runs/未命名 runs/rasp_phase_b_aligned_bank_12w
+mv runs/未命名 runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank_12w
 export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
 bash scripts/45_prepare_rasp_phase_b2_data.sh
 ```
@@ -373,12 +373,12 @@ bash scripts/45_prepare_rasp_phase_b2_data.sh
 三个 seed 可分别占用三张 GPU：
 
 ```bash
-mkdir -p logs
+mkdir -p logs/05_phase_b
 for item in "0 1" "1 2" "2 3"; do
   set -- ${item}
   nohup env CUDA_VISIBLE_DEVICES="$1" PHASE_B2_SEEDS="$2" \
     bash scripts/46_train_rasp_phase_b2.sh \
-    > "logs/rasp_phase_b2_seed_$2.log" 2>&1 &
+    > "logs/05_phase_b/rasp_phase_b2_seed_$2.log" 2>&1 &
 done
 ```
 
@@ -388,7 +388,7 @@ done
 bash scripts/47_eval_rasp_phase_b2.sh
 ```
 
-输出汇总为 `runs/rasp_phase_b2/comparison_summary.csv`。验收重点不是单一 AUC，而是：
+输出汇总为 `runs/05_phase_b/02_phase_b2/rasp_phase_b2/comparison_summary.csv`。验收重点不是单一 AUC，而是：
 
 1. `hidden_multitask` 是否稳定优于 `hidden_flip_only`；
 2. hidden 是否稳定优于 uncertainty-only；
@@ -397,7 +397,7 @@ bash scripts/47_eval_rasp_phase_b2.sh
 
 ### Phase B2 三 seed 结果
 
-`runs/rasp_phase_b2/` 已完整产生 9 个 checkpoint、9 个 train metrics 和 9 个 test eval。数据为
+`runs/05_phase_b/02_phase_b2/rasp_phase_b2/` 已完整产生 9 个 checkpoint、9 个 train metrics 和 9 个 test eval。数据为
 164 个问题、1901 个完整 16-token boundary、11406 个非零 action rows，其中 558 个 final-flip
 正例。
 
@@ -431,7 +431,7 @@ bash scripts/47_eval_rasp_phase_b2.sh
 
 ### Phase B2 v2 无泄漏重跑实现
 
-上述修复已经实现，默认输出目录改为 `runs/rasp_phase_b2_v2/`，不会覆盖第一轮诊断结果：
+上述修复已经实现，默认输出目录改为 `runs/05_phase_b/02_phase_b2/rasp_phase_b2_v2/`，不会覆盖第一轮诊断结果：
 
 - manifest schema 升级为 `rasp_phase_b2_multitask_v2`；
 - split 改为 problem-level、dataset/positive 分层的 `60/10/15/15`
@@ -451,7 +451,7 @@ RASP-Zero residual，必须先定义并保存与 aligned boundary 一致的 zero
 export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
 bash scripts/45_prepare_rasp_phase_b2_data.sh
 
-mkdir -p logs
+mkdir -p logs/05_phase_b
 variants=(
   hidden_multitask hidden_flip_only
   uncertainty_multitask uncertainty_flip_only
@@ -461,7 +461,7 @@ for i in "${!variants[@]}"; do
   variant="${variants[$i]}"
   nohup env CUDA_VISIBLE_DEVICES="$i" PHASE_B2_VARIANTS="$variant" PHASE_B2_SEEDS="1 2 3" \
     bash scripts/46_train_rasp_phase_b2.sh \
-    > "logs/rasp_phase_b2_v2_${variant}.log" 2>&1 &
+    > "logs/05_phase_b/rasp_phase_b2_v2_${variant}.log" 2>&1 &
 done
 ```
 
@@ -518,8 +518,8 @@ variant checkpoint 不受该修复影响。
 - split 与 calibration folds 改按 dataset 内 `zero / positive-low / positive-high` 风险负担分层，
   不再只按是否含正例二分。
 
-因此下一步必须先重采 `runs/rasp_phase_b_aligned_bank_v2/`，再训练
-`runs/rasp_phase_b2_v3/`；不要继续评估或引用尚未完成的 v2 test。
+因此下一步必须先重采 `runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank_v2/`，再训练
+`runs/05_phase_b/02_phase_b2/rasp_phase_b2_v3/`；不要继续评估或引用尚未完成的 v2 test。
 
 服务器执行顺序：
 
@@ -529,22 +529,22 @@ export RASP_PHASE_B_LIMIT_PER_SOURCE=100
 export RASP_PHASE_B_SHARD_SIZE=10
 export RASP_PHASE_B_GPU_COUNT=8
 export RASP_PHASE_B_MAX_BOUNDARIES_PER_EXAMPLE=12
-export RASP_PHASE_B_RUN_ROOT=runs/rasp_phase_b_aligned_bank_v2
+export RASP_PHASE_B_RUN_ROOT=runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank_v2
 bash scripts/44_collect_rasp_phase_b_aligned_bank.sh
 ```
 
 所有新版 shard validation 为 `ok` 后：
 
 ```bash
-SOURCE_ROOT=runs/rasp_phase_b_aligned_bank_v2 \
-OUTPUT_ROOT=runs/rasp_phase_b2_v3 \
+SOURCE_ROOT=runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank_v2 \
+OUTPUT_ROOT=runs/05_phase_b/02_phase_b2/rasp_phase_b2_v3 \
 bash scripts/45_prepare_rasp_phase_b2_data.sh
 ```
 
 训练优先先跑六个裁决 variant，而不是一次跑满十个：
 
 ```bash
-mkdir -p logs
+mkdir -p logs/05_phase_b
 variants=(
   hidden_flip_linear hidden_flip_only
   uncertainty_flip_linear uncertainty_flip_only
@@ -554,7 +554,7 @@ for i in "${!variants[@]}"; do
   variant="${variants[$i]}"
   nohup env CUDA_VISIBLE_DEVICES="$i" PHASE_B2_VARIANTS="$variant" PHASE_B2_SEEDS="1 2 3" \
     bash scripts/46_train_rasp_phase_b2.sh \
-    > "logs/rasp_phase_b2_v3_${variant}.log" 2>&1 &
+    > "logs/05_phase_b/rasp_phase_b2_v3_${variant}.log" 2>&1 &
 done
 ```
 
@@ -575,7 +575,7 @@ entropy、confidence 与 position，避免 hidden/action 对齐错误被静默�
 
 新版 aligned bank 与 Phase B2 v3 数据准备已完成，可以启动裁决训练：
 
-- `runs/rasp_phase_b_aligned_bank_v2/` 的 20/20 shard validation 均为 `ok`；
+- `runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank_v2/` 的 20/20 shard validation 均为 `ok`；
 - 全部 shard 使用 `affected_next_token_decisions_v2`，`max_new_tokens=768`，dense paired flip 与
   dense replay flip 均为 `0`；
 - 原始 bank 为 164 个 dense-correct problems、1926 个 boundary、13482 条 action rows；
@@ -595,23 +595,23 @@ train action-positive rate 已稳定到 `4.49%–4.79%`；validation/test 因仅
 四张 GPU 可用以下队列一次完成六个裁决 variant：
 
 ```bash
-mkdir -p logs
+mkdir -p logs/05_phase_b
 
 nohup env CUDA_VISIBLE_DEVICES=0 \
   PHASE_B2_VARIANTS="hidden_flip_linear position_flip_linear" PHASE_B2_SEEDS="1 2 3" \
-  bash scripts/46_train_rasp_phase_b2.sh > logs/rasp_phase_b2_v3_gpu0.log 2>&1 &
+  bash scripts/46_train_rasp_phase_b2.sh > logs/05_phase_b/rasp_phase_b2_v3_gpu0.log 2>&1 &
 
 nohup env CUDA_VISIBLE_DEVICES=1 \
   PHASE_B2_VARIANTS="hidden_flip_only" PHASE_B2_SEEDS="1 2 3" \
-  bash scripts/46_train_rasp_phase_b2.sh > logs/rasp_phase_b2_v3_gpu1.log 2>&1 &
+  bash scripts/46_train_rasp_phase_b2.sh > logs/05_phase_b/rasp_phase_b2_v3_gpu1.log 2>&1 &
 
 nohup env CUDA_VISIBLE_DEVICES=2 \
   PHASE_B2_VARIANTS="uncertainty_flip_linear ratio_only_flip_linear" PHASE_B2_SEEDS="1 2 3" \
-  bash scripts/46_train_rasp_phase_b2.sh > logs/rasp_phase_b2_v3_gpu2.log 2>&1 &
+  bash scripts/46_train_rasp_phase_b2.sh > logs/05_phase_b/rasp_phase_b2_v3_gpu2.log 2>&1 &
 
 nohup env CUDA_VISIBLE_DEVICES=3 \
   PHASE_B2_VARIANTS="uncertainty_flip_only" PHASE_B2_SEEDS="1 2 3" \
-  bash scripts/46_train_rasp_phase_b2.sh > logs/rasp_phase_b2_v3_gpu3.log 2>&1 &
+  bash scripts/46_train_rasp_phase_b2.sh > logs/05_phase_b/rasp_phase_b2_v3_gpu3.log 2>&1 &
 ```
 
 ### Phase B2 v3 裁决结果
@@ -679,7 +679,7 @@ Phase B2.5 应按以下顺序完成后再决定是否停止 hidden 路线：
 
 ### Phase B2.5 实现与执行
 
-Phase B2.5 已作为独立链路实现，不覆盖 `runs/rasp_phase_b2_v3/`：
+Phase B2.5 已作为独立链路实现，不覆盖 `runs/05_phase_b/02_phase_b2/rasp_phase_b2_v3/`：
 
 ```text
 src/rasp/phase_b25.py
@@ -710,11 +710,11 @@ B15/B20 controller utilization / flip
 服务器更新代码后先运行两 epoch smoke：
 
 ```bash
-OUTPUT_ROOT=runs/rasp_phase_b25_smoke \
+OUTPUT_ROOT=runs/05_phase_b/03_phase_b25/rasp_phase_b25_smoke \
 PHASE_B25_VARIANTS="uncertainty_hidden_residual" PHASE_B25_SEEDS="1" PHASE_B25_EPOCHS="2" \
 bash scripts/49_train_rasp_phase_b25.sh
 
-OUTPUT_ROOT=runs/rasp_phase_b25_smoke \
+OUTPUT_ROOT=runs/05_phase_b/03_phase_b25/rasp_phase_b25_smoke \
 PHASE_B25_VARIANTS="uncertainty_hidden_residual" PHASE_B25_SEEDS="1" \
 bash scripts/50_eval_rasp_phase_b25.sh
 ```
@@ -725,19 +725,19 @@ bash scripts/50_eval_rasp_phase_b25.sh
 四张 GPU 可分别运行一个 variant：
 
 ```bash
-mkdir -p logs
+mkdir -p logs/05_phase_b
 
 nohup env CUDA_VISIBLE_DEVICES=0 PHASE_B25_VARIANTS="uncertainty_nonlinear" \
-  bash scripts/49_train_rasp_phase_b25.sh > logs/rasp_phase_b25_uncertainty.log 2>&1 &
+  bash scripts/49_train_rasp_phase_b25.sh > logs/05_phase_b/rasp_phase_b25_uncertainty.log 2>&1 &
 
 nohup env CUDA_VISIBLE_DEVICES=1 PHASE_B25_VARIANTS="hidden_pca_linear" \
-  bash scripts/49_train_rasp_phase_b25.sh > logs/rasp_phase_b25_hidden_linear.log 2>&1 &
+  bash scripts/49_train_rasp_phase_b25.sh > logs/05_phase_b/rasp_phase_b25_hidden_linear.log 2>&1 &
 
 nohup env CUDA_VISIBLE_DEVICES=2 PHASE_B25_VARIANTS="hidden_pca_nonlinear" \
-  bash scripts/49_train_rasp_phase_b25.sh > logs/rasp_phase_b25_hidden_nonlinear.log 2>&1 &
+  bash scripts/49_train_rasp_phase_b25.sh > logs/05_phase_b/rasp_phase_b25_hidden_nonlinear.log 2>&1 &
 
 nohup env CUDA_VISIBLE_DEVICES=3 PHASE_B25_VARIANTS="uncertainty_hidden_residual" \
-  bash scripts/49_train_rasp_phase_b25.sh > logs/rasp_phase_b25_residual.log 2>&1 &
+  bash scripts/49_train_rasp_phase_b25.sh > logs/05_phase_b/rasp_phase_b25_residual.log 2>&1 &
 ```
 
 四项训练结束后评估：
@@ -749,9 +749,9 @@ bash scripts/50_eval_rasp_phase_b25.sh
 预期产生 12 个 checkpoint、12 个 train metrics、12 个 eval，以及：
 
 ```text
-runs/rasp_phase_b25/comparison_raw.csv
-runs/rasp_phase_b25/comparison_summary.csv
-runs/rasp_phase_b25/comparison_summary.json
+runs/05_phase_b/03_phase_b25/rasp_phase_b25/comparison_raw.csv
+runs/05_phase_b/03_phase_b25/rasp_phase_b25/comparison_summary.csv
+runs/05_phase_b/03_phase_b25/rasp_phase_b25/comparison_summary.json
 ```
 
 准入 Phase C 的必要条件是 `uncertainty_hidden_residual` 在三 seed 上相对
@@ -830,26 +830,26 @@ B15/B20 baseline vs combined ratio / flip
 先运行单 seed 两 epoch smoke：
 
 ```bash
-OUTPUT_ROOT=runs/rasp_phase_b25b_smoke PHASE_B25B_SEEDS="1" PHASE_B25B_EPOCHS="2" \
+OUTPUT_ROOT=runs/05_phase_b/03_phase_b25/rasp_phase_b25b_smoke PHASE_B25B_SEEDS="1" PHASE_B25B_EPOCHS="2" \
 bash scripts/52_train_rasp_phase_b25b.sh
 
-OUTPUT_ROOT=runs/rasp_phase_b25b_smoke PHASE_B25B_SEEDS="1" \
+OUTPUT_ROOT=runs/05_phase_b/03_phase_b25/rasp_phase_b25b_smoke PHASE_B25B_SEEDS="1" \
 bash scripts/53_eval_rasp_phase_b25b.sh
 ```
 
 Smoke 完成后，三张 GPU 并行正式运行：
 
 ```bash
-mkdir -p logs
+mkdir -p logs/05_phase_b
 
 nohup env CUDA_VISIBLE_DEVICES=0 PHASE_B25B_SEEDS="1" \
-  bash scripts/52_train_rasp_phase_b25b.sh > logs/rasp_phase_b25b_seed1.log 2>&1 &
+  bash scripts/52_train_rasp_phase_b25b.sh > logs/05_phase_b/rasp_phase_b25b_seed1.log 2>&1 &
 
 nohup env CUDA_VISIBLE_DEVICES=1 PHASE_B25B_SEEDS="2" \
-  bash scripts/52_train_rasp_phase_b25b.sh > logs/rasp_phase_b25b_seed2.log 2>&1 &
+  bash scripts/52_train_rasp_phase_b25b.sh > logs/05_phase_b/rasp_phase_b25b_seed2.log 2>&1 &
 
 nohup env CUDA_VISIBLE_DEVICES=2 PHASE_B25B_SEEDS="3" \
-  bash scripts/52_train_rasp_phase_b25b.sh > logs/rasp_phase_b25b_seed3.log 2>&1 &
+  bash scripts/52_train_rasp_phase_b25b.sh > logs/05_phase_b/rasp_phase_b25b_seed3.log 2>&1 &
 ```
 
 训练完成后统一评估：
@@ -858,7 +858,7 @@ nohup env CUDA_VISIBLE_DEVICES=2 PHASE_B25B_SEEDS="3" \
 bash scripts/53_eval_rasp_phase_b25b.sh
 ```
 
-结果写入 `runs/rasp_phase_b25b/`，正式验收文件为：
+结果写入 `runs/05_phase_b/03_phase_b25/rasp_phase_b25b/`，正式验收文件为：
 
 ```text
 comparison_raw.csv
@@ -915,18 +915,18 @@ hidden bank、调 PCA/model dim 或训练 multitask。Motivation 中 hidden 对�
 先在两张 GPU 上并行运行 20 题 paired smoke：
 
 ```bash
-mkdir -p logs
+mkdir -p logs/06_phase_b3_online
 
 nohup env CUDA_VISIBLE_DEVICES=0 PHASE_B2_ONLINE_DATASETS="gsm8k" \
   bash scripts/55_eval_phase_b2_uncertainty_online_smoke.sh \
-  > logs/phase_b2_uncertainty_online_gsm8k.log 2>&1 &
+  > logs/06_phase_b3_online/phase_b2_uncertainty_online_gsm8k.log 2>&1 &
 
 nohup env CUDA_VISIBLE_DEVICES=1 PHASE_B2_ONLINE_DATASETS="math500" \
   bash scripts/55_eval_phase_b2_uncertainty_online_smoke.sh \
-  > logs/phase_b2_uncertainty_online_math500.log 2>&1 &
+  > logs/06_phase_b3_online/phase_b2_uncertainty_online_math500.log 2>&1 &
 ```
 
-结果位于 `runs/rasp_phase_b2_uncertainty_online_smoke/{gsm8k,math500}/`。每个数据集检查：
+结果位于 `runs/06_phase_b3_online/rasp_phase_b2_uncertainty_online_smoke/{gsm8k,math500}/`。每个数据集检查：
 
 ```text
 dense/00_runtime_summary.json

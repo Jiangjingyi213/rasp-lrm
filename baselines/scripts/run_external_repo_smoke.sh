@@ -10,7 +10,7 @@ METHOD="$1"
 REPO_DIR="$2"
 MODEL_NAME="${3:-Qwen/Qwen3-1.7B}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-OUT_DIR="$ROOT/runs/external_baselines"
+OUT_DIR="$ROOT/runs/02_baselines/external_baselines"
 OUT="$OUT_DIR/${METHOD}_smoke.txt"
 
 mkdir -p "$OUT_DIR"

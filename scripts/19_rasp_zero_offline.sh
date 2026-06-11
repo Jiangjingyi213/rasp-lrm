@@ -2,21 +2,21 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
-OUTPUT_DIR="${OUTPUT_DIR:-runs/rasp_zero_offline}"
+OUTPUT_DIR="${OUTPUT_DIR:-runs/03_rasp_zero/01_offline/rasp_zero_offline}"
 OOF_SCORES="${OOF_SCORES:-${OUTPUT_DIR}/hidden_probe_oof_scores.jsonl}"
 
 RUN_DIRS=(
-  runs/formal_qwen3_gsm8k_full_s0
-  runs/formal_qwen3_gsm8k_full_s1
-  runs/formal_qwen3_math500_full_s0
-  runs/formal_qwen3_math500_full_s1
+  runs/01_motivation/formal_qwen3_gsm8k_full_s0
+  runs/01_motivation/formal_qwen3_gsm8k_full_s1
+  runs/01_motivation/formal_qwen3_math500_full_s0
+  runs/01_motivation/formal_qwen3_math500_full_s1
 )
 
 INPUTS=(
-  runs/formal_qwen3_gsm8k_full_s0/05_probe_dataset.jsonl
-  runs/formal_qwen3_gsm8k_full_s1/05_probe_dataset.jsonl
-  runs/formal_qwen3_math500_full_s0/05_probe_dataset.jsonl
-  runs/formal_qwen3_math500_full_s1/05_probe_dataset.jsonl
+  runs/01_motivation/formal_qwen3_gsm8k_full_s0/05_probe_dataset.jsonl
+  runs/01_motivation/formal_qwen3_gsm8k_full_s1/05_probe_dataset.jsonl
+  runs/01_motivation/formal_qwen3_math500_full_s0/05_probe_dataset.jsonl
+  runs/01_motivation/formal_qwen3_math500_full_s1/05_probe_dataset.jsonl
 )
 
 mkdir -p "${OUTPUT_DIR}"

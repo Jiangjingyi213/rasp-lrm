@@ -50,7 +50,7 @@ state 已更强。Activation 可作为后续消融，不能在没有开销收益
 v1 已完成离线实验，结果保存在：
 
 ```text
-runs/rasp_train_v1/
+runs/04_rasp_train/01_legacy/rasp_train_v1/
 ```
 
 | 方法 | 平均 ratio | Flip rate |
@@ -172,36 +172,36 @@ B20 默认不超过 `0.08/0.10`。在满足条件的阈值中选择平均 ratio 
 v1 结果保留在：
 
 ```text
-runs/rasp_train_v1/
+runs/04_rasp_train/01_legacy/rasp_train_v1/
 ```
 
 v2.1 默认写入：
 
 ```text
-runs/rasp_train_v2_1/
+runs/04_rasp_train/01_legacy/rasp_train_v2_1/
 ```
 
 脚本名称暂时沿用 `v1`，避免大范围入口变更：
 
 ```bash
 export PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python
-mkdir -p logs
+mkdir -p logs/04_rasp_train
 nohup env CUDA_VISIBLE_DEVICES=0 PYTHON="$PYTHON" bash -c '
 set -e
 bash scripts/35_prepare_rasp_train_v1_data.sh
 bash scripts/36_train_rasp_train_v1.sh
 bash scripts/37_eval_rasp_train_v1_offline.sh
-' > logs/rasp_train_v2_1_offline.log 2>&1 &
-echo $! > logs/rasp_train_v2_1_offline.pid
-tail -f logs/rasp_train_v2_1_offline.log
+' > logs/04_rasp_train/rasp_train_v2_1_offline.log 2>&1 &
+echo $! > logs/04_rasp_train/rasp_train_v2_1_offline.pid
+tail -f logs/04_rasp_train/rasp_train_v2_1_offline.log
 ```
 
 重点检查：
 
 ```text
-runs/rasp_train_v2_1/shared/13_rasp_train_metrics.json
-runs/rasp_train_v2_1/b15/offline_eval/12_rasp_train_offline_summary.csv
-runs/rasp_train_v2_1/b20/offline_eval/12_rasp_train_offline_summary.csv
+runs/04_rasp_train/01_legacy/rasp_train_v2_1/shared/13_rasp_train_metrics.json
+runs/04_rasp_train/01_legacy/rasp_train_v2_1/b15/offline_eval/12_rasp_train_offline_summary.csv
+runs/04_rasp_train/01_legacy/rasp_train_v2_1/b20/offline_eval/12_rasp_train_offline_summary.csv
 ```
 
 离线门槛：
@@ -230,7 +230,7 @@ bash scripts/38_eval_rasp_train_v1_online_smoke.sh
 ## 9. Phase A：公平 Benchmark
 
 已实现独立公平对照入口，用于判断当前瓶颈究竟来自特征、模型容量还是标签定义。该实验复用
-`runs/rasp_train_v2_1` 的现有 counterfactual bank，不重新采集模型输出。
+`runs/04_rasp_train/01_legacy/rasp_train_v2_1` 的现有 counterfactual bank，不重新采集模型输出。
 
 公平协议固定为：
 
@@ -253,7 +253,7 @@ bash scripts/41_eval_rasp_train_fair_benchmark.sh
 三个 seed 可以分别占用三张 GPU 并行训练；policy 很小，没有必要占满八张卡：
 
 ```bash
-mkdir -p logs
+mkdir -p logs/04_rasp_train
 nohup bash -c '
 set -euo pipefail
 bash scripts/39_prepare_rasp_train_fair_benchmark.sh
@@ -261,21 +261,21 @@ pids=""
 for item in "0 1" "1 2" "2 3"; do
   set -- ${item}
   CUDA_VISIBLE_DEVICES="$1" FAIR_SEEDS="$2" bash scripts/40_train_rasp_train_fair_benchmark.sh \
-    > "logs/rasp_train_fair_seed_$2.log" 2>&1 &
+    > "logs/04_rasp_train/rasp_train_fair_seed_$2.log" 2>&1 &
   pids="${pids} $!"
 done
 for pid in ${pids}; do wait "${pid}"; done
 bash scripts/41_eval_rasp_train_fair_benchmark.sh
-' > logs/rasp_train_fair_benchmark.log 2>&1 &
-echo $! > logs/rasp_train_fair_benchmark.pid
+' > logs/04_rasp_train/rasp_train_fair_benchmark.log 2>&1 &
+echo $! > logs/04_rasp_train/rasp_train_fair_benchmark.pid
 ```
 
 输出位于：
 
 ```text
-runs/rasp_train_fair_benchmark/split_manifests/
-runs/rasp_train_fair_benchmark/seed_<n>/<label>/<variant>/
-runs/rasp_train_fair_benchmark/comparison_summary.csv
+runs/04_rasp_train/02_fair_benchmark/rasp_train_fair_benchmark/split_manifests/
+runs/04_rasp_train/02_fair_benchmark/rasp_train_fair_benchmark/seed_<n>/<label>/<variant>/
+runs/04_rasp_train/02_fair_benchmark/rasp_train_fair_benchmark/comparison_summary.csv
 ```
 
 该阶段只解决离线比较协议不公平的问题。即使 hidden-nonlinear 在公平对照中胜出，也不能直接进入
@@ -285,7 +285,7 @@ distribution shift。
 ### Phase A 运行结果
 
 完整 3-seed 公平实验已完成，共产生 `30` 个 checkpoint 和 `60` 个 budget-level test 结果。
-汇总文件为 `runs/rasp_train_fair_benchmark/comparison_summary.csv`。
+汇总文件为 `runs/04_rasp_train/02_fair_benchmark/rasp_train_fair_benchmark/comparison_summary.csv`。
 
 | 标签 / policy | B15 ratio | B15 flip | B15 unsafe | B20 ratio | B20 flip | B20 unsafe |
 |---|---:|---:|---:|---:|---:|---:|
@@ -315,7 +315,7 @@ out-of-fold calibration。
 
 ## 10. v2 正式离线结果与结论
 
-服务器结果已同步至 `runs/rasp_train_v2/`。
+服务器结果已同步至 `runs/04_rasp_train/01_legacy/rasp_train_v2/`。
 
 | 方法 | B15 ratio | B15 flip | B15 unsafe | B20 ratio | B20 flip | B20 unsafe |
 |---|---:|---:|---:|---:|---:|---:|
@@ -366,7 +366,7 @@ B15/B20 应共享同一风险模型，并增加跨 seed/cross-fitting calibratio
 - feature schema 更新为 budget-independent shared action risk；
 - `target_budget/available_budget` 已从风险网络输入移除；
 - B15/B20 标签在训练入口强制校验一致；
-- 只训练 `runs/rasp_train_v2_1/shared/rasp_train_policy.pt` 一个 checkpoint；
+- 只训练 `runs/04_rasp_train/01_legacy/rasp_train_v2_1/shared/rasp_train_policy.pt` 一个 checkpoint；
 - checkpoint 分别保存 B15/B20 calibrated threshold；
 - threshold calibration 增加 problem-level 三折稳定性约束，记录最差 fold flip/unsafe；
 - 候选风险只预测一次，不同 threshold/budget 仅重放 causal controller；
@@ -420,7 +420,7 @@ export RASP_PHASE_B_GPU_COUNT=8
 bash scripts/44_collect_rasp_phase_b_aligned_bank.sh
 ```
 
-只有所有 `runs/rasp_phase_b_aligned_bank/*/07_aligned_window_bank_validation.json` 均为 `status=ok`，
+只有所有 `runs/05_phase_b/01_aligned_banks/rasp_phase_b_aligned_bank/*/07_aligned_window_bank_validation.json` 均为 `status=ok`，
 且 dense replay flip rate 可接受后，才扩大正式 bank，并进入 Phase B2 的 aligned-bank policy
 训练与 out-of-fold calibration。
 
@@ -459,7 +459,7 @@ test flip 达到 `0.0407/0.0441`，跨 split 稳定性不足。
 
 Phase B2 v2 已完成代码修复：使用独立 train/validation/calibration/test problem split，
 validation 只选择 checkpoint，calibration 只选择 threshold；同时增加 ratio-only、
-position-only、uncertainty-flip-only 对照。新结果默认写入 `runs/rasp_phase_b2_v2/`，不覆盖
+position-only、uncertainty-flip-only 对照。新结果默认写入 `runs/05_phase_b/02_phase_b2/rasp_phase_b2_v2/`，不覆盖
 第一轮结果。
 
 后续审查确认 v2 仍不能作为最终裁决：aligned collector 的 token-divergence window 有一位错位，

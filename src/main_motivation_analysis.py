@@ -11,10 +11,10 @@ from statistics import mean
 from typing import Any
 
 DEFAULT_RUNS = [
-    "runs/formal_qwen3_gsm8k_full_s0",
-    "runs/formal_qwen3_gsm8k_full_s1",
-    "runs/formal_qwen3_math500_full_s0",
-    "runs/formal_qwen3_math500_full_s1",
+    "runs/01_motivation/formal_qwen3_gsm8k_full_s0",
+    "runs/01_motivation/formal_qwen3_gsm8k_full_s1",
+    "runs/01_motivation/formal_qwen3_math500_full_s0",
+    "runs/01_motivation/formal_qwen3_math500_full_s1",
 ]
 
 FEATURE_ORDER = ["entropy", "confidence", "activation", "hidden", "combined"]
@@ -501,7 +501,7 @@ Lowest-risk actions:
 
 ## 10. Paper-ready Figures
 
-本脚本生成的 figure 文件位于 `runs/motivation_analysis/figures/`：
+本脚本生成的 figure 文件位于 `runs/01_motivation/motivation_analysis/figures/`：
 
 - `dataset_flip_rates.svg`
 - `module_flip_rates.svg`
@@ -535,9 +535,9 @@ Lowest-risk actions:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--combined", default="runs/formal_qwen3_gsm8k_math500_combined.json")
+    parser.add_argument("--combined", default="runs/01_motivation/formal_qwen3_gsm8k_math500_combined.json")
     parser.add_argument("--run-dirs", nargs="*", default=DEFAULT_RUNS)
-    parser.add_argument("--output-dir", default="runs/motivation_analysis")
+    parser.add_argument("--output-dir", default="runs/01_motivation/motivation_analysis")
     args = parser.parse_args()
 
     output_dir = ensure_dir(args.output_dir)
