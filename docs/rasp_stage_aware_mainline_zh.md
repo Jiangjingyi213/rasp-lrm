@@ -259,3 +259,121 @@ setup       78.1%
 
 脚本使用专用环境变量 `STAGE_PROBE_ROOT`，不再读取通用 `OUTPUT_ROOT`，避免服务器残留变量将
 产物错误写入 `runs/07_stage_aware/data/`。
+
+## 8. S1 v3 三 Seed 训练结果
+
+三 seed、五个 feature variant 已完成训练，但尚未运行 held-out test，因此当前只报告 validation
+诊断，不作正式 S1 准入裁决。
+
+```text
+variant                macro-F1 mean±std   setup→reasoning mean/max
+hidden_pca_nonlinear   0.7551 ± 0.0181     0.2997 / 0.4022
+hidden_uncertainty     0.7497 ± 0.0116     0.3145 / 0.3804
+hidden_pca_linear      0.6693 ± 0.0061     0.2409 / 0.3696
+uncertainty_only       0.3630 ± 0.0061     0.5997 / 0.7609
+position_only          0.3391 ± 0.0961     0.2863 / 0.8478
+```
+
+最佳 hidden nonlinear 相对最佳简单 baseline 的 validation macro-F1 提高约 `0.392`，且跨 seed
+稳定，明确说明 hidden 包含强 reasoning-stage 信息。其平均 recall 为
+`setup=0.700 / reasoning=0.807 / final=0.982`。
+
+当前阻断是 argmax 决策下的 `setup -> reasoning` 安全错误率远高于 `10%`。这不等于 hidden
+stage probe 失败：S3 controller 原设计要求“stage 置信度不足则 dense”，但当前评估尚未测量
+confidence-gated selective classification。下一步先运行 held-out eval，然后仅在 held-out/
+calibration 上选择 reasoning confidence threshold，报告：
+
+```text
+reasoning coverage
+setup -> accepted-reasoning rate
+accepted-reasoning precision
+```
+
+只有安全错误率不超过 `10%` 且 reasoning coverage 非零，才允许进入 S2。
+
+## 9. S1 v3 Held-Out 正式裁决
+
+三 seed held-out 汇总已完成，`s1_gate.json` 给出 `s1_passed=false`。最佳模型为
+`hidden_pca_nonlinear`：
+
+```text
+macro-F1                     0.7562 ± 0.0034
+相对最佳简单 baseline 增益   +0.3952
+setup recall                 0.6857，最差 seed 0.6809
+reasoning recall             0.8143，最差 seed 0.8083
+final recall                 0.9786，最差 seed 0.9722
+setup -> reasoning           0.3143，最差 seed 0.3191
+```
+
+已通过：
+
+```text
+hidden 相对简单 baseline 增益
+三 seed 稳定性
+100 条独立人工审计
+reasoning/final recall
+```
+
+未通过：
+
+```text
+setup recall 每 seed >= 0.70
+setup -> reasoning <= 0.10
+```
+
+失败模式跨三个 seed 几乎完全一致，说明不是随机性或 split 异常，而是 argmax classifier 对
+setup/reasoning 边界存在系统性混淆。`hidden_pca_linear` 更保守，setup→reasoning 降为
+`0.161–0.223`，但 reasoning recall 仅 `0.607–0.671`，同样不能通过。
+
+**正式裁决：S1 argmax stage classifier 未通过，不进入 S2。** Hidden 的 stage 信息价值已经得到
+强力验证，但 controller 必须采用 selective acceptance：只有 reasoning probability 高于
+calibration threshold 时才视为可剪枝候选，其余全部 dense。下一实验只评估 threshold 下的
+setup false-accept rate、reasoning coverage 和 accepted-reasoning precision；不重新设计 taxonomy，
+不无目的重训模型。
+
+## 10. S1.5 与全阶段 S2 实现
+
+S1.5 已实现为 validation-only 阈值校准。对每个 hidden variant 和 seed：
+
+1. 只在 validation 上选择 reasoning probability threshold；
+2. 约束 validation `setup -> accepted reasoning <= 10%`；
+3. variant 也只按 validation reasoning coverage 选择，避免 test leakage；
+4. 固定 variant 与阈值后在 test 上报告 setup false-accept、reasoning coverage 和 accepted precision；
+5. 三个 seed 的 test false-accept 均不超过 `10%`，且 reasoning coverage 均至少 `10%` 才通过。
+
+```bash
+bash scripts/63_eval_rasp_stage_selective.sh
+cat runs/07_stage_aware/03_s1_three_stage_probe/s1_5_gate.json
+```
+
+S2 runtime sensitivity smoke 也已实现，但只有 `s1_5_passed=true` 时配置生成器才允许启动。S2 不再
+预设 setup/final/verification 永远不能剪枝，而是在所有 operational stage 上公平执行
+`ratio=0/0.05/0.10/0.20` 的单个 16-token MLP-channel 窗口，随后立即恢复 dense：
+
+```text
+learned hidden stage: setup / reasoning / final
+explicit text rule:   verification
+```
+
+每个 boundary 的 stage 在动作前由 dense observation 固定一次；同一 boundary 的所有 ratio 共用
+该 stage 标注。`reasoning_accepted` 仅用于未来 controller 准入，不会过滤 S2 的其他阶段。
+
+服务器 smoke 命令：
+
+```bash
+RASP_S2_GPU_COUNT=4 bash scripts/66_collect_rasp_s2_stage_sensitivity.sh
+python scripts/67_summarize_rasp_s2_stage_sensitivity.py
+```
+
+主要产物：
+
+```text
+runs/07_stage_aware/04_s2_stage_sensitivity_smoke/
+  */03_stage_window_counterfactuals.jsonl
+  */07_stage_window_bank_validation.json
+  s2_stage_sensitivity_summary.json
+  s2_stage_sensitivity_summary.csv
+```
+
+summary 会输出每个 `dataset × operational_stage × ratio` 的 paired flip rate、Wilson 95% CI 和
+window divergence。smoke 的 point estimate 只用于决定是否扩大采样，不能直接作为 S2 正式准入。

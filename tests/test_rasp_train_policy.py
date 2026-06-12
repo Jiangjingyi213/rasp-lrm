@@ -47,6 +47,7 @@ from src.rasp.stage_probe import (
     transform_stage_features,
     validate_stage_manifest,
 )
+from src.rasp.stage_selective import calibrate_reasoning_threshold, evaluate_reasoning_threshold
 from src.rasp.train_policy import (
     POLICY_FEATURE_SCHEMA,
     ActionRiskPolicyNet,
@@ -443,6 +444,27 @@ class RaspTrainPolicyTest(unittest.TestCase):
         self.assertEqual(metrics["setup_to_reasoning_rate"], 0.5)
         model = StageProbeNet(dim=3, model_type="linear")
         self.assertEqual(tuple(model(torch.zeros(2, 3)).shape), (2, 3))
+
+    def test_selective_stage_threshold_is_calibrated_for_setup_safety(self) -> None:
+        labels = [0, 0, 1, 1, 2]
+        probabilities = torch.tensor(
+            [
+                [0.40, 0.50, 0.10],
+                [0.80, 0.10, 0.10],
+                [0.05, 0.90, 0.05],
+                [0.20, 0.70, 0.10],
+                [0.10, 0.20, 0.70],
+            ]
+        )
+        calibrated = calibrate_reasoning_threshold(
+            labels,
+            probabilities,
+            max_setup_false_accept_rate=0.0,
+        )
+        self.assertGreater(calibrated["threshold"], 0.5)
+        evaluated = evaluate_reasoning_threshold(labels, probabilities, calibrated["threshold"])
+        self.assertEqual(evaluated["setup_false_accept_rate"], 0.0)
+        self.assertEqual(evaluated["reasoning_coverage"], 1.0)
 
     def test_operational_stage_classifier_avoids_keyword_false_positives(self) -> None:
         self.assertEqual(classify_operational_stage("Final answer: \\\\boxed{4}", 4, 5), "final")

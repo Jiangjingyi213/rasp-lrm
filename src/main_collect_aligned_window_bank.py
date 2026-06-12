@@ -12,6 +12,7 @@ from src.metrics.answer_match import extract_answer
 from src.models.load_model import load_model_bundle
 from src.rasp.greedy_decode import greedy_decode_single_window_counterfactual
 from src.rasp.mlp_runtime import apply_runtime_mlp_masking_qwen3
+from src.rasp.stage_runtime import RuntimeStageProbe
 from src.utils.io import ensure_dir, read_jsonl, read_yaml, write_json, write_jsonl
 from src.utils.seed import set_seed
 
@@ -57,6 +58,15 @@ def main() -> None:
         raise ValueError("Aligned window bank ratios must start with dense ratio=0 control")
     window_tokens = int(bank_cfg.get("window_tokens", 16))
     max_boundaries = bank_cfg.get("max_boundaries_per_example")
+    stage_cfg = cfg.get("stage_sensitivity")
+    stage_probe = None
+    recent_stage_tokens = 128
+    if stage_cfg:
+        stage_probe = RuntimeStageProbe(
+            str(stage_cfg["checkpoint"]),
+            float(stage_cfg["reasoning_threshold"]),
+        )
+        recent_stage_tokens = int(stage_cfg.get("recent_tokens", 128))
     generation_cfg = cfg.get("generation", {})
     max_new_tokens = int(generation_cfg.get("max_new_tokens", 512))
     max_input_tokens = int(generation_cfg.get("max_input_tokens", 2048))
@@ -89,6 +99,22 @@ def main() -> None:
             )
             dense_answer = extract_answer(dense["completion"])
             baseline_answer = extract_answer(item["completion"])
+            stage_annotation = {}
+            if stage_probe is not None:
+                dense_observation = dense["boundary_observation"]
+                recent_text = bundle.tokenizer.decode(
+                    forced_prefix[-recent_stage_tokens:],
+                    skip_special_tokens=True,
+                )
+                stage_annotation = stage_probe.classify(
+                    hidden_state=dense_observation.hidden_state,
+                    entropy=dense_observation.entropy,
+                    confidence=dense_observation.confidence,
+                    position=position / max(1, max_new_tokens),
+                    recent_text=recent_text,
+                    boundary_index=boundary_index,
+                    num_boundaries=len(positions),
+                )
             for ratio in ratios:
                 result = dense if abs(ratio) < 1e-12 else greedy_decode_single_window_counterfactual(
                     bundle.model,
@@ -127,6 +153,7 @@ def main() -> None:
                     "window_token_divergence": token_divergence(dense["window_ids"], result["window_ids"]),
                     "entropy": observation.entropy,
                     "confidence": observation.confidence,
+                    **stage_annotation,
                     **hidden_drift(dense["window_end_hidden"], result["window_end_hidden"]),
                 }
                 rows.append(row)
@@ -155,6 +182,24 @@ def main() -> None:
             "action_window_alignment": "affected_next_token_decisions_v2",
             "ranking_scope": "initial_prompt_prefill_fixed",
             "boundary_token_sources": sorted({row["boundary_token_source"] for row in rows}),
+            "stage_sensitivity_enabled": stage_probe is not None,
+            "stage_probe_checkpoint": str(stage_cfg["checkpoint"]) if stage_cfg else None,
+            "stage_reasoning_threshold": (
+                float(stage_cfg["reasoning_threshold"]) if stage_cfg else None
+            ),
+            "operational_stage_counts": (
+                {
+                    stage: sum(
+                        1
+                        for row in rows
+                        if abs(float(row["ratio"])) < 1e-12
+                        and row.get("operational_stage") == stage
+                    )
+                    for stage in ("setup", "reasoning", "verification", "final")
+                }
+                if stage_probe is not None
+                else None
+            ),
         },
     )
 

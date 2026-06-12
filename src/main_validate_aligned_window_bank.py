@@ -69,6 +69,24 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
     token_sources = sorted({str(row.get("boundary_token_source")) for row in rows})
     if token_sources != ["trajectory_generated_token_ids"]:
         errors.append(f"Formal aligned bank must use original generated token IDs, got {token_sources}")
+    stage_cfg = config.get("stage_sensitivity")
+    stage_counts = Counter()
+    if stage_cfg:
+        valid_stages = {"setup", "reasoning", "verification", "final"}
+        for row in dense_rows:
+            stage = row.get("operational_stage")
+            stage_counts[str(stage)] += 1
+            if stage not in valid_stages:
+                errors.append(f"Stage sensitivity row has invalid operational stage: {stage}")
+                break
+            if "stage_source" not in row or "reasoning_accepted" not in row:
+                errors.append("Stage sensitivity row is missing stage decision metadata")
+                break
+            if stage != "verification":
+                probabilities = row.get("stage_probabilities")
+                if not isinstance(probabilities, dict) or set(probabilities) != {"setup", "reasoning", "final"}:
+                    errors.append("Learned stage row is missing the three-class probability vector")
+                    break
     return {
         "status": "ok" if not errors else "failed",
         "errors": errors,
@@ -85,6 +103,8 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         "action_window_alignment": "affected_next_token_decisions_v2",
         "ranking_scope": "initial_prompt_prefill_fixed",
         "boundary_token_sources": token_sources,
+        "stage_sensitivity_enabled": bool(stage_cfg),
+        "operational_stage_counts": dict(sorted(stage_counts.items())),
     }
 
 

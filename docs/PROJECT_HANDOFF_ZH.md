@@ -360,6 +360,41 @@ S1 v3 的 100 条独立审计已完成，总体一致率 `85%` 并通过标签 g
 `configs/stage_audits/s1_three_stage_v3_labels.csv`，现在允许启动三 seed 训练。由于仍存在 8 条
 真实 setup 被规则标作 reasoning，最终模型必须通过 `setup -> reasoning <= 10%` 安全 gate。
 
+S1 v3 三 seed 五组模型训练已完成，但 held-out eval 尚未运行。validation 上
+hidden-pca-nonlinear macro-F1 为 `0.7551 ± 0.0181`，显著高于 uncertainty-only 的
+`0.3630 ± 0.0061`，证明 hidden 含有稳定 stage 信息；平均 recall 为
+setup/reasoning/final=`0.700/0.807/0.982`。当前阻断是 argmax 下 setup→reasoning 为
+`0.300`、最差 seed `0.402`，未满足 `0.10` 安全线。下一步先运行 held-out eval，再按 controller
+设计评估 confidence-gated reasoning acceptance；必须同时满足安全错误率不超过 `10%` 和非零
+reasoning coverage，才能进入 S2。
+
+S1 v3 held-out 正式汇总已完成，`s1_passed=false`。最佳 hidden-pca-nonlinear macro-F1 为
+`0.7562 ± 0.0034`，相对最佳简单 baseline 增益 `+0.3952`，证明 hidden 的 stage 信息强且稳定；
+reasoning/final recall 最差 seed 为 `0.808/0.972`。失败集中在 setup 安全边界：setup recall 最差
+seed `0.681`，setup→reasoning 在三个 seed 均约 `0.312–0.319`，高于 `0.10` 上限。线性 hidden
+虽更保守，但 reasoning recall 仅 `0.607–0.671`。当前不进入 S2；下一步只做 confidence-gated
+selective reasoning acceptance，要求 setup false-accept 不超过 `10%` 且 reasoning coverage
+非零，不再修改 taxonomy 或盲目重训。
+
+S1.5 selective acceptance 与全阶段 S2 smoke 已完成代码实现。S1.5 使用 validation-only 阈值，
+正式 gate 要求三个 seed 的 test setup false-accept 均不超过 `10%`，且 reasoning coverage 均至少
+`10%`。执行 `bash scripts/63_eval_rasp_stage_selective.sh` 后查看
+`runs/07_stage_aware/03_s1_three_stage_probe/s1_5_gate.json`；配置生成器在该 gate 未通过时会拒绝
+启动 S2。
+
+S2 不再假定 setup/final/verification 必须 dense。它会对 hidden probe 标注的
+setup/reasoning/final 和显式规则标注的 verification 全部施加相同的单个 16-token runtime MLP
+剪枝窗口，ratio 为 `0/0.05/0.10/0.20`，随后恢复 dense。每个 boundary 的 stage 在动作前固定，
+不会因某个 ratio 的结果改变。服务器使用四张卡执行：
+
+```bash
+RASP_S2_GPU_COUNT=4 bash scripts/66_collect_rasp_s2_stage_sensitivity.sh
+python scripts/67_summarize_rasp_s2_stage_sensitivity.py
+```
+
+结果位于 `runs/07_stage_aware/04_s2_stage_sensitivity_smoke/`。smoke summary 只用于判断是否扩大
+正式 bank；最终是否允许某阶段剪枝必须由足量 held-out paired flip 结果决定。
+
 ## 5. 建议优先阅读
 
 ### 产物目录约定
