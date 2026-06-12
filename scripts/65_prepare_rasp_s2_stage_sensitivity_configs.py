@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 S1_ROOT = Path(os.environ.get("STAGE_PROBE_ROOT", "runs/07_stage_aware/03_s1_three_stage_probe"))
 RUN_ROOT = os.environ.get(
     "RASP_S2_RUN_ROOT",
-    "runs/07_stage_aware/04_s2_stage_sensitivity_smoke",
+    "runs/07_stage_aware/05_s2_stage_sensitivity_v2",
 )
 CONFIG_DIR = ROOT / "configs/generated_rasp_s2_stage_sensitivity"
 SOURCES = (
@@ -29,7 +29,7 @@ def main() -> None:
     total = int(os.environ.get("RASP_S2_LIMIT_PER_SOURCE", "25"))
     shard_size = int(os.environ.get("RASP_S2_SHARD_SIZE", "5"))
     gpu_count = int(os.environ.get("RASP_S2_GPU_COUNT", "4"))
-    max_boundaries = int(os.environ.get("RASP_S2_MAX_BOUNDARIES_PER_EXAMPLE", "12"))
+    max_boundaries = int(os.environ.get("RASP_S2_MAX_BOUNDARIES_PER_EXAMPLE", "0"))
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     manifest = []
     gpu = 0
@@ -41,7 +41,10 @@ def main() -> None:
             cfg["data"]["limit"] = min(shard_size, total - offset)
             cfg["data"]["offset"] = offset
             cfg["aligned_window_bank"]["ratios"] = [0.0, 0.05, 0.10, 0.20]
-            cfg["aligned_window_bank"]["max_boundaries_per_example"] = max_boundaries
+            if max_boundaries > 0:
+                cfg["aligned_window_bank"]["max_boundaries_per_example"] = max_boundaries
+            else:
+                cfg["aligned_window_bank"].pop("max_boundaries_per_example", None)
             cfg["stage_sensitivity"] = {
                 "checkpoint": gate["s2_checkpoint"],
                 "reasoning_threshold": gate["s2_reasoning_threshold"],

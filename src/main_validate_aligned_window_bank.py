@@ -48,6 +48,33 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
     )
     if incomplete:
         errors.append(f"{incomplete} boundaries do not contain the complete ratio grid")
+    trajectory_path = paths.get("trajectories")
+    if trajectory_path and Path(trajectory_path).exists():
+        window_tokens = int(cfg.get("window_tokens", 16))
+        max_boundaries = cfg.get("max_boundaries_per_example")
+        expected_boundary_keys = set()
+        for trajectory in read_jsonl(trajectory_path):
+            if not bool(trajectory.get("correct")):
+                continue
+            token_ids = trajectory.get("generated_token_ids")
+            if token_ids is None:
+                errors.append("Validated aligned bank trajectory is missing generated_token_ids")
+                break
+            positions = [
+                position
+                for position in range(0, len(token_ids), window_tokens)
+                if position < max_new_tokens
+            ]
+            if max_boundaries:
+                positions = positions[: int(max_boundaries)]
+            expected_boundary_keys.update(
+                (str(trajectory.get("dataset") or "unknown"), str(trajectory["id"]), index)
+                for index, _position in enumerate(positions)
+            )
+        if set(grouped) != expected_boundary_keys:
+            errors.append(
+                "Aligned bank boundary coverage does not match configured dense-correct trajectories"
+            )
     hidden_indices = [int(row["hidden_index"]) for row in probe_rows]
     if hidden_indices != list(range(len(probe_rows))):
         errors.append("Probe hidden indices are not contiguous")
@@ -82,6 +109,13 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
             if "stage_source" not in row or "reasoning_accepted" not in row:
                 errors.append("Stage sensitivity row is missing stage decision metadata")
                 break
+            if (
+                row.get("stage_position_definition")
+                != "generated_tokens_over_dense_trajectory_tokens_minus_one"
+                or not 0.0 <= float(row.get("stage_position", -1.0)) <= 1.0
+            ):
+                errors.append("Stage sensitivity row uses an invalid or legacy stage position")
+                break
             if stage != "verification":
                 probabilities = row.get("stage_probabilities")
                 if not isinstance(probabilities, dict) or set(probabilities) != {"setup", "reasoning", "final"}:
@@ -106,6 +140,9 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         "stage_sensitivity_enabled": bool(stage_cfg),
         "stage_sensitivity_diagnostic_only": (
             bool(stage_cfg.get("diagnostic_only", False)) if stage_cfg else None
+        ),
+        "stage_position_definition": (
+            "generated_tokens_over_dense_trajectory_tokens_minus_one" if stage_cfg else None
         ),
         "operational_stage_counts": dict(sorted(stage_counts.items())),
     }

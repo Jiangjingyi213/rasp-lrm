@@ -83,6 +83,8 @@ class ValidateAlignedWindowBankTest(unittest.TestCase):
                         "operational_stage": "reasoning",
                         "stage_source": "hidden_stage_probe",
                         "reasoning_accepted": True,
+                        "stage_position": 0.0,
+                        "stage_position_definition": "generated_tokens_over_dense_trajectory_tokens_minus_one",
                         "stage_probabilities": {"setup": 0.1, "reasoning": 0.8, "final": 0.1},
                     }
                 )

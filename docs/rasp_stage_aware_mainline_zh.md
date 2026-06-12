@@ -385,3 +385,38 @@ runs/07_stage_aware/04_s2_stage_sensitivity_smoke/
 
 summary 会输出每个 `dataset × operational_stage × ratio` 的 paired flip rate、Wilson 95% CI 和
 window divergence。smoke 的 point estimate 只用于决定是否扩大采样，不能直接作为 S2 正式准入。
+
+## 11. S2-v1 Smoke 结果与位置对齐修复
+
+首轮 `04_s2_stage_sensitivity_smoke` 的 10/10 shard 均通过 runtime validator：
+
+```text
+boundaries                       449
+dense paired flip               0
+dense replay flip               0
+action                           single 16-token window then dense
+```
+
+粗粒度结果显示 reasoning 在 ratio `0.05` 下为 `5/375 = 1.33%` flip；但该轮不能作为正式
+stage-safety 裁决，因为审查发现 stage probe 的 position 定义发生了错位：
+
+```text
+S1 train: segment_index / (num_segments - 1)
+S2-v1:    generated_tokens / max_new_tokens
+```
+
+S2-v1 又最多只采前 12 个 boundary，即前 192 token；相对 `max_new_tokens=768` 的 position 全部
+位于 `0–0.23`，导致 stage 分布严重偏向 reasoning：
+
+```text
+setup=50, reasoning=375, final=21, verification=3
+```
+
+paired counterfactual 本身有效，但其 stage 分组不可信。代码已修复为：
+
+```text
+stage_position = generated_tokens / (dense_trajectory_tokens - 1)
+```
+
+且 S2-v2 默认覆盖完整 dense trajectory，不再截断前 12 个 boundary。新结果隔离写入
+`runs/07_stage_aware/05_s2_stage_sensitivity_v2/`，避免与 v1 混用。

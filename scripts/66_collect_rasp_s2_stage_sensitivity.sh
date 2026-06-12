@@ -6,7 +6,7 @@ cd "${ROOT}"
 PYTHON="${PYTHON:-/home/cike/jjy/envs/rasp_qwen3/bin/python}"
 GPU_COUNT="${RASP_S2_GPU_COUNT:-4}"
 CONFIG_DIR="configs/generated_rasp_s2_stage_sensitivity"
-LOG_DIR="${LOG_DIR:-logs/07_stage_aware/04_s2_stage_sensitivity_smoke}"
+LOG_DIR="${LOG_DIR:-logs/07_stage_aware/05_s2_stage_sensitivity_v2}"
 mkdir -p "${LOG_DIR}"
 "${PYTHON}" scripts/65_prepare_rasp_s2_stage_sensitivity_configs.py
 

@@ -397,6 +397,14 @@ python scripts/67_summarize_rasp_s2_stage_sensitivity.py
 结果位于 `runs/07_stage_aware/04_s2_stage_sensitivity_smoke/`。smoke summary 只用于判断是否扩大
 正式 bank；最终是否允许某阶段剪枝必须由足量 held-out paired flip 结果决定。
 
+S2-v1 smoke 已完成，10/10 shard validator 均通过，449 个 boundary 的 dense paired flip 与
+dense replay flip 均为 0；reasoning 在 ratio 0.05 下粗粒度 flip 为 `5/375=1.33%`。但该轮发现
+stage-position 对齐错误：S1 使用相对完整轨迹的 segment position，S2-v1 却使用
+`generated_tokens/max_new_tokens`，且只采前 12 个 boundary，造成
+setup/reasoning/final/verification=`50/375/21/3` 的偏斜。故 v1 counterfactual 有效，但 stage
+分组结论作废。代码已改为 `generated_tokens/(dense_trajectory_tokens-1)` 并默认覆盖完整轨迹；
+下一轮隔离输出到 `runs/07_stage_aware/05_s2_stage_sensitivity_v2/`。
+
 ## 5. 建议优先阅读
 
 ### 产物目录约定

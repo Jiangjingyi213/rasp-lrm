@@ -102,6 +102,7 @@ def main() -> None:
             stage_annotation = {}
             if stage_probe is not None:
                 dense_observation = dense["boundary_observation"]
+                stage_position = position / max(1, len(baseline_ids) - 1)
                 recent_text = bundle.tokenizer.decode(
                     forced_prefix[-recent_stage_tokens:],
                     skip_special_tokens=True,
@@ -110,10 +111,14 @@ def main() -> None:
                     hidden_state=dense_observation.hidden_state,
                     entropy=dense_observation.entropy,
                     confidence=dense_observation.confidence,
-                    position=position / max(1, max_new_tokens),
+                    position=stage_position,
                     recent_text=recent_text,
                     boundary_index=boundary_index,
                     num_boundaries=len(positions),
+                )
+                stage_annotation["stage_position"] = stage_position
+                stage_annotation["stage_position_definition"] = (
+                    "generated_tokens_over_dense_trajectory_tokens_minus_one"
                 )
             for ratio in ratios:
                 result = dense if abs(ratio) < 1e-12 else greedy_decode_single_window_counterfactual(
@@ -189,6 +194,11 @@ def main() -> None:
             ),
             "stage_sensitivity_diagnostic_only": (
                 bool(stage_cfg.get("diagnostic_only", False)) if stage_cfg else None
+            ),
+            "stage_position_definition": (
+                "generated_tokens_over_dense_trajectory_tokens_minus_one"
+                if stage_cfg
+                else None
             ),
             "s1_5_controller_gate_passed": (
                 bool(stage_cfg.get("s1_5_controller_gate_passed", False)) if stage_cfg else None

@@ -22,12 +22,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--root",
-        default="runs/07_stage_aware/04_s2_stage_sensitivity_smoke",
+        default="runs/07_stage_aware/05_s2_stage_sensitivity_v2",
     )
     parser.add_argument("--safe-flip-rate", type=float, default=0.02)
     args = parser.parse_args()
     root = Path(args.root)
     grouped = defaultdict(list)
+    selective_reasoning = defaultdict(list)
     validations = []
     for path in sorted(root.glob("*/07_stage_window_bank_validation.json")):
         validation = json.loads(path.read_text(encoding="utf-8"))
@@ -46,6 +47,14 @@ def main() -> None:
                             float(row["ratio"]),
                         )
                     ].append(row)
+                    if row["operational_stage"] == "reasoning":
+                        selective_reasoning[
+                            (
+                                str(row.get("dataset") or "unknown"),
+                                bool(row.get("reasoning_accepted")),
+                                float(row["ratio"]),
+                            )
+                        ].append(row)
     if not grouped:
         raise SystemExit(f"No validated S2 rows under {root}")
     summary = []
@@ -70,6 +79,22 @@ def main() -> None:
             }
         )
     safe_cells = [row for row in summary if row["safe_by_point_estimate"]]
+    selective_summary = []
+    for (dataset, accepted, ratio), rows in sorted(selective_reasoning.items()):
+        flips = sum(int(bool(row["flipped"])) for row in rows)
+        lower, upper = wilson_interval(flips, len(rows))
+        selective_summary.append(
+            {
+                "dataset": dataset,
+                "reasoning_accepted": accepted,
+                "ratio": ratio,
+                "boundaries": len(rows),
+                "flips": flips,
+                "paired_flip_rate": flips / len(rows),
+                "paired_flip_rate_wilson_95_low": lower,
+                "paired_flip_rate_wilson_95_high": upper,
+            }
+        )
     result = {
         "schema": "rasp_s2_stage_sensitivity_smoke_v1",
         "validated_shards": sum(v.get("status") == "ok" for v in validations),
@@ -78,6 +103,7 @@ def main() -> None:
         "safe_cells_by_point_estimate": safe_cells,
         "warning": "Smoke cells are exploratory; formal admission requires enough paired samples and held-out confirmation.",
         "stage_ratio_summary": summary,
+        "selective_reasoning_summary": selective_summary,
     }
     (root / "s2_stage_sensitivity_summary.json").write_text(
         json.dumps(result, indent=2),
@@ -92,4 +118,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
