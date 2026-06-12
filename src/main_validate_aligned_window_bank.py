@@ -104,6 +104,9 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         "ranking_scope": "initial_prompt_prefill_fixed",
         "boundary_token_sources": token_sources,
         "stage_sensitivity_enabled": bool(stage_cfg),
+        "stage_sensitivity_diagnostic_only": (
+            bool(stage_cfg.get("diagnostic_only", False)) if stage_cfg else None
+        ),
         "operational_stage_counts": dict(sorted(stage_counts.items())),
     }
 

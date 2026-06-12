@@ -346,8 +346,16 @@ bash scripts/63_eval_rasp_stage_selective.sh
 cat runs/07_stage_aware/03_s1_three_stage_probe/s1_5_gate.json
 ```
 
-S2 runtime sensitivity smoke 也已实现，但只有 `s1_5_passed=true` 时配置生成器才允许启动。S2 不再
-预设 setup/final/verification 永远不能剪枝，而是在所有 operational stage 上公平执行
+S2 runtime sensitivity smoke 也已实现。需要区分两个 gate：
+
+```text
+s2_diagnostic_allowed=true  允许采集全阶段单窗口 sensitivity bank
+s3_controller_allowed=true  才允许把 selective classifier 用于在线 controller
+```
+
+S1.5 controller gate 未通过时，S2 仍可作为 diagnostic measurement 运行，因为它不会根据 stage
+决定是否剪枝，而是对全部阶段公平施加动作；但此时严禁进入 S3 controller。S2 不再预设
+setup/final/verification 永远不能剪枝，而是在所有 operational stage 上公平执行
 `ratio=0/0.05/0.10/0.20` 的单个 16-token MLP-channel 窗口，随后立即恢复 dense：
 
 ```text

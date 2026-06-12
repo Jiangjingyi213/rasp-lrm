@@ -24,8 +24,8 @@ SOURCES = (
 
 def main() -> None:
     gate = json.loads((ROOT / S1_ROOT / "s1_5_gate.json").read_text(encoding="utf-8"))
-    if not gate.get("s1_5_passed"):
-        raise SystemExit("S1.5 gate has not passed; refusing to prepare S2")
+    if not gate.get("s2_diagnostic_allowed") or not gate.get("s2_checkpoint"):
+        raise SystemExit("No validation-eligible S1.5 probe is available for diagnostic S2")
     total = int(os.environ.get("RASP_S2_LIMIT_PER_SOURCE", "25"))
     shard_size = int(os.environ.get("RASP_S2_SHARD_SIZE", "5"))
     gpu_count = int(os.environ.get("RASP_S2_GPU_COUNT", "4"))
@@ -47,6 +47,8 @@ def main() -> None:
                 "reasoning_threshold": gate["s2_reasoning_threshold"],
                 "recent_tokens": 128,
                 "measure_all_operational_stages": True,
+                "diagnostic_only": not bool(gate.get("s3_controller_allowed")),
+                "s1_5_controller_gate_passed": bool(gate.get("s3_controller_allowed")),
             }
             run_dir = f"{RUN_ROOT}/{source}_s{shard:02d}"
             cfg["paths"] = {

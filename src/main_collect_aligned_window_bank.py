@@ -187,6 +187,12 @@ def main() -> None:
             "stage_reasoning_threshold": (
                 float(stage_cfg["reasoning_threshold"]) if stage_cfg else None
             ),
+            "stage_sensitivity_diagnostic_only": (
+                bool(stage_cfg.get("diagnostic_only", False)) if stage_cfg else None
+            ),
+            "s1_5_controller_gate_passed": (
+                bool(stage_cfg.get("s1_5_controller_gate_passed", False)) if stage_cfg else None
+            ),
             "operational_stage_counts": (
                 {
                     stage: sum(

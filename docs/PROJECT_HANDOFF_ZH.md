@@ -379,8 +379,10 @@ selective reasoning acceptance，要求 setup false-accept 不超过 `10%` 且 r
 S1.5 selective acceptance 与全阶段 S2 smoke 已完成代码实现。S1.5 使用 validation-only 阈值，
 正式 gate 要求三个 seed 的 test setup false-accept 均不超过 `10%`，且 reasoning coverage 均至少
 `10%`。执行 `bash scripts/63_eval_rasp_stage_selective.sh` 后查看
-`runs/07_stage_aware/03_s1_three_stage_probe/s1_5_gate.json`；配置生成器在该 gate 未通过时会拒绝
-启动 S2。
+`runs/07_stage_aware/03_s1_three_stage_probe/s1_5_gate.json`。需要区分：
+`s2_diagnostic_allowed` 只要求存在 validation-eligible probe，用于全阶段 S2 测量；
+`s3_controller_allowed` 才要求严格 S1.5 test gate。S1.5 未通过时不允许进入 S3，但不能因此阻止
+本来用于回答“哪些阶段真实安全”的 S2 diagnostic bank。
 
 S2 不再假定 setup/final/verification 必须 dense。它会对 hidden probe 标注的
 setup/reasoning/final 和显式规则标注的 verification 全部施加相同的单个 16-token runtime MLP

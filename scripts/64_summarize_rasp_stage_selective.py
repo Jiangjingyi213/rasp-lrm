@@ -74,6 +74,8 @@ def main() -> None:
         "schema": "rasp_stage_probe_s1_5_gate_v1",
         "variant_selection_split": "validation",
         "s1_5_passed": bool(selected and selected["test_passed"]),
+        "s2_diagnostic_allowed": selected is not None,
+        "s3_controller_allowed": bool(selected and selected["test_passed"]),
         "selected_variant": selected["variant"] if selected else None,
         "max_test_setup_false_accept_rate": args.max_test_setup_false_accept_rate,
         "min_test_reasoning_coverage": args.min_test_reasoning_coverage,
@@ -100,7 +102,10 @@ def main() -> None:
     (root / "s1_5_gate.json").write_text(json.dumps(gate, indent=2), encoding="utf-8")
     print(gate)
     if not gate["s1_5_passed"]:
-        raise SystemExit("S1.5 selective acceptance gate failed; do not run S2")
+        print(
+            "S1.5 controller gate failed: do not run S3 controller. "
+            "A validation-eligible probe may still be used for diagnostic all-stage S2."
+        )
 
 
 if __name__ == "__main__":
