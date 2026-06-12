@@ -455,3 +455,23 @@ bash scripts/56_organize_experiment_artifacts.sh
 - MATH 训练 bank 使用与 MATH500 test 隔离的数据源，避免评测泄漏；
 - RASP-Train 当前最重要的任务是先完成离线验证，不要直接扩大在线全集实验。
 - counterfactual segment boundary 与在线 fixed-window state 仍有分布差异，离线通过不等于在线安全。
+
+## 7. 当前下一步：Action-Risk Pilot
+
+八卡并行 Action-Risk Pilot 已完成代码实现：
+
+```text
+GPU 0–3: GSM8K train + isolated math_train 离线单窗口 action bank
+GPU 4–7: GSM8K test + MATH500 固定单窗口在线诊断
+```
+
+离线准入按每来源至少 100 个 `dense-correct problem` 计算，不按输入题数计算；七档 ratio 为
+`0/0.05/0.10/0.20/0.30/0.40/0.50`，每题最多 12 个边界均匀覆盖完整轨迹。在线仅在
+`32/96/160` token 边界执行一个 16-token 窗口，之后恢复 dense。新链路支持显式 `GPU_IDS`，
+结果隔离到 `runs/07_stage_aware/06_action_risk_pilot/` 与
+`runs/07_stage_aware/07_online_fixed_window_pilot/`。执行步骤见
+[`rasp_stage_aware_mainline_zh.md`](rasp_stage_aware_mainline_zh.md) 第 13 节。
+
+注意：当前 S1 stage probability 使用完整 dense trajectory 的相对位置，不能作为在线因果输入；
+新 pilot 明确不使用该字段。100 dense-correct/source 只用于路线判断，不足以证明最终
+accuracy loss `<=1%`。

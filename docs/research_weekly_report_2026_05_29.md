@@ -1,5 +1,13 @@
 # 科研周报：Reasoning-Aware Dynamic Structured Pruning for LRMs
 
+> **后续审查修正（2026-06-12）**：本报告中的 stage sensitivity 仍可支持“推理状态与剪枝风险
+> 存在异质性”这一总体 motivation，但不能将 `final` 的低 flip rate 直接解释为 runtime final
+> 阶段最安全。正式 Motivation 使用 `prefix_boundary=end`：对 final segment 施加 continuation
+> 扰动时，最终答案通常已经完整出现在条件前缀中；而后续 runtime 单窗口实验是在动作前状态上
+> 决策。两者的 action timing 不同。此外，旧五类 stage 为启发式标签，存在整条回答被标为
+> final、普通推导被标为 verification 等问题。后续方法不再把 hard stage 作为唯一 controller
+> 主轴，而将 stage/progress/event 作为 action-conditioned fragility estimator 的辅助特征。
+
 日期：2026-05-29  
 项目：面向 Large Reasoning Models 的 reasoning-aware dynamic structured pruning  
 当前主模型：`Qwen/Qwen3-1.7B`  
@@ -237,7 +245,9 @@ Stage 结果是当前 motivation 中非常直观的一部分。不同 reasoning 
 
 3. **verification 阶段**虽然样本少，但 flip rate 很高。可能原因是 verification 往往接近最终答案修正和一致性检查，如果此时结构被扰动，模型可能无法发现前面的错误，或者把正确答案改错。
 
-4. **final 阶段** flip rate 较低，可能是因为最终答案已经基本形成，后续再扰动不一定改变已生成的主要 reasoning path。不过这不能简单理解为 final 永远安全，因为当前 segmentation 是 rule-based，并且 final 段可能包含已经完成的答案表达。
+4. **final 阶段** flip rate 较低，主要说明“答案已经提交后的 continuation 扰动”较难改变最终
+答案。它不能证明 runtime 中“即将生成 final answer 的状态”最安全，也不能直接指导在线动作。
+答案提交后剩余 token 本身很少，即使安全，其可节省计算也有限。
 
 这一结果直接支持论文中的核心句子：
 

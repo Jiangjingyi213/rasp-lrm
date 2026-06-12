@@ -54,6 +54,40 @@ class FixedRatioController:
 
 
 @dataclass
+class FixedSingleWindowController:
+    """Apply one fixed ratio at one causal decode boundary, then return dense."""
+
+    boundary_tokens: int
+    ratio: float
+    window_tokens: int = 16
+
+    def __post_init__(self) -> None:
+        if self.boundary_tokens < 0:
+            raise ValueError("boundary_tokens must be non-negative")
+        if self.window_tokens < 1:
+            raise ValueError("window_tokens must be positive")
+        if self.boundary_tokens % self.window_tokens != 0:
+            raise ValueError("boundary_tokens must align with runtime window_tokens")
+        if not 0.0 <= float(self.ratio) < 1.0:
+            raise ValueError("ratio must be in [0, 1)")
+        self.last_decision: dict | None = None
+
+    def reset(self) -> None:
+        self.last_decision = None
+
+    def choose_ratio(self, observation: RuntimeObservation) -> float:
+        active = int(observation.generated_tokens) == int(self.boundary_tokens)
+        selected = float(self.ratio) if active else 0.0
+        self.last_decision = {
+            "controller": "fixed_single_window",
+            "configured_boundary_tokens": int(self.boundary_tokens),
+            "window_tokens": int(self.window_tokens),
+            "window_activated": active,
+        }
+        return selected
+
+
+@dataclass
 class ConfidenceThresholdController:
     """Simple history-only controller for plumbing checks, not the final router."""
 

@@ -13,7 +13,11 @@ from src.metrics.answer_match import answer_match, extract_answer
 from src.models.load_model import load_model_bundle
 from src.models.hooks import get_decoder_layers
 from src.rasp.action_router import ActionConditionedRiskController
-from src.rasp.budget_controller import ConfidenceThresholdController, FixedRatioController
+from src.rasp.budget_controller import (
+    ConfidenceThresholdController,
+    FixedRatioController,
+    FixedSingleWindowController,
+)
 from src.rasp.greedy_decode import greedy_decode_runtime
 from src.rasp.metrics import summarize_runtime_rows
 from src.rasp.mlp_runtime import apply_runtime_mlp_masking_qwen3
@@ -27,6 +31,12 @@ def _build_controller(config: dict, generation_config: dict, runtime_layers: lis
     controller = str(config.get("controller", "fixed"))
     if controller == "fixed":
         return FixedRatioController(float(config.get("fixed_ratio", 0.0)))
+    if controller == "fixed_single_window":
+        return FixedSingleWindowController(
+            boundary_tokens=int(config["boundary_tokens"]),
+            ratio=float(config["fixed_ratio"]),
+            window_tokens=int(config.get("window_tokens", 16)),
+        )
     if controller == "confidence_threshold":
         return ConfidenceThresholdController(
             low_confidence=float(config.get("low_confidence", 0.50)),
@@ -161,6 +171,8 @@ def main() -> None:
         "low_confidence_threshold": runtime_cfg.get("low_confidence_threshold"),
         "low_confidence_max_ratio": runtime_cfg.get("low_confidence_max_ratio"),
         "window_tokens": int(runtime_cfg.get("window_tokens", 16)),
+        "boundary_tokens": runtime_cfg.get("boundary_tokens"),
+        "fixed_ratio": runtime_cfg.get("fixed_ratio"),
         "supported_ratios": runtime_cfg.get("ratios", [0.02, 0.05, 0.10, 0.20, 0.30, 0.40]),
         "peak_gpu_memory_bytes": int(torch.cuda.max_memory_allocated()) if torch.cuda.is_available() else None,
         **summarize_runtime_rows(rows),

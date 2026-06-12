@@ -5,6 +5,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from src.rasp.window_sampling import boundary_positions
 from src.utils.io import read_jsonl, read_yaml, write_json
 
 
@@ -52,6 +53,7 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
     if trajectory_path and Path(trajectory_path).exists():
         window_tokens = int(cfg.get("window_tokens", 16))
         max_boundaries = cfg.get("max_boundaries_per_example")
+        boundary_sampling = str(cfg.get("boundary_sampling", "prefix"))
         expected_boundary_keys = set()
         for trajectory in read_jsonl(trajectory_path):
             if not bool(trajectory.get("correct")):
@@ -62,11 +64,14 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
                 break
             positions = [
                 position
-                for position in range(0, len(token_ids), window_tokens)
+                for position in boundary_positions(
+                    len(token_ids),
+                    window_tokens,
+                    max_boundaries,
+                    boundary_sampling,
+                )
                 if position < max_new_tokens
             ]
-            if max_boundaries:
-                positions = positions[: int(max_boundaries)]
             expected_boundary_keys.update(
                 (str(trajectory.get("dataset") or "unknown"), str(trajectory["id"]), index)
                 for index, _position in enumerate(positions)
@@ -133,6 +138,7 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         "configured_window_tokens": int(cfg.get("window_tokens", 16)),
         "configured_max_new_tokens": max_new_tokens,
         "configured_max_boundaries_per_example": cfg.get("max_boundaries_per_example"),
+        "boundary_sampling": str(cfg.get("boundary_sampling", "prefix")),
         "action_scope": "single_fixed_window_then_dense",
         "action_window_alignment": "affected_next_token_decisions_v2",
         "ranking_scope": "initial_prompt_prefill_fixed",

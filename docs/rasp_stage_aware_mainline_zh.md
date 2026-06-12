@@ -420,3 +420,117 @@ stage_position = generated_tokens / (dense_trajectory_tokens - 1)
 
 且 S2-v2 默认覆盖完整 dense trajectory，不再截断前 12 个 boundary。新结果隔离写入
 `runs/07_stage_aware/05_s2_stage_sensitivity_v2/`，避免与 v1 混用。
+
+## 12. S2-v2 后的方法审查：Stage 降级为辅助特征
+
+S2-v2 的 runtime 链路正确，但进一步对照 Motivation 后，不能继续把“hard stage 决定剪枝率”
+作为主线。
+
+### 12.1 Ratio 的正确目标
+
+`ratio=0.05` 只是当前已测动作中最保守、boundary flip 最低的动作，不是“性能最好”的动作。
+项目目标应定义为：
+
+```text
+在 accuracy / flip-risk 约束下，最大化累计结构剪枝暴露与理论计算节省
+```
+
+因此后续必须报告 risk-efficiency Pareto，而不是只寻找最低 flip ratio。`0.20` 虽然结构比例仍
+不算激进，但在单个 16-token window 下 reasoning flip 已约为 `5%`；它仍应保留为风险曲线上的
+动作点，不能因为不满足严格安全线就从分析中删除。更高 ratio 也可以用于刻画曲线，但不能在
+没有 risk selector 的情况下直接用于连续在线剪枝。
+
+### 12.2 Motivation final 与 Runtime final 不可直接比较
+
+正式 Motivation 使用：
+
+```text
+prefix_boundary=end
+```
+
+对 final segment 来说，正确答案通常已经完整包含在条件前缀中，再施加长期 continuation 扰动，
+所以 `final` 的低 flip rate 很大程度测量的是“答案提交后是否还能被改坏”。S2 runtime 则在动作
+前的 token boundary 做单窗口剪枝。
+
+此外，S2-v2 的 41 个 `final` boundary 全部来自 hidden 三分类器，而不是显式 final 文本规则；
+出现 flip 的部分 GSM8K final boundary 位于轨迹约 `23%–27%`，stage confidence 仅约
+`0.56–0.68`，并不是真正语义 final。故旧 Motivation 的 `final 最安全` 不能用于解释 S2。
+
+### 12.3 当前 hard taxonomy 的限制
+
+S1 数据的旧标签到新标签映射显示：
+
+```text
+understanding -> reasoning  220
+planning      -> reasoning  110
+derivation    -> reasoning 5261
+verification  -> reasoning   25
+derivation    -> setup      387
+```
+
+S2-v2 中 `661/774 = 85.4%` boundary 被归为 reasoning。这个三分类器能识别宽泛阶段，但 hard
+taxonomy 的信息量不足以独立承担 action routing；`reasoning` 已混合规划、推导、解释和部分验证。
+
+**方法修正：**
+
+```text
+主信号：action-conditioned fragility / risk
+辅助信号：hidden representation + relative progress + semantic event flags
+事件标志：explicit verification / final-answer-start / answer-committed
+输出目标：每个 action 的风险与 risk-efficiency Pareto
+```
+
+后续不再要求“某个 hard stage 固定对应某个 ratio”。Stage-aware 的含义改为：推理进度与语义
+事件帮助风险模型判断当前 action 是否值得执行，而不是让 stage label 直接控制剪枝。
+
+## 13. 八卡 Action-Risk Pilot
+
+当前主线进一步落实为 action-conditioned risk-efficiency pilot。它不复活旧 Phase-B2 router，
+也不把 `ratio=0.05` 当作最终方案，而是先测量 `0.05–0.50` 的风险剂量响应。
+
+离线 bank 默认使用 GPU `0,1,2,3`，从 GSM8K train 与排除 MATH500 的 `math_train` 采集。目标
+不是“读取 100 道题”，而是每个来源至少保留 100 个 dense-correct problem；默认先生成约
+140/200 道输入题。每题最多选择 12 个均匀覆盖完整 dense trajectory 的边界，并执行：
+
+```text
+ratio = 0 / 0.05 / 0.10 / 0.20 / 0.30 / 0.40 / 0.50
+window = 16 tokens, then dense
+```
+
+```bash
+GPU_IDS=0,1,2,3 bash scripts/69_collect_action_risk_pilot.sh
+
+# 四个 worker 退出后：
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python bash scripts/70_prepare_action_risk_pilot_data.sh
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python bash scripts/71_train_action_risk_pilot.sh
+```
+
+若某来源不足 100 个 dense-correct problem，数据准备会硬失败。提高
+`ACTION_RISK_GSM8K_TRAIN_INPUTS` 或 `ACTION_RISK_MATH_TRAIN_INPUTS` 后重跑采集即可；已验证
+shard 会自动跳过。OOF 分析使用 problem-level 5-fold，PCA/standardization 只在 fold train
+上拟合。
+
+当前 S1 stage probability 依赖完整轨迹相对位置，因此不是合法在线因果特征，本 pilot 不将其
+输入风险模型。Stage 保留为后续可因果化的辅助信号，不能通过偷看 dense trajectory 引入。
+
+在线固定动作诊断默认使用 GPU `4,5,6,7`，在 GSM8K test 与 MATH500 各 100 题上运行 dense 以及
+`boundary=32/96/160 × ratio=0.10/0.20/0.30/0.40/0.50`。每题最多执行一个窗口：
+
+```bash
+GPU_IDS=4,5,6,7 bash scripts/73_eval_online_fixed_window_pilot.sh
+
+# 四个 worker 退出后：
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python python scripts/74_summarize_online_fixed_window_pilot.py
+```
+
+主要产物：
+
+```text
+runs/07_stage_aware/06_action_risk_pilot/data/01_action_risk_data_summary.json
+runs/07_stage_aware/06_action_risk_pilot/analysis/02_action_risk_pilot_summary.json
+runs/07_stage_aware/07_online_fixed_window_pilot/online_fixed_window_summary.json
+```
+
+100 个 dense-correct problem 足够做路线 go/no-go，但不能证明 accuracy loss `<=1%`。Pilot
+通过后才扩展到每来源至少 200 个 dense-correct problem，并训练新的 learned single-window
+controller。

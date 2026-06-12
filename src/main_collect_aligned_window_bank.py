@@ -13,6 +13,7 @@ from src.models.load_model import load_model_bundle
 from src.rasp.greedy_decode import greedy_decode_single_window_counterfactual
 from src.rasp.mlp_runtime import apply_runtime_mlp_masking_qwen3
 from src.rasp.stage_runtime import RuntimeStageProbe
+from src.rasp.window_sampling import boundary_positions
 from src.utils.io import ensure_dir, read_jsonl, read_yaml, write_json, write_jsonl
 from src.utils.seed import set_seed
 
@@ -40,11 +41,6 @@ def hidden_drift(reference: torch.Tensor | None, candidate: torch.Tensor | None)
     }
 
 
-def boundary_positions(token_count: int, window_tokens: int, max_boundaries: int | None) -> list[int]:
-    values = list(range(0, token_count, window_tokens))
-    return values[:max_boundaries] if max_boundaries else values
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -58,6 +54,7 @@ def main() -> None:
         raise ValueError("Aligned window bank ratios must start with dense ratio=0 control")
     window_tokens = int(bank_cfg.get("window_tokens", 16))
     max_boundaries = bank_cfg.get("max_boundaries_per_example")
+    boundary_sampling = str(bank_cfg.get("boundary_sampling", "prefix"))
     stage_cfg = cfg.get("stage_sensitivity")
     stage_probe = None
     recent_stage_tokens = 128
@@ -82,7 +79,12 @@ def main() -> None:
         if baseline_ids is None:
             baseline_ids = bundle.tokenizer(item["completion"], add_special_tokens=False)["input_ids"]
             token_source = "retokenized_completion_fallback"
-        positions = boundary_positions(len(baseline_ids), window_tokens, max_boundaries)
+        positions = boundary_positions(
+            len(baseline_ids),
+            window_tokens,
+            max_boundaries,
+            boundary_sampling,
+        )
         for boundary_index, position in enumerate(positions):
             if position >= max_new_tokens:
                 continue
@@ -183,6 +185,7 @@ def main() -> None:
             "window_tokens": window_tokens,
             "max_new_tokens": max_new_tokens,
             "configured_max_boundaries_per_example": max_boundaries,
+            "boundary_sampling": boundary_sampling,
             "action_scope": "single_fixed_window_then_dense",
             "action_window_alignment": "affected_next_token_decisions_v2",
             "ranking_scope": "initial_prompt_prefill_fixed",

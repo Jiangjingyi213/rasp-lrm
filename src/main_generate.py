@@ -129,6 +129,8 @@ def main() -> None:
     set_seed(cfg.get("seed", 1))
     output = args.output or cfg["paths"]["trajectories"]
     ensure_dir(cfg["paths"]["run_dir"])
+    if bool(cfg.get("generation", {}).get("overwrite_output", False)):
+        Path(output).unlink(missing_ok=True)
     bundle = load_model_bundle(cfg["model"])
     tasks = load_tasks(cfg["data"])
     if cfg["model"].get("adapter") == "flap_mlp_qwen3":

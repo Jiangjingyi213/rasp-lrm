@@ -9,8 +9,10 @@ from src.data.format_prompt import build_assistant_continuation_prompt
 from src.pruning.mlp_pruner import mlp_intermediate_channel_mask
 from src.rasp.activation_ranker import keep_mask_from_ranking, rank_intermediate_neurons
 from src.rasp.mlp_runtime import RuntimeMaskedQwen3MLP
-from src.main_collect_aligned_window_bank import boundary_positions, token_divergence
+from src.main_collect_aligned_window_bank import token_divergence
 from src.rasp.greedy_decode import is_affected_window_decision
+from src.rasp.budget_controller import FixedSingleWindowController, RuntimeObservation
+from src.rasp.window_sampling import boundary_positions
 from src.segmentation.rule_segmenter import segment_text
 
 
@@ -114,7 +116,19 @@ class RaspZeroRuntimeTest(unittest.TestCase):
     def test_aligned_bank_uses_fixed_token_boundaries(self) -> None:
         self.assertEqual(boundary_positions(50, 16, None), [0, 16, 32, 48])
         self.assertEqual(boundary_positions(50, 16, 2), [0, 16])
+        self.assertEqual(
+            boundary_positions(160, 16, 4, "uniform_full_trajectory"),
+            [0, 48, 96, 144],
+        )
         self.assertAlmostEqual(token_divergence([1, 2, 3], [1, 4, 3]), 1 / 3)
+
+    def test_fixed_single_window_controller_restores_dense(self) -> None:
+        controller = FixedSingleWindowController(boundary_tokens=32, ratio=0.4, window_tokens=16)
+        ratios = [
+            controller.choose_ratio(RuntimeObservation(tokens, 0.0, 1.0))
+            for tokens in (0, 16, 32, 48, 64)
+        ]
+        self.assertEqual(ratios, [0.0, 0.0, 0.4, 0.0, 0.0])
 
     def test_aligned_window_records_only_action_affected_decisions(self) -> None:
         affected = [step for step in range(20) if is_affected_window_decision(step, 16)]
