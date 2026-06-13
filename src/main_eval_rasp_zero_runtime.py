@@ -13,6 +13,7 @@ from src.metrics.answer_match import answer_match, extract_answer
 from src.models.load_model import load_model_bundle
 from src.models.hooks import get_decoder_layers
 from src.rasp.action_router import ActionConditionedRiskController
+from src.rasp.action_risk_single_window import ActionRiskSingleWindowController
 from src.rasp.budget_controller import (
     ConfidenceThresholdController,
     FixedRatioController,
@@ -36,6 +37,21 @@ def _build_controller(config: dict, generation_config: dict, runtime_layers: lis
             boundary_tokens=int(config["boundary_tokens"]),
             ratio=float(config["fixed_ratio"]),
             window_tokens=int(config.get("window_tokens", 16)),
+        )
+    if controller == "action_risk_single_window":
+        return ActionRiskSingleWindowController(
+            checkpoint_path=config["policy_checkpoint"],
+            policy_variant=str(config.get("policy_variant", "context_only")),
+            operating_point=str(config.get("operating_point", "conservative")),
+            max_new_tokens=int(generation_config.get("max_new_tokens", 512)),
+            eligible_boundaries=tuple(
+                int(value) for value in config.get("eligible_boundaries", [32, 96, 160])
+            ),
+            window_tokens=int(config.get("window_tokens", 16)),
+            max_action_windows=int(config.get("max_action_windows", 1)),
+            runtime_ratios=tuple(
+                float(value) for value in config.get("ratios", [0.0, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50])
+            ),
         )
     if controller == "confidence_threshold":
         return ConfidenceThresholdController(
@@ -148,18 +164,26 @@ def main() -> None:
     write_jsonl(trajectories_path, rows)
     summary = {
         "method": (
-            "rasp_train_runtime_v2_1"
-            if runtime_cfg.get("controller") == "rasp_train_policy"
+            "rasp_action_risk_single_window_runtime_v1"
+            if runtime_cfg.get("controller") == "action_risk_single_window"
             else (
-                "rasp_phase_b2_uncertainty_runtime_v1"
-                if runtime_cfg.get("controller") == "phase_b2_uncertainty"
-                else "rasp_zero_runtime_v0"
+                "rasp_train_runtime_v2_1"
+                if runtime_cfg.get("controller") == "rasp_train_policy"
+                else (
+                    "rasp_phase_b2_uncertainty_runtime_v1"
+                    if runtime_cfg.get("controller") == "phase_b2_uncertainty"
+                    else "rasp_zero_runtime_v0"
+                )
             )
         ),
         "backend": "logical_mask_v0",
         "controller": runtime_cfg.get("controller", "fixed"),
         "router_checkpoint": runtime_cfg.get("router_checkpoint"),
         "policy_checkpoint": runtime_cfg.get("policy_checkpoint"),
+        "policy_variant": runtime_cfg.get("policy_variant"),
+        "operating_point": runtime_cfg.get("operating_point"),
+        "eligible_boundaries": runtime_cfg.get("eligible_boundaries"),
+        "max_action_windows": runtime_cfg.get("max_action_windows"),
         "risk_threshold": getattr(controller, "risk_threshold", runtime_cfg.get("risk_threshold")),
         "target_average_ratio": runtime_cfg.get("target_average_ratio"),
         "policy_horizon_tokens": runtime_cfg.get("policy_horizon_tokens"),

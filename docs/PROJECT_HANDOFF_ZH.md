@@ -475,3 +475,54 @@ GPU 4–7: GSM8K test + MATH500 固定单窗口在线诊断
 注意：当前 S1 stage probability 使用完整 dense trajectory 的相对位置，不能作为在线因果输入；
 新 pilot 明确不使用该字段。100 dense-correct/source 只用于路线判断，不足以证明最终
 accuracy loss `<=1%`。
+
+GPU 4–7 的 fixed-single-window 在线 pilot 已完成并通过产物/接线审查，但固定动作安全准入失败。
+GSM8K 最接近安全线的是 `boundary=96, ratio=0.10`：净 accuracy delta 为 `0`，但实际执行动作的
+dense-correct flip 仍为 `1/80=1.25%`，95% CI 上界约 `3.95%`。MATH500 最安全 point estimate
+仍为 `boundary=160, ratio=0.10` 的 `4/57=7.02%` 条件 flip 与 `-3%` accuracy delta。
+
+这不否定离线 Action-Risk bank：事后 oracle 显示两个数据集在可执行状态上的平均最大安全 ratio
+都约为 `0.47`，说明高 ratio 并非普遍不安全，而是必须识别脆弱状态。该 oracle 使用结果泄漏，
+不能作为方法结果。当前应等待 GPU 0–3 完成，并以 5-fold OOF 判断 hidden/context/action 模型
+能否稳定预测风险；在此之前不运行连续固定剪枝，也不宣称在线 controller 成功。
+
+GPU 0–3 的离线 Action-Risk pilot 也已完成。34/34 shard validator 通过，共有 `278` 个
+dense-correct problem、`2965` 个 boundary、`17790` 个 action row。整体 flip 随 ratio 从
+`2.23% @ 0.05` 单调升至 `12.75% @ 0.50`，说明监督信号有效。
+
+严格 hidden gate 未通过：context+action 相对 action-only 在 4/5 folds 稳定提升，但 hidden 的
+增益主要体现在 PR-AUC，ROC 与跨数据集提升不稳定。当前正确裁决不是停止 Action-Risk，而是将
+`causal context/action` 作为主风险模型，hidden 只作为风险 veto 消融。下一步允许训练最终
+checkpoint 并运行每题最多一个窗口的 learned-controller pilot；只有它在线优于 fixed baseline
+后才扩正式 bank 或讨论连续窗口。
+
+## 8. 当前下一步：Learned Action-Risk Single-Window Pilot
+
+已实现新的 `action_risk_single_window` controller。它不复用旧 Phase-B2/uncertainty router，
+只在 `32/96/160` token 边界使用 causal context/action 风险模型判断；首次选择非零 action 后
+执行一个 16-token MLP-channel 剪枝窗口，随后永久恢复 dense。每题最多一个窗口。
+
+最终 checkpoint 使用现有 problem-level 5-fold OOF 预测校准三档 operating point：
+`conservative / balanced / aggressive`。Context-only 是主策略；hidden 只能 veto context 已接受
+的 action，不能提高 ratio。每个 hidden-veto 档位必须在 OOF 上保留至少 80% context exposure，
+且两个训练数据集的 flip 均不恶化，否则该档不会生成在线任务。
+
+服务器执行顺序：
+
+```bash
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python \
+bash scripts/75_train_action_risk_controller.sh
+
+mkdir -p logs/07_stage_aware/08_action_risk_learned_single_window_pilot
+nohup env GPU_IDS=0,1,2,3,4,5,6,7 \
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python \
+bash scripts/77_eval_action_risk_learned_pilot.sh \
+> logs/07_stage_aware/08_action_risk_learned_single_window_pilot/launcher.log 2>&1 &
+
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python \
+python scripts/78_summarize_action_risk_learned_pilot.py
+```
+
+结果位于 `runs/07_stage_aware/08_action_risk_learned_single_window_pilot/`。本轮只有 learned
+context-only 在 GSM8K/MATH500 均满足 pilot 门槛并优于相近理论 exposure 的 fixed baseline，
+才允许扩充 bank、运行多 seed 或双窗口实验。

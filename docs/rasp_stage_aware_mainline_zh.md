@@ -534,3 +534,152 @@ runs/07_stage_aware/07_online_fixed_window_pilot/online_fixed_window_summary.jso
 100 个 dense-correct problem 足够做路线 go/no-go，但不能证明 accuracy loss `<=1%`。Pilot
 通过后才扩展到每来源至少 200 个 dense-correct problem，并训练新的 learned single-window
 controller。
+
+## 14. 在线 Fixed-Single-Window Pilot 结果
+
+GPU 4–7 的在线固定单窗口诊断已完成。两个数据集各包含 100 道配对题，32/32 个运行产物完整；
+未到达指定 boundary 的题目与 dense completion 完全一致，runtime 元数据与 16-token 单窗口
+配置匹配，未发现 controller 接线错误。
+
+最保守且最接近安全线的 GSM8K cell 是：
+
+```text
+boundary=96, ratio=0.10
+paired accuracy delta          0.00
+executed dense-correct flip    1/80 = 1.25%
+flip 95% CI                    [0.00%, 3.95%]
+theoretical pruning exposure   0.57%
+```
+
+它仍不能通过最终 `<=1%` 安全声明。GSM8K 的较高 ratio 在 boundary 96/160 呈明显风险上升；
+boundary 32 相对更稳，但 `ratio=0.40` 的零净 accuracy delta 来自 4 个 flip 与 4 个 improvement
+相互抵消，不能视为安全。
+
+MATH500 对固定动作明显更脆弱，最安全 point estimate 仍为：
+
+```text
+boundary=160, ratio=0.10
+paired accuracy delta          -3.00%
+executed dense-correct flip    4/57 = 7.02%
+flip 95% CI                    [1.61%, 14.55%]
+theoretical pruning exposure   0.32%
+```
+
+因此不存在可跨 GSM8K/MATH500 直接部署的固定 `boundary × ratio`。但结果并不否定动态
+Action-Risk 主线：事后 oracle 在可执行状态上选择“仍保持正确的最大 ratio”，两个数据集的平均
+最大安全 ratio 都约为 `0.47`。该 oracle 使用结果泄漏，不能作为可实现性能；它只说明风险集中
+于特定状态，存在学习 selector 的潜在空间。脆弱性也具有问题级集中性：MATH500 的全部 flip
+event 中约 `42%` 来自最脆弱的 5 道题。
+
+正式裁决：
+
+```text
+固定单窗口策略：不通过安全准入
+连续固定剪枝：不运行
+离线 Action-Risk bank：继续完成
+下一判断：检查 OOF hidden/context/action 风险模型能否稳定识别脆弱状态
+```
+
+汇总脚本现同时报告总体 dense-correct flip 与仅在实际执行窗口题目上的条件 flip，避免较晚
+boundary 因部分题未执行动作而被错误解释为更安全；manifest 未同步时也可直接从 runs 重建任务表。
+
+## 15. 离线 Action-Risk Pilot 结果
+
+GPU 0–3 离线 pilot 已完成。34/34 shard 全部通过 validator，所有 dense replay/control flip
+均为 0；共保留 GSM8K `118` 与隔离 math_train `160` 个 full-window eligible dense-correct
+problem、`2965` 个 boundary 和 `17790` 个非零 action row。
+
+标签具有清晰的整体剂量响应：
+
+```text
+ratio       0.05   0.10   0.20   0.30   0.40   0.50
+flip rate   2.23%  2.90%  5.33%  8.40% 10.69% 12.75%
+```
+
+但约 `10.0%` GSM8K boundary 与 `8.8%` math_train boundary 的逐状态标签对 ratio 非单调。这是
+生成轨迹受局部扰动后的离散/混沌响应，不是 action-grid 缺失；controller 不能假设每个状态上
+较小 ratio 必然更安全。
+
+5-fold problem-level OOF 结果：
+
+```text
+variant                    ROC-AUC   PR-AUC
+action-only                0.6660    0.1099
+causal context + action    0.6941    0.1308
+hidden + context + action  0.6983    0.1536
+hidden PCA nonlinear       0.6892    0.1503
+```
+
+`causal context + action` 相对 action-only 的 ROC/PR 在 `4/5` folds 提升，证明因果状态特征具有
+可复现价值。Hidden 的主要增益在稀有 flip 的 PR-AUC：两个 hidden variant 均在 `4/5` folds
+提高 PR；但 ROC 增益不稳定，且 hidden-context 在 math_train ROC 低于 context baseline。因此
+原 strict gate `pilot_passed=false`，不能宣称 hidden 已稳定成为通用风险 router。
+
+风险分桶本身有效：context 模型最低到最高五分位真实 flip 约从 `2.1%` 单调升到 `15.2%`。
+使用 OOF context 分数做诊断性最大-ratio选择时，可以得到约 `avg ratio=0.061 / flip=2.0%`，
+略优于固定 `ratio=0.05 / flip=2.23%`；信号存在，但优势仍小，尚不支持扩大正式 bank。
+
+正式裁决：
+
+```text
+Action-Risk 可学习性：通过低成本在线 pilot 准入
+Hidden 稳定主增益假设：未通过
+下一 controller：causal context/action 主模型 + hidden 风险 veto 消融
+在线暴露：每题最多一个窗口，不进入连续剪枝
+正式扩样：等待 learned controller 在线优于 fixed baseline 后再决定
+```
+
+当前 OOF 分数只用于离线诊断，不能直接部署；下一步需训练最终 checkpoint，并只用 problem-level
+OOF 策略模拟选择阈值。在线验收必须分别报告 context-only 与 context+hidden-veto，避免把 hidden 的
+不稳定增益隐藏在组合模型中。
+
+## 16. Learned Action-Risk Single-Window Controller
+
+第一版 learned controller 已实现，使用 causal context/action 作为主风险模型，并将 hidden
+限制为单向风险 veto。训练与 runtime 共用同一组特征：
+
+```text
+entropy
+confidence
+generated_tokens / max_new_tokens
+log1p(generated_tokens)
+candidate ratio
+candidate ratio squared
+```
+
+部署 checkpoint 会硬校验 feature schema、`max_new_tokens=768`、ratio grid、合法边界
+`32/96/160` 与 `window_tokens=16`。风险预测对 ratio 使用单调包络，避免局部预测反转让更大的
+ratio 被错误视为更安全。Controller 每题只执行首次被接受的非零 action，之后永久 dense。
+
+三档 operating point 使用 OOF 策略模拟自动校准，目标每题平均单窗口 action ratio 约为
+`0.10/0.20/0.30`，且两个训练来源的 OOF problem flip 均不得超过 5%。Hidden-veto 每档独立
+准入；不满足 exposure 保留与不恶化条件的档位不会进入在线任务。
+
+```bash
+# CPU：训练最终模型并生成 checkpoint/calibration
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python \
+bash scripts/75_train_action_risk_controller.sh
+
+# 八卡：dense + context-only 三档 + 合格 hidden-veto 档位
+mkdir -p logs/07_stage_aware/08_action_risk_learned_single_window_pilot
+nohup env GPU_IDS=0,1,2,3,4,5,6,7 \
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python \
+bash scripts/77_eval_action_risk_learned_pilot.sh \
+> logs/07_stage_aware/08_action_risk_learned_single_window_pilot/launcher.log 2>&1 &
+
+# 所有 worker 完成后
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python \
+python scripts/78_summarize_action_risk_learned_pilot.py
+```
+
+主要产物：
+
+```text
+runs/07_stage_aware/08_action_risk_learned_single_window_pilot/checkpoints/action_risk_single_window.joblib
+runs/07_stage_aware/08_action_risk_learned_single_window_pilot/checkpoints/calibration_summary.json
+runs/07_stage_aware/08_action_risk_learned_single_window_pilot/online_learned_summary.json
+```
+
+本轮通过条件要求至少一个 context-only 档位在 GSM8K 与 MATH500 同时满足：accuracy delta
+`>= -5%`、dense-correct flip `<=10%`、平均 action ratio `>=0.08`、执行窗口非零，并严格改善
+相近理论 exposure 的 fixed baseline 至少一个风险/准确率指标且另一指标不恶化。
