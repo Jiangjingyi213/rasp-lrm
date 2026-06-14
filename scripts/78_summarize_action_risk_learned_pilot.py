@@ -4,8 +4,12 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 from pathlib import Path
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from src.metrics.answer_match import answer_match
 from src.utils.io import read_json, read_jsonl, write_json
