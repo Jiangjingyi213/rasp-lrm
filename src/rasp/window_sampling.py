@@ -6,7 +6,15 @@ def boundary_positions(
     window_tokens: int,
     max_boundaries: int | None,
     sampling: str = "prefix",
+    explicit_positions: list[int] | tuple[int, ...] | None = None,
 ) -> list[int]:
+    if explicit_positions is not None:
+        positions = [int(value) for value in explicit_positions]
+        if positions != sorted(set(positions)):
+            raise ValueError("Explicit boundary positions must be sorted and unique")
+        if any(position < 0 or position % window_tokens != 0 for position in positions):
+            raise ValueError("Explicit boundary positions must be non-negative and window-aligned")
+        return [position for position in positions if position < token_count]
     values = list(range(0, token_count, window_tokens))
     if not max_boundaries or len(values) <= max_boundaries:
         return values

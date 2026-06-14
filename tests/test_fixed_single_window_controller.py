@@ -25,6 +25,16 @@ class FixedSingleWindowControllerTest(unittest.TestCase):
             [0, 48, 96, 144],
         )
 
+    def test_explicit_boundary_sampling_filters_short_trajectories(self) -> None:
+        self.assertEqual(
+            boundary_positions(120, 16, None, explicit_positions=[32, 96, 160]),
+            [32, 96],
+        )
+
+    def test_explicit_boundary_sampling_requires_alignment(self) -> None:
+        with self.assertRaises(ValueError):
+            boundary_positions(200, 16, None, explicit_positions=[32, 95])
+
 
 if __name__ == "__main__":
     unittest.main()

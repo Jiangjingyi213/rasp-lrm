@@ -683,3 +683,64 @@ runs/07_stage_aware/08_action_risk_learned_single_window_pilot/online_learned_su
 本轮通过条件要求至少一个 context-only 档位在 GSM8K 与 MATH500 同时满足：accuracy delta
 `>= -5%`、dense-correct flip `<=10%`、平均 action ratio `>=0.08`、执行窗口非零，并严格改善
 相近理论 exposure 的 fixed baseline 至少一个风险/准确率指标且另一指标不恶化。
+
+## 17. Stage-Action-Risk v2：先修复时机监督
+
+Learned single-window pilot 的 14/14 个任务完整，但正式 gate 未通过。更关键的是，context-only
+与 hidden-veto 在所有题上都于 token `32` 立即执行，六组 hidden-veto 实验没有产生一次实际
+veto。该结果不能解释为“32 是最佳 reasoning stage”，因为旧 uniform bank 对精确边界覆盖不完整：
+
+```text
+source      problems   b32   b96   b160
+gsm8k       118        83    70    70
+math_train  160        93    83    75
+```
+
+因此旧校准选择晚边界时，常常只是该题未采到早期边界。下一步不直接训练 stage controller，而是
+建立严格可比较的精确边界 bank。Collector/validator 新增显式 `boundary_positions` 支持；v2 固定：
+
+```text
+boundary_positions = [32, 96, 160]
+ratios = [0, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50]
+stage annotation = action-preceding hidden stage probability + causal recent-text verification rule
+```
+
+数据准备只保留三个边界均完整、每个边界均有完整 ratio grid、且动作窗口满 16 token 的问题。
+默认要求 GSM8K train 与隔离 math_train 各至少 100 个 complete problem。
+
+```bash
+mkdir -p logs/07_stage_aware/09_stage_action_risk_v2
+nohup env GPU_IDS=0,1,2,3,4,5,6,7 \
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python \
+bash scripts/80_collect_stage_action_risk_v2.sh \
+> logs/07_stage_aware/09_stage_action_risk_v2/launcher.log 2>&1 &
+
+# 八个 worker 完成后
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python \
+bash scripts/81_prepare_stage_action_risk_v2_data.sh
+
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python \
+bash scripts/82_analyze_stage_action_risk_v2.sh
+```
+
+分析在同一 problem-level 5-fold split 上比较：
+
+```text
+action-only
+causal context + action
+stage + causal context + action
+hidden + stage + causal context + action
+```
+
+Stage controller 的硬准入要求 `stage+context+action` 相对 `context+action` 在至少 4/5 folds 上
+同时提高 ROC-AUC 与 PR-AUC，并在 GSM8K/math_train 两个数据集上均同时提高两项指标。分析还会
+用 OOF 分数校准相同的 first-accepted policy；stage policy 必须保留至少 80% context exposure，
+两个数据集 flip 均不恶化且至少一个严格改善。未通过时不得为了保持项目叙事而训练
+stage-gated controller，应继续修订因果 stage/progress 表征。
+
+主要产物：
+
+```text
+runs/07_stage_aware/09_stage_action_risk_v2/data/01_stage_action_risk_data_summary.json
+runs/07_stage_aware/09_stage_action_risk_v2/analysis/02_stage_action_risk_analysis.json
+```

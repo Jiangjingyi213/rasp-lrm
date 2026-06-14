@@ -526,3 +526,37 @@ python scripts/78_summarize_action_risk_learned_pilot.py
 结果位于 `runs/07_stage_aware/08_action_risk_learned_single_window_pilot/`。本轮只有 learned
 context-only 在 GSM8K/MATH500 均满足 pilot 门槛并优于相近理论 exposure 的 fixed baseline，
 才允许扩充 bank、运行多 seed 或双窗口实验。
+
+## 9. 当前下一步：Stage-Action-Risk v2 精确边界 Bank
+
+Learned single-window pilot 已完成但未通过：所有策略题都在 token `32` 立即执行，说明该轮只学会
+了“在 32 token 剪多少”，没有学会 reasoning-aware 时机选择。根因是旧 uniform bank 并未为每题
+完整采集 `32/96/160`：离线校准中的晚边界选择经常只是因为早期边界不存在。
+
+下一轮先修复数据，不提前训练新 controller。Stage-Action-Risk v2 强制采集：
+
+```text
+每个 retained dense-correct problem:
+boundary = 32 / 96 / 160 全部存在
+ratio    = 0 / 0.05 / 0.10 / 0.20 / 0.30 / 0.40 / 0.50
+每个动作持续 16 token，随后恢复 dense
+动作前记录 causal hidden-stage probability
+```
+
+缺任一边界或完整 action grid 的问题会整题剔除。v2 仅用于判断 stage 表征是否真正改善风险与时机
+建模；当前 stage selective gate 未通过，因此 bank 标记为 diagnostic-only。
+
+```bash
+# 八卡采集
+GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/80_collect_stage_action_risk_v2.sh
+
+# worker 全部完成后
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python \
+bash scripts/81_prepare_stage_action_risk_v2_data.sh
+
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python \
+bash scripts/82_analyze_stage_action_risk_v2.sh
+```
+
+只有 `analysis/02_stage_action_risk_analysis.json` 中
+`stage_controller_training_allowed=true`，才实施 stage-gated waiting controller。

@@ -54,6 +54,7 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         window_tokens = int(cfg.get("window_tokens", 16))
         max_boundaries = cfg.get("max_boundaries_per_example")
         boundary_sampling = str(cfg.get("boundary_sampling", "prefix"))
+        explicit_boundary_positions = cfg.get("boundary_positions")
         expected_boundary_keys = set()
         for trajectory in read_jsonl(trajectory_path):
             if not bool(trajectory.get("correct")):
@@ -69,6 +70,7 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
                     window_tokens,
                     max_boundaries,
                     boundary_sampling,
+                    explicit_boundary_positions,
                 )
                 if position < max_new_tokens
             ]
@@ -139,6 +141,7 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         "configured_max_new_tokens": max_new_tokens,
         "configured_max_boundaries_per_example": cfg.get("max_boundaries_per_example"),
         "boundary_sampling": str(cfg.get("boundary_sampling", "prefix")),
+        "configured_boundary_positions": cfg.get("boundary_positions"),
         "action_scope": "single_fixed_window_then_dense",
         "action_window_alignment": "affected_next_token_decisions_v2",
         "ranking_scope": "initial_prompt_prefill_fixed",

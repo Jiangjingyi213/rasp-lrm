@@ -121,6 +121,10 @@ class RaspZeroRuntimeTest(unittest.TestCase):
             [0, 48, 96, 144],
         )
         self.assertAlmostEqual(token_divergence([1, 2, 3], [1, 4, 3]), 1 / 3)
+        self.assertEqual(
+            boundary_positions(200, 16, None, explicit_positions=[32, 96, 160]),
+            [32, 96, 160],
+        )
 
     def test_fixed_single_window_controller_restores_dense(self) -> None:
         controller = FixedSingleWindowController(boundary_tokens=32, ratio=0.4, window_tokens=16)

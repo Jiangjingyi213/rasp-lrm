@@ -55,6 +55,7 @@ def main() -> None:
     window_tokens = int(bank_cfg.get("window_tokens", 16))
     max_boundaries = bank_cfg.get("max_boundaries_per_example")
     boundary_sampling = str(bank_cfg.get("boundary_sampling", "prefix"))
+    explicit_boundary_positions = bank_cfg.get("boundary_positions")
     stage_cfg = cfg.get("stage_sensitivity")
     stage_probe = None
     recent_stage_tokens = 128
@@ -84,6 +85,7 @@ def main() -> None:
             window_tokens,
             max_boundaries,
             boundary_sampling,
+            explicit_boundary_positions,
         )
         for boundary_index, position in enumerate(positions):
             if position >= max_new_tokens:
@@ -186,6 +188,7 @@ def main() -> None:
             "max_new_tokens": max_new_tokens,
             "configured_max_boundaries_per_example": max_boundaries,
             "boundary_sampling": boundary_sampling,
+            "configured_boundary_positions": explicit_boundary_positions,
             "action_scope": "single_fixed_window_then_dense",
             "action_window_alignment": "affected_next_token_decisions_v2",
             "ranking_scope": "initial_prompt_prefill_fixed",
