@@ -16,6 +16,7 @@ from src.rasp.action_router import ActionConditionedRiskController
 from src.rasp.action_risk_single_window import ActionRiskSingleWindowController
 from src.rasp.budget_controller import (
     ConfidenceThresholdController,
+    FixedMultiWindowController,
     FixedRatioController,
     FixedSingleWindowController,
 )
@@ -24,6 +25,7 @@ from src.rasp.metrics import summarize_runtime_rows
 from src.rasp.mlp_runtime import apply_runtime_mlp_masking_qwen3
 from src.rasp.phase_b2_controller import PhaseB2UncertaintyController
 from src.rasp.train_controller import RaspTrainPolicyController
+from src.rasp.config_fingerprint import config_fingerprint
 from src.utils.io import ensure_dir, read_yaml, write_json, write_jsonl
 from src.utils.seed import set_seed
 
@@ -37,6 +39,15 @@ def _build_controller(config: dict, generation_config: dict, runtime_layers: lis
             boundary_tokens=int(config["boundary_tokens"]),
             ratio=float(config["fixed_ratio"]),
             window_tokens=int(config.get("window_tokens", 16)),
+        )
+    if controller == "fixed_multi_window":
+        return FixedMultiWindowController(
+            ratio=float(config["fixed_ratio"]),
+            cadence_tokens=int(config["cadence_tokens"]),
+            max_windows=int(config["max_windows"]),
+            decision_start=int(config.get("decision_start", 32)),
+            window_tokens=int(config.get("window_tokens", 16)),
+            cooldown_tokens=int(config.get("cooldown_tokens", 16)),
         )
     if controller == "action_risk_single_window":
         return ActionRiskSingleWindowController(
@@ -149,6 +160,7 @@ def main() -> None:
             max_new_tokens=int(generation_cfg.get("max_new_tokens", 512)),
             max_input_tokens=int(generation_cfg.get("max_input_tokens", 2048)),
             window_tokens=int(runtime_cfg.get("window_tokens", 16)),
+            store_router_hidden_states=bool(runtime_cfg.get("store_router_hidden_states", False)),
         )
         completion = truncate_completion(runtime["completion"], generation_cfg.get("stop_strings", DEFAULT_STOP_STRINGS))
         rows.append(
@@ -167,12 +179,16 @@ def main() -> None:
             "rasp_action_risk_single_window_runtime_v1"
             if runtime_cfg.get("controller") == "action_risk_single_window"
             else (
+                "rasp_fixed_multi_window_runtime_v1"
+                if runtime_cfg.get("controller") == "fixed_multi_window"
+                else (
                 "rasp_train_runtime_v2_1"
                 if runtime_cfg.get("controller") == "rasp_train_policy"
                 else (
                     "rasp_phase_b2_uncertainty_runtime_v1"
                     if runtime_cfg.get("controller") == "phase_b2_uncertainty"
                     else "rasp_zero_runtime_v0"
+                )
                 )
             )
         ),
@@ -184,6 +200,10 @@ def main() -> None:
         "operating_point": runtime_cfg.get("operating_point"),
         "eligible_boundaries": runtime_cfg.get("eligible_boundaries"),
         "max_action_windows": runtime_cfg.get("max_action_windows"),
+        "max_windows": runtime_cfg.get("max_windows"),
+        "cadence_tokens": runtime_cfg.get("cadence_tokens"),
+        "decision_start": runtime_cfg.get("decision_start"),
+        "cooldown_tokens": runtime_cfg.get("cooldown_tokens"),
         "risk_threshold": getattr(controller, "risk_threshold", runtime_cfg.get("risk_threshold")),
         "target_average_ratio": runtime_cfg.get("target_average_ratio"),
         "policy_horizon_tokens": runtime_cfg.get("policy_horizon_tokens"),
@@ -198,6 +218,10 @@ def main() -> None:
         "boundary_tokens": runtime_cfg.get("boundary_tokens"),
         "fixed_ratio": runtime_cfg.get("fixed_ratio"),
         "supported_ratios": runtime_cfg.get("ratios", [0.02, 0.05, 0.10, 0.20, 0.30, 0.40]),
+        "runtime_config_fingerprint": config_fingerprint(
+            cfg,
+            ("seed", "model", "prompt", "data", "generation", "runtime_rasp"),
+        ),
         "peak_gpu_memory_bytes": int(torch.cuda.max_memory_allocated()) if torch.cuda.is_available() else None,
         **summarize_runtime_rows(rows),
     }

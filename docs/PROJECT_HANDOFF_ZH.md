@@ -560,3 +560,71 @@ bash scripts/82_analyze_stage_action_risk_v2.sh
 
 只有 `analysis/02_stage_action_risk_analysis.json` 中
 `stage_controller_training_allowed=true`，才实施 stage-gated waiting controller。
+
+Stage-Action-Risk v2 已完成采集与分析。54/54 shard validation 为 `ok`，最终保留
+`394` 个完整 dense-correct problem，其中 GSM8K `158` 个、math_train `236` 个；每题均包含
+`32/96/160` 三个精确边界，共 `1182` 个 boundary 和 `7092` 个非零 action row。
+
+本轮数据修复成功，但 stage gate 未通过：
+
+```text
+causal context + action       ROC 0.6680 / PR 0.1273
+stage + context + action      ROC 0.6658 / PR 0.1236
+hidden + stage + context      ROC 0.6703 / PR 0.1383
+stage 同时胜过 context 的 fold 数：1/5
+stage_controller_training_allowed=false
+```
+
+Stage policy 虽在相近 exposure 下将 math_train problem flip 从 `4.66%` 降至 `4.24%`，
+但 GSM8K 不改善，且 OOF 排序指标不稳定。更重要的是，当前 first-accepted 策略只要 token `32`
+存在任一低风险 ratio 就立即执行：context policy 的 `394/394` 题、stage policy 的 `391/394`
+题仍在 token `32` 动作。因此精确边界 bank 修复了旧数据缺失问题，但当前目标函数仍未真正训练
+“等待的价值”。
+
+下一步不得直接训练 stage-gated controller。应先在 v2 paired exact-boundary bank 上建立显式
+`act-now vs wait` 诊断：比较当前安全动作效用与未来边界可获得的安全动作效用，并使用当前因果
+hidden/stage/context 预测等待是否有价值。只有该 timing-value 任务在 problem-level OOF 上稳定
+优于固定早期动作，才实现新的 waiting controller。
+
+## 10. Full-Trajectory Multi-Window 自动工作流
+
+为避免继续被 `32/96/160` 三个离散边界和单窗口假设限制，已实现新的集成工作流：
+
+```text
+已有 Action-Risk bank CPU 预审
+→ 4 dense-correct/source causal-grid smoke
+→ 20 dense-correct/source full-trajectory pilot + grouped OOF
+→ 隔离训练来源上的 fixed multi-window dev
+→ 精确重放完整历史的 on-policy bank smoke
+→ 最终 gate 与中文报告
+```
+
+自然决策边界从 token `32` 开始、每 `32` token 一次；每个动作持续 16 个 affected-token
+decision，之后至少保持 16 token dense cooldown。`tail_anchor` 仅用于临近 EOS 的诊断，不进入
+可部署模型。Stage 只作为 causal soft probability；低置信 hard stage 归为 `unknown`，依赖
+完整轨迹位置的 checkpoint 会硬失败。
+
+Smoke/Pilot 会先适度过采样输入，再分别固定选取每来源 `4/20` 个 full-window eligible
+dense-correct problem，避免“20 道输入题”被误当作“20 个有效问题”。总控开始时还会先运行现有
+单元测试；任一测试失败不会启动 GPU 采集。
+
+固定多窗口 dev 比较 `r0.10/r0.20/r0.30` 的不同 cadence/max-window 组合，并仅选择在 GSM8K
+train 与隔离 math_train 上同时通过风险—曝光方向门槛的 behavior policy。On-policy smoke
+不会拼接 dense prefix，而会重放此前每个动作及 dense 恢复，并核对 token prefix、boundary
+完整 logits hash/top-k、hidden、动作历史和 cooldown。
+
+唯一入口：
+
+```bash
+mkdir -p logs/07_stage_aware/10_full_trajectory_multi_window
+nohup env GPU_IDS=0,1,2,3,4,5,6,7 \
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python \
+bash scripts/90_run_full_trajectory_multi_window_workflow.sh \
+> logs/07_stage_aware/10_full_trajectory_multi_window/launcher.log 2>&1 &
+```
+
+结果统一写入 `runs/07_stage_aware/10_full_trajectory_multi_window/`。每个阶段有独立 gate；失败后
+总控立即停止后续 GPU 工作，并仍生成 `workflow_gate.json`、`final_workflow_summary.json` 与
+`final_workflow_report_zh.md`。本轮最终状态固定为
+`learned_multi_window_allowed=false`；只有扩大 on-policy bank 并通过 problem-grouped OOF 后
+才允许训练 learned multi-window controller。

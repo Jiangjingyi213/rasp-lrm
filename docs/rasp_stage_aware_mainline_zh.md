@@ -733,10 +733,8 @@ hidden + stage + causal context + action
 ```
 
 Stage controller 的硬准入要求 `stage+context+action` 相对 `context+action` 在至少 4/5 folds 上
-同时提高 ROC-AUC 与 PR-AUC，并在 GSM8K/math_train 两个数据集上均同时提高两项指标。分析还会
-用 OOF 分数校准相同的 first-accepted policy；stage policy 必须保留至少 80% context exposure，
-两个数据集 flip 均不恶化且至少一个严格改善。未通过时不得为了保持项目叙事而训练
-stage-gated controller，应继续修订因果 stage/progress 表征。
+同时改善 ROC-AUC 与 PR-AUC，并在两个数据来源上均改善。策略模拟还必须保持至少 80% exposure，
+且两个来源的 flip 均不恶化、至少一个严格改善。
 
 主要产物：
 
@@ -744,3 +742,176 @@ stage-gated controller，应继续修订因果 stage/progress 表征。
 runs/07_stage_aware/09_stage_action_risk_v2/data/01_stage_action_risk_data_summary.json
 runs/07_stage_aware/09_stage_action_risk_v2/analysis/02_stage_action_risk_analysis.json
 ```
+
+## 18. Stage-Action-Risk v2 结果：数据修复成功，Stage Gate 未通过
+
+Stage-Action-Risk v2 已完成。54 个 shard validator 全部为 `ok`，最终精确边界 bank 包含：
+
+```text
+source       observed dense-correct   complete exact-boundary
+gsm8k        188                      158
+math_train   256                      236
+
+complete problems   394
+boundaries          1182
+nonzero action rows 7092
+positive flips      512
+```
+
+每个保留问题均完整包含 `32/96/160` 和全 ratio grid，因此上一轮候选边界缺失造成的伪等待问题
+已经排除。
+
+OOF 风险预测结果：
+
+```text
+variant                         ROC-AUC   PR-AUC
+action-only                     0.6384    0.1033
+causal context + action         0.6680    0.1273
+stage + context + action        0.6658    0.1236
+hidden + stage + context        0.6703    0.1383
+```
+
+Stage 相对 causal context 仅在 `1/5` folds 同时改善 ROC 与 PR，且没有同时改善 GSM8K 与
+math_train，因此：
+
+```text
+stage_controller_training_allowed = false
+```
+
+当前 hard operational stage 分布也高度不平衡：
+
+```text
+reasoning      1045 / 1182
+setup            86 / 1182
+final            50 / 1182
+verification      1 / 1182
+```
+
+`setup` 与 `reasoning` 的 ratio-risk 曲线接近，说明当前三分类 stage 在这些固定边界上没有提供
+足够的动作风险区分度。Hidden+stage 的 PR-AUC 有提升，但跨 fold、跨数据集仍不足以直接部署。
+
+### 18.1 First-Accepted 仍未学习等待
+
+精确边界虽然完整，但当前策略模拟的规则是：按 `32 → 96 → 160` 检查，只要当前边界存在任一
+低于风险阈值的非零 ratio，就立即执行其中最大的 ratio。
+
+实际选择分布：
+
+```text
+policy                    token 32   token 96   token 160   dense
+causal context + action   394        0          0           0
+stage + context + action  391        3          0           0
+hidden + stage + context  313        41         17          23
+```
+
+Hidden variant 确实产生了部分等待，但未降低两个数据来源的 problem flip。由此可见，当前瓶颈
+不只是 stage representation；`first-accepted` 决策规则本身也没有比较“现在执行”和“等待未来
+边界”的相对价值。只要低 ratio 在 token `32` 被预测为安全，策略就没有理由等待。
+
+### 18.2 下一步：显式 Timing-Value 诊断
+
+暂不训练 stage-gated online controller。下一步使用当前 exact-boundary paired bank 建立显式
+时机任务：
+
+```text
+当前状态 + 当前候选动作
+  → immediate action risk / utility
+
+当前状态
+  → future safe-action value
+
+decision
+  → act now 或 wait
+```
+
+未来边界的 counterfactual 结果只用于离线训练标签；在线推理仍只能读取当前已生成的因果信息。
+首先进行 problem-level OOF 诊断，判断 causal hidden/stage/context 能否预测“等待是否比当前
+动作更有价值”。只有 timing-value 模型稳定优于固定 token `32` 策略并在两个数据来源上改善，
+才实现新的 online waiting controller。
+
+## 19. Full-Trajectory Multi-Window 集成工作流
+
+### 19.1 为什么改为 full trajectory
+
+精确边界 v2 证明 `32/96/160` 数据完整性已经修复，但三个位置仍无法覆盖不同长度题目的完整推理
+过程，也无法观察连续动作造成的状态分布变化。新工作流因此使用因果网格：
+
+```text
+decision_start  = 32
+decision_stride = 32
+window_tokens   = 16
+tail_anchor     = diagnostic only
+```
+
+自然边界只在剩余 token 足以形成完整 affected-token 窗口时进入训练；临近 EOS 的 tail-anchor
+即使窗口不完整也只保留为诊断。模型输入只允许 `generated_tokens`、entropy/confidence、causal
+hidden、causal soft-stage probability 和 candidate ratio；完整轨迹长度、相对位置、hard stage
+与 tail 标记全部隔离在 `diagnostic_only`。
+
+### 19.2 Stage 与多窗口运行语义
+
+可信 hard stage 语义为：
+
+```text
+accepted_reasoning / confident_setup / confident_final /
+explicit_verification / unknown
+```
+
+低置信 argmax 必须为 `unknown`。Stage checkpoint 若实际使用完整轨迹位置，runtime 会硬失败；
+风险分析只使用 soft-stage probability，不使用 hard stage gate。
+
+`FixedMultiWindowController` 每次只剪一个 16-token 窗口，至少经过 16 token dense cooldown 后
+才能再次动作，达到 `max_windows` 后永久 dense。每个 runtime event 记录动作索引、完整动作历史、
+累计理论 exposure、hidden drift、boundary top-k logits 与完整 logits hash。
+
+### 19.3 自动 Gate
+
+总脚本依次运行：
+
+```text
+00_preflight
+01_dense_bank_smoke       # 过采样后固定 4 dense-correct/source
+02_dense_bank_pilot       # 过采样后固定 20 dense-correct/source + 5-fold grouped OOF
+03_fixed_multi_window_dev # 选择最高通过 exposure 的 behavior policy
+04_on_policy_smoke        # >=4 exact-replay valid problem/source
+```
+
+在上述阶段之前，总控还会运行 `python -m unittest discover -s tests`；失败时不会启动 GPU 工作。
+Pilot 的 grouped OOF 会分别比较 `action-only / causal-context / soft-stage / hidden /
+hidden+soft-stage`，因此能客观区分 hidden 本身的增益与 stage probability 的附加价值。
+
+Fixed dev 仅使用与最终测试集隔离的 GSM8K train 和 `math_full_minus_math500`，方向门槛为：
+
+```text
+average theoretical exposure >= 0.02
+paired accuracy delta >= -10%
+dense-correct flip <= 15%
+```
+
+On-policy collector 只在此前动作已经影响状态且 dense cooldown 完成后分支候选动作。重放必须复现
+完整 action schedule、token prefix、boundary 完整 logits hash/top-k、entropy/confidence 与 hidden；
+候选动作因 EOS 合法提前终止时仍保留为风险标签，避免系统性漏掉可能由剪枝触发的终止；只有既未
+完成窗口、也非 EOS 终止的动作才视为无效，且不会与 replay integrity failure 混为一谈。
+
+### 19.4 执行与产物
+
+```bash
+mkdir -p logs/07_stage_aware/10_full_trajectory_multi_window
+nohup env GPU_IDS=0,1,2,3,4,5,6,7 \
+PYTHON=/home/cike/jjy/envs/rasp_qwen3/bin/python \
+bash scripts/90_run_full_trajectory_multi_window_workflow.sh \
+> logs/07_stage_aware/10_full_trajectory_multi_window/launcher.log 2>&1 &
+
+tail -f logs/07_stage_aware/10_full_trajectory_multi_window/launcher.log
+```
+
+预计八卡全部 gate 通过时约 `5–14` 小时；任一 gate 失败会提前停止。最终首先查看：
+
+```text
+runs/07_stage_aware/10_full_trajectory_multi_window/workflow_gate.json
+runs/07_stage_aware/10_full_trajectory_multi_window/final_workflow_summary.json
+runs/07_stage_aware/10_full_trajectory_multi_window/final_workflow_report_zh.md
+```
+
+当前只报告 logical MLP mask 的理论 exposure，不宣称真实速度提升。本轮无论结果如何，
+`learned_multi_window_allowed=false`；后续必须扩大 on-policy bank 并通过 grouped OOF。

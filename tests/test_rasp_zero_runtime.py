@@ -10,7 +10,11 @@ from src.pruning.mlp_pruner import mlp_intermediate_channel_mask
 from src.rasp.activation_ranker import keep_mask_from_ranking, rank_intermediate_neurons
 from src.rasp.mlp_runtime import RuntimeMaskedQwen3MLP
 from src.main_collect_aligned_window_bank import token_divergence
-from src.rasp.greedy_decode import is_affected_window_decision
+from src.rasp.greedy_decode import (
+    RouterEvent,
+    _annotate_realized_action_windows,
+    is_affected_window_decision,
+)
 from src.rasp.budget_controller import FixedSingleWindowController, RuntimeObservation
 from src.rasp.window_sampling import boundary_positions
 from src.segmentation.rule_segmenter import segment_text
@@ -137,6 +141,25 @@ class RaspZeroRuntimeTest(unittest.TestCase):
     def test_aligned_window_records_only_action_affected_decisions(self) -> None:
         affected = [step for step in range(20) if is_affected_window_decision(step, 16)]
         self.assertEqual(affected, list(range(1, 17)))
+
+    def test_partial_action_is_valid_only_when_generation_ends_with_eos(self) -> None:
+        event = RouterEvent(
+            generated_tokens=32,
+            selected_ratio=0.2,
+            entropy=0.0,
+            confidence=1.0,
+            decision={"window_activated": True},
+        )
+        _annotate_realized_action_windows(
+            [event],
+            generated_tokens=40,
+            window_tokens=16,
+            ended_with_eos=True,
+        )
+        self.assertEqual(event.decision["realized_action_duration_tokens"], 7)
+        self.assertTrue(event.decision["terminated_by_eos"])
+        self.assertTrue(event.decision["action_completed_or_terminal"])
+        self.assertFalse(event.decision["dense_restored_after_window"])
 
 
 if __name__ == "__main__":

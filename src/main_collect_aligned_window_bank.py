@@ -8,7 +8,7 @@ import torch
 from tqdm import tqdm
 
 from src.data.format_prompt import build_prompt
-from src.metrics.answer_match import extract_answer
+from src.metrics.answer_match import answer_match, extract_answer
 from src.models.load_model import load_model_bundle
 from src.rasp.greedy_decode import greedy_decode_single_window_counterfactual
 from src.rasp.mlp_runtime import apply_runtime_mlp_masking_qwen3
@@ -56,6 +56,9 @@ def main() -> None:
     max_boundaries = bank_cfg.get("max_boundaries_per_example")
     boundary_sampling = str(bank_cfg.get("boundary_sampling", "prefix"))
     explicit_boundary_positions = bank_cfg.get("boundary_positions")
+    decision_start = bank_cfg.get("decision_start")
+    decision_stride = bank_cfg.get("decision_stride")
+    include_tail_anchor = bool(bank_cfg.get("include_tail_anchor", False))
     stage_cfg = cfg.get("stage_sensitivity")
     stage_probe = None
     recent_stage_tokens = 128
@@ -63,6 +66,8 @@ def main() -> None:
         stage_probe = RuntimeStageProbe(
             str(stage_cfg["checkpoint"]),
             float(stage_cfg["reasoning_threshold"]),
+            confidence_threshold=stage_cfg.get("confidence_threshold"),
+            require_causal_features=bool(stage_cfg.get("require_causal_features", False)),
         )
         recent_stage_tokens = int(stage_cfg.get("recent_tokens", 128))
     generation_cfg = cfg.get("generation", {})
@@ -72,7 +77,11 @@ def main() -> None:
     bundle = load_model_bundle(cfg["model"])
     apply_runtime_mlp_masking_qwen3(bundle.model, ratios=ratios)
     rows, probe_rows, hidden_states = [], [], []
-    trajectories = [row for row in read_jsonl(paths["trajectories"]) if bool(row.get("correct"))]
+    trajectories = [
+        row
+        for row in read_jsonl(paths["trajectories"])
+        if answer_match(str(row.get("completion", "")), str(row.get("gold", "")))
+    ]
     for item in tqdm(trajectories, desc="aligned-window-bank"):
         prompt = build_prompt(item["question"], bundle.tokenizer, cfg.get("prompt", {}))
         baseline_ids = item.get("generated_token_ids")
@@ -86,7 +95,24 @@ def main() -> None:
             max_boundaries,
             boundary_sampling,
             explicit_boundary_positions,
+            decision_start=decision_start,
+            decision_stride=decision_stride,
+            include_tail_anchor=include_tail_anchor,
         )
+        causal_positions = set(positions)
+        if boundary_sampling == "causal_grid" and include_tail_anchor:
+            causal_positions = set(
+                boundary_positions(
+                    len(baseline_ids),
+                    window_tokens,
+                    max_boundaries,
+                    boundary_sampling,
+                    explicit_boundary_positions,
+                    decision_start=decision_start,
+                    decision_stride=decision_stride,
+                    include_tail_anchor=False,
+                )
+            )
         for boundary_index, position in enumerate(positions):
             if position >= max_new_tokens:
                 continue
@@ -103,6 +129,18 @@ def main() -> None:
             )
             dense_answer = extract_answer(dense["completion"])
             baseline_answer = extract_answer(item["completion"])
+            expected_dense_window = [
+                int(value)
+                for value in baseline_ids[position : position + window_tokens + 1]
+            ]
+            replayed_dense_window = [
+                int(value)
+                for value in dense["generated_ids"][: len(expected_dense_window)]
+            ]
+            dense_replay_token_window_divergence = token_divergence(
+                expected_dense_window,
+                replayed_dense_window,
+            )
             stage_annotation = {}
             if stage_probe is not None:
                 dense_observation = dense["boundary_observation"]
@@ -124,6 +162,8 @@ def main() -> None:
                 stage_annotation["stage_position_definition"] = (
                     "generated_tokens_over_dense_trajectory_tokens_minus_one"
                 )
+            diagnostic_only = position not in causal_positions
+            boundary_role = "tail_anchor" if diagnostic_only else boundary_sampling
             for ratio in ratios:
                 result = dense if abs(ratio) < 1e-12 else greedy_decode_single_window_counterfactual(
                     bundle.model,
@@ -143,10 +183,20 @@ def main() -> None:
                     "boundary_index": boundary_index,
                     "segment_id": boundary_index,
                     "generated_tokens_at_boundary": position,
+                    "boundary_role": boundary_role,
+                    "controller_eligible": not diagnostic_only,
+                    "diagnostic_only": diagnostic_only,
                     "position": position / max(1, max_new_tokens),
                     "max_new_tokens": max_new_tokens,
                     "window_tokens": window_tokens,
                     "action_duration_tokens": min(window_tokens, len(result["window_ids"])),
+                    "dense_restored_after_window": bool(
+                        result["dense_restored_after_window"]
+                    ),
+                    "action_terminal_eos": bool(result["terminated_by_eos"]),
+                    "action_completed_or_terminal": bool(
+                        result["action_completed_or_terminal"]
+                    ),
                     "action_scope": "single_fixed_window_then_dense",
                     "action_window_alignment": "affected_next_token_decisions_v2",
                     "ranking_scope": "initial_prompt_prefill_fixed",
@@ -157,6 +207,13 @@ def main() -> None:
                     "baseline_answer": baseline_answer,
                     "dense_control_answer": dense_answer,
                     "dense_control_flipped_from_baseline": dense_answer != baseline_answer,
+                    "dense_replay_token_window_divergence": (
+                        dense_replay_token_window_divergence
+                    ),
+                    "dense_replay_token_window_exact": (
+                        dense_replay_token_window_divergence == 0.0
+                    ),
+                    "dense_replay_prefix_mismatches": len(dense["replay_mismatches"]),
                     "counterfactual_answer": answer,
                     "flipped": answer != dense_answer,
                     "window_token_divergence": token_divergence(dense["window_ids"], result["window_ids"]),
@@ -189,6 +246,9 @@ def main() -> None:
             "configured_max_boundaries_per_example": max_boundaries,
             "boundary_sampling": boundary_sampling,
             "configured_boundary_positions": explicit_boundary_positions,
+            "decision_start": decision_start,
+            "decision_stride": decision_stride,
+            "include_tail_anchor": include_tail_anchor,
             "action_scope": "single_fixed_window_then_dense",
             "action_window_alignment": "affected_next_token_decisions_v2",
             "ranking_scope": "initial_prompt_prefill_fixed",

@@ -5,7 +5,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from src.metrics.answer_match import answer_match
 from src.rasp.window_sampling import boundary_positions
+from src.rasp.config_fingerprint import config_fingerprint
 from src.utils.io import read_jsonl, read_yaml, write_json
 
 
@@ -55,9 +57,15 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         max_boundaries = cfg.get("max_boundaries_per_example")
         boundary_sampling = str(cfg.get("boundary_sampling", "prefix"))
         explicit_boundary_positions = cfg.get("boundary_positions")
+        decision_start = cfg.get("decision_start")
+        decision_stride = cfg.get("decision_stride")
+        include_tail_anchor = bool(cfg.get("include_tail_anchor", False))
         expected_boundary_keys = set()
         for trajectory in read_jsonl(trajectory_path):
-            if not bool(trajectory.get("correct")):
+            if not answer_match(
+                str(trajectory.get("completion", "")),
+                str(trajectory.get("gold", "")),
+            ):
                 continue
             token_ids = trajectory.get("generated_token_ids")
             if token_ids is None:
@@ -71,6 +79,9 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
                     max_boundaries,
                     boundary_sampling,
                     explicit_boundary_positions,
+                    decision_start=decision_start,
+                    decision_stride=decision_stride,
+                    include_tail_anchor=include_tail_anchor,
                 )
                 if position < max_new_tokens
             ]
@@ -94,10 +105,28 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
     replay_flip_rate = sum(
         int(bool(row.get("dense_control_flipped_from_baseline"))) for row in dense_rows
     ) / max(1, len(dense_rows))
+    controller_dense_rows = [
+        row for row in dense_rows if bool(row.get("controller_eligible", True))
+    ]
+    dense_replay_token_mismatch_rate = sum(
+        int(
+            not bool(row.get("dense_replay_token_window_exact", True))
+            or int(row.get("dense_replay_prefix_mismatches", 0)) > 0
+        )
+        for row in controller_dense_rows
+    ) / max(1, len(controller_dense_rows))
     max_replay_flip_rate = float(cfg.get("max_dense_replay_flip_rate", 0.05))
     if replay_flip_rate > max_replay_flip_rate:
         errors.append(
             f"Dense replay flip rate is high: {replay_flip_rate:.4f} > {max_replay_flip_rate:.4f}"
+        )
+    if (
+        str(cfg.get("boundary_sampling", "prefix")) == "causal_grid"
+        and dense_replay_token_mismatch_rate > max_replay_flip_rate
+    ):
+        errors.append(
+            "Dense replay token mismatch rate is high: "
+            f"{dense_replay_token_mismatch_rate:.4f} > {max_replay_flip_rate:.4f}"
         )
     ratio_counts = Counter(f"{float(row['ratio']):.2f}" for row in rows)
     token_sources = sorted({str(row.get("boundary_token_source")) for row in rows})
@@ -105,16 +134,53 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         errors.append(f"Formal aligned bank must use original generated token IDs, got {token_sources}")
     stage_cfg = config.get("stage_sensitivity")
     stage_counts = Counter()
+    trusted_stage_counts = Counter()
+    boundary_role_counts = Counter(str(row.get("boundary_role", "legacy")) for row in dense_rows)
+    controller_eligible_rows = controller_dense_rows
+    incomplete_action_rows = sum(
+        int(int(row.get("action_duration_tokens", 0)) < int(cfg.get("window_tokens", 16)))
+        for row in rows
+    )
+    invalid_controller_action_rows = sum(
+        int(
+            bool(row.get("controller_eligible", True))
+            and not bool(row.get("action_completed_or_terminal", False))
+        )
+        for row in rows
+    )
+    if str(cfg.get("boundary_sampling", "prefix")) == "causal_grid":
+        if any(int(row["generated_tokens_at_boundary"]) == 0 for row in controller_eligible_rows):
+            errors.append("causal_grid must not include token 0")
+        if any(bool(row.get("diagnostic_only")) for row in controller_eligible_rows):
+            errors.append("Controller-eligible causal_grid row cannot be diagnostic-only")
+        if invalid_controller_action_rows:
+            errors.append(
+                f"{invalid_controller_action_rows} controller-eligible causal-grid actions "
+                "are neither complete nor terminal"
+            )
+        if any(
+            bool(row.get("controller_eligible", True))
+            and not bool(row.get("dense_restored_after_window"))
+            and not bool(row.get("action_terminal_eos"))
+            for row in rows
+        ):
+            errors.append("A causal-grid action did not restore dense after one window")
     if stage_cfg:
         valid_stages = {"setup", "reasoning", "verification", "final"}
         for row in dense_rows:
             stage = row.get("operational_stage")
             stage_counts[str(stage)] += 1
+            trusted_stage_counts[str(row.get("trusted_stage", "missing"))] += 1
             if stage not in valid_stages:
                 errors.append(f"Stage sensitivity row has invalid operational stage: {stage}")
                 break
             if "stage_source" not in row or "reasoning_accepted" not in row:
                 errors.append("Stage sensitivity row is missing stage decision metadata")
+                break
+            if bool(stage_cfg.get("require_causal_features", False)) and not bool(
+                row.get("stage_probe_causal", False)
+            ):
+                errors.append("Stage sensitivity row uses a non-causal stage checkpoint")
                 break
             if (
                 row.get("stage_position_definition")
@@ -137,11 +203,19 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         "ratio_counts": dict(sorted(ratio_counts.items())),
         "dense_control_paired_flip_rate": dense_flip_rate,
         "dense_replay_flip_rate_from_baseline": replay_flip_rate,
+        "dense_replay_token_mismatch_rate": dense_replay_token_mismatch_rate,
         "configured_window_tokens": int(cfg.get("window_tokens", 16)),
         "configured_max_new_tokens": max_new_tokens,
         "configured_max_boundaries_per_example": cfg.get("max_boundaries_per_example"),
         "boundary_sampling": str(cfg.get("boundary_sampling", "prefix")),
         "configured_boundary_positions": cfg.get("boundary_positions"),
+        "configured_decision_start": cfg.get("decision_start"),
+        "configured_decision_stride": cfg.get("decision_stride"),
+        "configured_include_tail_anchor": bool(cfg.get("include_tail_anchor", False)),
+        "boundary_role_counts": dict(sorted(boundary_role_counts.items())),
+        "controller_eligible_boundaries": len(controller_eligible_rows),
+        "incomplete_action_rows": incomplete_action_rows,
+        "invalid_controller_action_rows": invalid_controller_action_rows,
         "action_scope": "single_fixed_window_then_dense",
         "action_window_alignment": "affected_next_token_decisions_v2",
         "ranking_scope": "initial_prompt_prefill_fixed",
@@ -154,6 +228,24 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
             "generated_tokens_over_dense_trajectory_tokens_minus_one" if stage_cfg else None
         ),
         "operational_stage_counts": dict(sorted(stage_counts.items())),
+        "trusted_stage_counts": dict(sorted(trusted_stage_counts.items())),
+        "stage_probe_causal": (
+            all(bool(row.get("stage_probe_causal", False)) for row in dense_rows)
+            if stage_cfg
+            else None
+        ),
+        "collection_config_fingerprint": config_fingerprint(
+            config,
+            (
+                "seed",
+                "model",
+                "prompt",
+                "data",
+                "generation",
+                "aligned_window_bank",
+                "stage_sensitivity",
+            ),
+        ),
     }
 
 
