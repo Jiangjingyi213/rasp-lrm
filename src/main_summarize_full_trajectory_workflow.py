@@ -184,6 +184,7 @@ def main() -> None:
         "full_trajectory_coverage": (
             {
                 "source_eligible_problems": pilot_data.get("source_eligible_problems"),
+                "empty_shards": pilot_data.get("empty_shards"),
                 "causal_boundary_count": pilot_data.get("causal_boundary_count"),
                 "tail_diagnostic_boundary_count": pilot_data.get(
                     "tail_diagnostic_boundary_count"

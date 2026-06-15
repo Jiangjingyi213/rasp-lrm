@@ -915,3 +915,17 @@ runs/07_stage_aware/10_full_trajectory_multi_window/final_workflow_report_zh.md
 
 当前只报告 logical MLP mask 的理论 exposure，不宣称真实速度提升。本轮无论结果如何，
 `learned_multi_window_allowed=false`；后续必须扩大 on-policy bank 并通过 grouped OOF。
+
+首次执行在 dense smoke 的 `math_train_s04` 停止。日志确认该 shard 的两道输入都不是
+dense-correct，因而没有任何合法 boundary；这是有效的空 shard，不是采集语义失败。采集器和
+validator 已改为显式记录并验证空 shard，且只在 source trajectories 确实不存在预期边界时
+接受。总量是否足够仍由每来源 dense-correct problem gate 决定，不能由空 shard 绕过。
+
+Smoke 中 math_train 实际得到 `7/12` 个 dense-correct problem，原 Pilot 默认读取 `32` 道输入
+很可能不足以稳定获得要求的 `20` 个有效问题。默认 math_train Pilot 输入过采样量因此提高到
+`48`，最终数据准备仍只固定选择 `20` 个 eligible problem，避免改变两来源的训练权重。
+
+同时修复了 counterfactual terminal 语义：`action_terminal_eos` 现在只表示 EOS 在 16-token
+动作窗口完成前发生；整段 continuation 最终正常 EOS 另记为 `continuation_ended_with_eos`。
+断点验证要求 `eos_before_action_window_complete_v1`，会自动拒绝并重采首次运行产生的旧语义
+shard，避免 terminal-EOS 剂量响应被错误解释。

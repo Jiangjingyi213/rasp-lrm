@@ -29,7 +29,7 @@ PROFILE_DEFAULTS = {
     },
     "dense_pilot": {
         "ratios": [0.0, 0.10, 0.20, 0.30, 0.40, 0.50],
-        "inputs": {"gsm8k_train": 32, "math_train": 32},
+        "inputs": {"gsm8k_train": 32, "math_train": 48},
         "offset": 100,
         "shard_size": 5,
         "max_dense_replay_flip_rate": 0.01,

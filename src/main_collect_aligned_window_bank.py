@@ -194,6 +194,7 @@ def main() -> None:
                         result["dense_restored_after_window"]
                     ),
                     "action_terminal_eos": bool(result["terminated_by_eos"]),
+                    "continuation_ended_with_eos": bool(result["ended_with_eos"]),
                     "action_completed_or_terminal": bool(
                         result["action_completed_or_terminal"]
                     ),
@@ -230,13 +231,26 @@ def main() -> None:
     write_jsonl(paths["counterfactuals"], rows)
     write_jsonl(paths["probe_dataset"], probe_rows)
     ensure_dir(Path(paths["probe_hidden_states"]).parent)
-    if not hidden_states:
-        raise ValueError("Aligned window bank produced no boundary states")
-    torch.save(torch.stack(hidden_states), paths["probe_hidden_states"])
+    hidden_tensor = (
+        torch.stack(hidden_states)
+        if hidden_states
+        else torch.empty((0,), dtype=torch.float32)
+    )
+    torch.save(hidden_tensor, paths["probe_hidden_states"])
     write_json(
         paths["aligned_window_bank_summary"],
         {
             "method": "rasp_phase_b_aligned_window_bank_v2",
+            "empty_shard": not bool(rows),
+            "empty_reason": (
+                None
+                if rows
+                else (
+                    "no_dense_correct_trajectories"
+                    if not trajectories
+                    else "no_eligible_boundaries"
+                )
+            ),
             "dense_correct_trajectories": len(trajectories),
             "boundaries": len(rows) // len(ratios),
             "counterfactual_rows": len(rows),
@@ -251,6 +265,7 @@ def main() -> None:
             "include_tail_anchor": include_tail_anchor,
             "action_scope": "single_fixed_window_then_dense",
             "action_window_alignment": "affected_next_token_decisions_v2",
+            "action_terminal_semantics": "eos_before_action_window_complete_v1",
             "ranking_scope": "initial_prompt_prefill_fixed",
             "boundary_token_sources": sorted({row["boundary_token_source"] for row in rows}),
             "stage_sensitivity_enabled": stage_probe is not None,

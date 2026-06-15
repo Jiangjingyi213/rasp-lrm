@@ -35,6 +35,7 @@ ok = (
     v.get("status") == "ok"
     and v.get("ratios") == b["ratios"]
     and v.get("boundary_sampling") == "causal_grid"
+    and v.get("action_terminal_semantics") == "eos_before_action_window_complete_v1"
     and v.get("configured_decision_start") == b["decision_start"]
     and v.get("configured_decision_stride") == b["decision_stride"]
     and v.get("configured_include_tail_anchor") is True

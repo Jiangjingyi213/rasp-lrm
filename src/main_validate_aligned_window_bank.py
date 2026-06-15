@@ -51,6 +51,7 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
     )
     if incomplete:
         errors.append(f"{incomplete} boundaries do not contain the complete ratio grid")
+    expected_boundary_keys: set[tuple[str, str, int]] | None = None
     trajectory_path = paths.get("trajectories")
     if trajectory_path and Path(trajectory_path).exists():
         window_tokens = int(cfg.get("window_tokens", 16))
@@ -93,6 +94,8 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
             errors.append(
                 "Aligned bank boundary coverage does not match configured dense-correct trajectories"
             )
+    if not rows and expected_boundary_keys is None:
+        errors.append("Empty aligned bank cannot be validated without source trajectories")
     hidden_indices = [int(row["hidden_index"]) for row in probe_rows]
     if hidden_indices != list(range(len(probe_rows))):
         errors.append("Probe hidden indices are not contiguous")
@@ -130,7 +133,7 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         )
     ratio_counts = Counter(f"{float(row['ratio']):.2f}" for row in rows)
     token_sources = sorted({str(row.get("boundary_token_source")) for row in rows})
-    if token_sources != ["trajectory_generated_token_ids"]:
+    if rows and token_sources != ["trajectory_generated_token_ids"]:
         errors.append(f"Formal aligned bank must use original generated token IDs, got {token_sources}")
     stage_cfg = config.get("stage_sensitivity")
     stage_counts = Counter()
@@ -149,6 +152,12 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         for row in rows
     )
     if str(cfg.get("boundary_sampling", "prefix")) == "causal_grid":
+        if any(
+            "action_terminal_eos" not in row
+            or "continuation_ended_with_eos" not in row
+            for row in rows
+        ):
+            errors.append("Causal-grid rows are missing explicit terminal-EOS semantics")
         if any(int(row["generated_tokens_at_boundary"]) == 0 for row in controller_eligible_rows):
             errors.append("causal_grid must not include token 0")
         if any(bool(row.get("diagnostic_only")) for row in controller_eligible_rows):
@@ -165,6 +174,14 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
             for row in rows
         ):
             errors.append("A causal-grid action did not restore dense after one window")
+        if any(
+            bool(row.get("dense_restored_after_window"))
+            and bool(row.get("action_terminal_eos"))
+            for row in rows
+        ):
+            errors.append(
+                "A completed action window cannot also terminate early by EOS"
+            )
     if stage_cfg:
         valid_stages = {"setup", "reasoning", "verification", "final"}
         for row in dense_rows:
@@ -197,6 +214,10 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "ok" if not errors else "failed",
         "errors": errors,
+        "empty_shard": not bool(rows),
+        "empty_shard_verified": bool(
+            not rows and expected_boundary_keys is not None and not expected_boundary_keys
+        ),
         "boundaries": len(grouped),
         "counterfactual_rows": len(rows),
         "ratios": ratios,
@@ -218,6 +239,7 @@ def validate_aligned_window_bank(config: dict[str, Any]) -> dict[str, Any]:
         "invalid_controller_action_rows": invalid_controller_action_rows,
         "action_scope": "single_fixed_window_then_dense",
         "action_window_alignment": "affected_next_token_decisions_v2",
+        "action_terminal_semantics": "eos_before_action_window_complete_v1",
         "ranking_scope": "initial_prompt_prefill_fixed",
         "boundary_token_sources": token_sources,
         "stage_sensitivity_enabled": bool(stage_cfg),

@@ -322,6 +322,7 @@ def greedy_decode_replay_history_counterfactual(
     eos_ids = {int(eos_ids)} if isinstance(eos_ids, int) else {int(item) for item in (eos_ids or [])}
     generated_ids: list[int] = []
     affected_window_ids: list[int] = []
+    ended_with_eos = False
     terminated_by_eos = False
     remaining = max_new_tokens - len(forced_prefix_ids)
     for step in range(remaining):
@@ -331,7 +332,8 @@ def greedy_decode_replay_history_counterfactual(
         if is_affected_window_decision(step, window_tokens):
             affected_window_ids.append(token_id)
         if token_id in eos_ids:
-            terminated_by_eos = True
+            ended_with_eos = True
+            terminated_by_eos = len(affected_window_ids) < window_tokens
             set_runtime_mlp_ratio(model, 0.0)
             break
         outputs = model(
@@ -363,6 +365,7 @@ def greedy_decode_replay_history_counterfactual(
         "boundary_logits_sha256": boundary_logits_sha256,
         "replay_mismatches": replay_mismatches,
         "dense_restored_after_window": len(affected_window_ids) == window_tokens,
+        "ended_with_eos": ended_with_eos,
         "terminated_by_eos": terminated_by_eos,
         "action_completed_or_terminal": (
             len(affected_window_ids) == window_tokens or terminated_by_eos
@@ -419,6 +422,7 @@ def greedy_decode_single_window_counterfactual(
     generated_ids: list[int] = []
     affected_window_ids: list[int] = []
     window_end_hidden = None
+    ended_with_eos = False
     terminated_by_eos = False
     remaining = max_new_tokens - len(forced_prefix_ids)
     for step in range(remaining):
@@ -430,7 +434,8 @@ def greedy_decode_single_window_counterfactual(
         if is_affected_window_decision(step, window_tokens):
             affected_window_ids.append(token_id)
         if token_id in eos_ids:
-            terminated_by_eos = True
+            ended_with_eos = True
+            terminated_by_eos = len(affected_window_ids) < window_tokens
             set_runtime_mlp_ratio(model, 0.0)
             break
         outputs = model(
@@ -455,6 +460,7 @@ def greedy_decode_single_window_counterfactual(
         "boundary_observation": observation,
         "replay_mismatches": replay_mismatches,
         "dense_restored_after_window": len(affected_window_ids) == window_tokens,
+        "ended_with_eos": ended_with_eos,
         "terminated_by_eos": terminated_by_eos,
         "action_completed_or_terminal": (
             len(affected_window_ids) == window_tokens or terminated_by_eos

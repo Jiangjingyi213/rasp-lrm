@@ -45,6 +45,7 @@ def main() -> None:
     manifest = read_json(args.manifest)
     grouped: dict[tuple[str, str, int], list[tuple[dict[str, Any], torch.Tensor]]] = defaultdict(list)
     validations = []
+    empty_shards = 0
     source_problems: dict[str, set[str]] = defaultdict(set)
     expected_ratios = None
     collection_signature = None
@@ -75,9 +76,12 @@ def main() -> None:
         root = Path(item["run_dir"])
         validation = read_json(root / "07_full_trajectory_bank_validation.json")
         validations.append(validation)
+        empty_shards += int(bool(validation.get("empty_shard")))
         if (
             validation.get("status") != "ok"
             or validation.get("boundary_sampling") != "causal_grid"
+            or validation.get("action_terminal_semantics")
+            != "eos_before_action_window_complete_v1"
             or not validation.get("stage_sensitivity_enabled")
             or validation.get("stage_sensitivity_diagnostic_only") is not True
             or validation.get("collection_config_fingerprint")
@@ -306,6 +310,7 @@ def main() -> None:
                 for stage, name in sorted(stage_ratio_rows)
             ],
             "shards": len(validations),
+            "empty_shards": empty_shards,
             "shards_with_dense_replay_mismatch": replay_mismatch_boundaries,
             "dense_replay_mismatch_rate": (
                 estimated_replay_mismatches / total_validated_boundaries

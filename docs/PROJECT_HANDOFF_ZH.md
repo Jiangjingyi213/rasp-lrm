@@ -628,3 +628,19 @@ bash scripts/90_run_full_trajectory_multi_window_workflow.sh \
 `final_workflow_report_zh.md`。本轮最终状态固定为
 `learned_multi_window_allowed=false`；只有扩大 on-policy bank 并通过 problem-grouped OOF 后
 才允许训练 learned multi-window controller。
+
+首次八卡 smoke 在 `math_train_s04` 停止：该 shard 的两道输入均未被 dense 正确回答，因此
+合法地产生 `0` 个可采集边界，但旧采集器将其误判为致命错误。现已修复为空 shard 可验证语义：
+只有当 source trajectory 确实不产生任何预期边界时，validator 才接受空 shard；每来源
+`4/20` 个有效 dense-correct problem 的总量要求仍由阶段 gate 严格检查。断点重跑会跳过已经
+通过 validation 的非空 shard。
+
+本次 smoke 同时观测到 math_train 的 dense-correct 率约为 `7/12`。因此 Pilot 的默认
+math_train 输入过采样量已由 `32` 提高到 `48`；最终仍只固定保留 `20` 个 eligible
+dense-correct problem，不改变两来源的分析样本量，只降低长时间采集后因有效题不足而失败的概率。
+
+检查部分 smoke 产物时还发现，旧 counterfactual 实现把“续写最终以 EOS 结束”误记为
+`action_terminal_eos`，导致完整 16-token 窗口也被标成 terminal。该字段现已严格改为“EOS 在
+动作窗口完成前发生”，并单独记录 `continuation_ended_with_eos`。断点校验会拒绝旧 terminal
+语义，因此首次 smoke 的 9 个已完成 shard 需要重采；旧产物的 final-answer flip 和 dense replay
+检查仍可用于诊断，但其 terminal-EOS 统计不得使用。
