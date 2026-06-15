@@ -16,7 +16,7 @@ from src.baselines.llm_pruner_mlp_qwen3 import (
 )
 from src.data.format_prompt import build_prompt
 from src.data.load_gsm8k import load_tasks
-from src.metrics.answer_match import answer_match, extract_answer
+from src.metrics.answer_match import answer_match, extract_answer, math_verify_available
 from src.models.hooks import model_device
 from src.models.load_model import load_model_bundle
 from src.utils.io import append_jsonl, ensure_dir, read_yaml, write_json
@@ -102,6 +102,12 @@ def generate_text_with_ids(bundle, prompt: str, generation_config: dict) -> tupl
     if do_sample:
         generate_kwargs["temperature"] = generation_config.get("temperature", 0.7)
         generate_kwargs["top_p"] = generation_config.get("top_p", 1.0)
+        if "top_k" in generation_config:
+            generate_kwargs["top_k"] = int(generation_config["top_k"])
+        if "min_p" in generation_config:
+            generate_kwargs["min_p"] = float(generation_config["min_p"])
+    if "repetition_penalty" in generation_config:
+        generate_kwargs["repetition_penalty"] = float(generation_config["repetition_penalty"])
     out = bundle.model.generate(
         **inputs,
         **generate_kwargs,
@@ -175,6 +181,11 @@ def main() -> None:
             "completion": completion,
             "prediction": extract_answer(completion),
             "correct": answer_match(completion, task.get("gold", "")),
+            "grader": (
+                "lightweight_plus_math_verify"
+                if math_verify_available()
+                else "lightweight_fallback"
+            ),
         }
         if bool(cfg.get("generation", {}).get("store_generated_token_ids", False)):
             row["generated_token_ids"] = generated_token_ids

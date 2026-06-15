@@ -3,16 +3,23 @@ from __future__ import annotations
 from typing import Any
 
 
-def reasoning_prompt(question: str) -> str:
+def answer_instruction(prompt_config: dict[str, Any] | None = None) -> str:
+    prompt_config = prompt_config or {}
+    if prompt_config.get("answer_format") == "boxed":
+        return "Solve the problem step by step. Put the final answer in \\boxed{}."
+    return "Solve the problem step by step. Put the final answer after 'Final answer:'."
+
+
+def reasoning_prompt(question: str, prompt_config: dict[str, Any] | None = None) -> str:
     return (
-        "Solve the problem step by step. Put the final answer after 'Final answer:'.\n\n"
+        f"{answer_instruction(prompt_config)}\n\n"
         f"Problem: {question.strip()}\n\n"
         "Reasoning:\n"
     )
 
 
-def prompt_with_prefix(question: str, prefix: str) -> str:
-    return reasoning_prompt(question) + prefix.strip() + "\n"
+def prompt_with_prefix(question: str, prefix: str, prompt_config: dict[str, Any] | None = None) -> str:
+    return reasoning_prompt(question, prompt_config) + prefix.strip() + "\n"
 
 
 def build_assistant_continuation_prompt(
@@ -42,10 +49,14 @@ def build_prompt(
 ) -> str:
     prompt_config = prompt_config or {}
     if not prompt_config.get("use_chat_template", False):
-        return prompt_with_prefix(question, prefix) if prefix else reasoning_prompt(question)
+        return (
+            prompt_with_prefix(question, prefix, prompt_config)
+            if prefix
+            else reasoning_prompt(question, prompt_config)
+        )
 
     user_content = (
-        "Solve the problem step by step. Put the final answer after 'Final answer:'.\n\n"
+        f"{answer_instruction(prompt_config)}\n\n"
         f"Problem: {question.strip()}"
     )
     if prefix:

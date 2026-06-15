@@ -4,6 +4,13 @@ import re
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 
+try:
+    from math_verify import parse as math_verify_parse
+    from math_verify import verify as math_verify_verify
+except ImportError:  # Keep lightweight workflows usable without the optional grader.
+    math_verify_parse = None
+    math_verify_verify = None
+
 
 FINAL_PATTERNS = [
     re.compile(r"final answer\s*[:：]?\s*(.*)", re.IGNORECASE | re.DOTALL),
@@ -143,7 +150,26 @@ def _as_fraction(value: str) -> Fraction | None:
         return None
 
 
-def answer_match(prediction: str, gold: str) -> bool:
+def math_verify_available() -> bool:
+    return math_verify_parse is not None and math_verify_verify is not None
+
+
+def _math_verify_match(prediction: str, gold: str) -> bool:
+    if not math_verify_available():
+        return False
+    try:
+        gold_parsed = math_verify_parse(gold)
+        prediction_parsed = math_verify_parse(prediction)
+        if not gold_parsed or not prediction_parsed:
+            return False
+        return bool(math_verify_verify(gold_parsed, prediction_parsed))
+    except Exception:
+        # Math-Verify intentionally handles many malformed outputs, but a
+        # grader failure must never abort a long generation/evaluation run.
+        return False
+
+
+def answer_match(prediction: str, gold: str, use_math_verify: bool = True) -> bool:
     pred = extract_answer(prediction)
     gold_answer = extract_answer(gold)
     pred_num = _as_decimal(pred)
@@ -160,5 +186,6 @@ def answer_match(prediction: str, gold: str) -> bool:
     # may place the correct category in a final-answer sentence without boxing
     # it, so accept a single alphabetic gold token only as a whole word.
     if re.fullmatch(r"[A-Za-z]+", gold_answer):
-        return bool(re.search(rf"\b{re.escape(gold_answer)}\b", pred, re.IGNORECASE))
-    return False
+        if re.search(rf"\b{re.escape(gold_answer)}\b", pred, re.IGNORECASE):
+            return True
+    return use_math_verify and _math_verify_match(prediction, gold)

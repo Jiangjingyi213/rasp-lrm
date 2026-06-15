@@ -1,0 +1,29 @@
+seed: 1
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: bfloat16
+  device_map: auto
+  trust_remote_code: true
+
+prompt:
+  use_chat_template: true
+  enable_thinking: true
+  answer_format: boxed
+
+data:
+  dataset: math500
+  name_or_path: HuggingFaceH4/MATH-500
+  split: test
+
+generation:
+  max_input_tokens: 4096
+  max_new_tokens: 32768
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  overwrite_output: true
+
+paths:
+  run_dir: runs/02_baselines/eval_dense_qwen3_math500_official_thinking
+  trajectories: runs/02_baselines/eval_dense_qwen3_math500_official_thinking/01_trajectories.jsonl
