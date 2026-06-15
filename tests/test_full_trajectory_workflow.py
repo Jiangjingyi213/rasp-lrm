@@ -6,8 +6,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.main_summarize_full_trajectory_workflow import main
+from src.main_summarize_on_policy_smoke import main as summarize_on_policy
 from src.rasp.config_fingerprint import config_fingerprint
-from src.utils.io import read_json, write_json
+from src.utils.io import read_json, write_json, write_jsonl
 
 
 class FullTrajectoryWorkflowTest(unittest.TestCase):
@@ -98,6 +99,74 @@ class FullTrajectoryWorkflowTest(unittest.TestCase):
             self.assertTrue(summary["completed"])
             self.assertTrue(summary["on_policy_bank_expansion_allowed"])
             self.assertFalse(summary["learned_multi_window_allowed"])
+
+    def test_on_policy_summary_separates_harmful_and_beneficial_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = []
+            for dataset in ("gsm8k", "math_train"):
+                run_dir = root / dataset
+                manifest.append({"dataset": dataset, "run_dir": str(run_dir)})
+                write_json(
+                    run_dir / "03_on_policy_validation.json",
+                    {
+                        "status": "ok",
+                        "behavior_policy_tag": "fixed",
+                        "risk_label_semantics": "harmful_flip_conditioned_on_correct_dense_control_v1",
+                        "valid_problems": 4,
+                        "boundaries": 2,
+                        "replay_failures": 0,
+                        "invalid_candidate_boundaries": 0,
+                        "rows_with_prior_action": 2,
+                        "rows_with_correct_on_policy_dense_control": 1,
+                        "checks": {
+                            "all_rows_originate_from_dense_correct_problems": True
+                        },
+                    },
+                )
+                write_jsonl(
+                    run_dir / "01_on_policy_dataset.jsonl",
+                    [
+                        {
+                            "candidate_ratios": [0.0, 0.1],
+                            "candidate_flipped_from_on_policy_dense_control": [False, True],
+                            "candidate_harmful_flip": [False, True],
+                            "candidate_beneficial_correction": [False, False],
+                            "candidate_terminal_eos": [False, False],
+                            "on_policy_dense_control_correct": True,
+                        },
+                        {
+                            "candidate_ratios": [0.0, 0.1],
+                            "candidate_flipped_from_on_policy_dense_control": [False, True],
+                            "candidate_harmful_flip": [False, False],
+                            "candidate_beneficial_correction": [False, True],
+                            "candidate_terminal_eos": [False, False],
+                            "on_policy_dense_control_correct": False,
+                        },
+                    ],
+                )
+            manifest_path = root / "manifest.json"
+            write_json(manifest_path, manifest)
+            with patch(
+                "sys.argv",
+                [
+                    "main_summarize_on_policy_smoke",
+                    "--root",
+                    str(root),
+                    "--manifest",
+                    str(manifest_path),
+                ],
+            ):
+                summarize_on_policy()
+            summary = read_json(root / "on_policy_smoke_summary.json")
+            dose = summary["candidate_dose_response"][0]
+            self.assertEqual(dose["answer_changes"], 4)
+            self.assertEqual(dose["harmful_flips"], 2)
+            self.assertEqual(dose["beneficial_corrections"], 2)
+            self.assertEqual(dose["harmful_flip_rate_among_correct_controls"], 1.0)
+            self.assertEqual(
+                dose["beneficial_correction_rate_among_incorrect_controls"], 1.0
+            )
 
 
 if __name__ == "__main__":

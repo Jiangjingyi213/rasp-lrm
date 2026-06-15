@@ -19,7 +19,11 @@ def main() -> None:
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     sources: dict[str, dict[str, Any]] = {}
     ratio_rows = Counter()
-    ratio_flips = Counter()
+    ratio_answer_changes = Counter()
+    ratio_harmful_flips = Counter()
+    ratio_beneficial_corrections = Counter()
+    ratio_correct_controls = Counter()
+    ratio_incorrect_controls = Counter()
     ratio_terminal_eos = Counter()
     validations_ok = True
     behavior_tags = set()
@@ -29,10 +33,21 @@ def main() -> None:
         validation = read_json(run_dir / "03_on_policy_validation.json")
         rows = read_jsonl(run_dir / "01_on_policy_dataset.jsonl")
         behavior_tags.add(str(validation["behavior_policy_tag"]))
-        validations_ok = validations_ok and validation.get("status") == "ok"
+        validations_ok = (
+            validations_ok
+            and validation.get("status") == "ok"
+            and validation.get("risk_label_semantics")
+            == "harmful_flip_conditioned_on_correct_dense_control_v1"
+        )
         sources[dataset] = {
             "status": validation.get("status"),
             "valid_problems": int(validation.get("valid_problems", 0)),
+            "eligible_dense_correct_problems": int(
+                validation.get("eligible_dense_correct_problems", 0)
+            ),
+            "eligible_behavior_correct_problems": int(
+                validation.get("eligible_behavior_correct_problems", 0)
+            ),
             "boundaries": int(validation.get("boundaries", 0)),
             "replay_failures": int(validation.get("replay_failures", 0)),
             "invalid_candidate_boundaries": int(
@@ -48,14 +63,24 @@ def main() -> None:
             "checks": validation.get("checks", {}),
         }
         for row in rows:
-            for ratio, flipped, terminal in zip(
+            for ratio, changed, harmful, beneficial, terminal in zip(
                 row["candidate_ratios"][1:],
                 row["candidate_flipped_from_on_policy_dense_control"][1:],
+                row["candidate_harmful_flip"][1:],
+                row["candidate_beneficial_correction"][1:],
                 row["candidate_terminal_eos"][1:],
             ):
                 name = f"{float(ratio):.2f}"
                 ratio_rows[name] += 1
-                ratio_flips[name] += int(bool(flipped))
+                ratio_answer_changes[name] += int(bool(changed))
+                ratio_harmful_flips[name] += int(bool(harmful))
+                ratio_beneficial_corrections[name] += int(bool(beneficial))
+                ratio_correct_controls[name] += int(
+                    bool(row["on_policy_dense_control_correct"])
+                )
+                ratio_incorrect_controls[name] += int(
+                    not bool(row["on_policy_dense_control_correct"])
+                )
                 ratio_terminal_eos[name] += int(bool(terminal))
 
     checks = {
@@ -69,6 +94,10 @@ def main() -> None:
             int(value["boundaries"]) == int(value["rows_with_prior_action"])
             for value in sources.values()
         ),
+        "all_rows_originate_from_dense_correct_problems": all(
+            bool(value["checks"].get("all_rows_originate_from_dense_correct_problems"))
+            for value in sources.values()
+        ),
         "all_replays_exact": all(int(value["replay_failures"]) == 0 for value in sources.values()),
     }
     passed = all(checks.values())
@@ -76,6 +105,7 @@ def main() -> None:
         root / "on_policy_smoke_summary.json",
         {
             "schema": "rasp_on_policy_action_risk_smoke_aggregate_v1",
+            "risk_label_semantics": "harmful_flip_conditioned_on_correct_dense_control_v1",
             "passed": passed,
             "behavior_policy_tag": next(iter(behavior_tags)) if len(behavior_tags) == 1 else None,
             "sources": sources,
@@ -83,8 +113,21 @@ def main() -> None:
                 {
                     "ratio": float(name),
                     "rows": int(ratio_rows[name]),
-                    "flips": int(ratio_flips[name]),
-                    "flip_rate": ratio_flips[name] / max(1, ratio_rows[name]),
+                    "answer_changes": int(ratio_answer_changes[name]),
+                    "answer_change_rate": ratio_answer_changes[name]
+                    / max(1, ratio_rows[name]),
+                    "correct_dense_controls": int(ratio_correct_controls[name]),
+                    "harmful_flips": int(ratio_harmful_flips[name]),
+                    "harmful_flip_rate_among_correct_controls": ratio_harmful_flips[
+                        name
+                    ]
+                    / max(1, ratio_correct_controls[name]),
+                    "incorrect_dense_controls": int(ratio_incorrect_controls[name]),
+                    "beneficial_corrections": int(ratio_beneficial_corrections[name]),
+                    "beneficial_correction_rate_among_incorrect_controls": ratio_beneficial_corrections[
+                        name
+                    ]
+                    / max(1, ratio_incorrect_controls[name]),
                     "terminal_eos": int(ratio_terminal_eos[name]),
                     "terminal_eos_rate": ratio_terminal_eos[name]
                     / max(1, ratio_rows[name]),

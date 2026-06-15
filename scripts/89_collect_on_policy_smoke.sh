@@ -42,6 +42,7 @@ expected = config_fingerprint(
 raise SystemExit(
     0
     if v.get("status") == "ok"
+    and v.get("risk_label_semantics") == "harmful_flip_conditioned_on_correct_dense_control_v1"
     and int(v.get("valid_problems", 0)) >= 4
     and v.get("on_policy_config_fingerprint") == expected
     and Path(c["paths"]["on_policy_dataset"]).is_file()

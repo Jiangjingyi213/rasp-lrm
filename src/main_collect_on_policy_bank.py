@@ -98,16 +98,34 @@ def main() -> None:
     logits_tolerance = float(bank["replay_logits_tolerance"])
     output_rows, output_hidden = [], []
     attempted_problems = valid_problems = replay_failures = invalid_candidate_boundaries = 0
+    eligible_dense_correct_problems = eligible_behavior_correct_problems = 0
     for problem in sorted(behavior_rows):
         if valid_problems >= max_problems:
             break
         behavior = behavior_rows[problem]
         dense = dense_rows[problem]
-        if bool(bank.get("require_dense_and_behavior_correct", True)) and not (
-            answer_match(str(dense["completion"]), str(dense.get("gold", "")))
-            and answer_match(str(behavior["completion"]), str(behavior.get("gold", "")))
-        ):
+        dense_correct = answer_match(str(dense["completion"]), str(dense.get("gold", "")))
+        behavior_correct = answer_match(
+            str(behavior["completion"]), str(behavior.get("gold", ""))
+        )
+        require_dense_correct = bool(
+            bank.get(
+                "require_dense_correct",
+                bank.get("require_dense_and_behavior_correct", True),
+            )
+        )
+        require_behavior_correct = bool(
+            bank.get(
+                "require_behavior_correct",
+                bank.get("require_dense_and_behavior_correct", False),
+            )
+        )
+        if require_dense_correct and not dense_correct:
             continue
+        if require_behavior_correct and not behavior_correct:
+            continue
+        eligible_dense_correct_problems += int(dense_correct)
+        eligible_behavior_correct_problems += int(behavior_correct)
         attempted_problems += 1
         runtime = behavior["runtime"]
         token_ids = [int(value) for value in runtime.get("generated_token_ids", [])]
@@ -219,10 +237,16 @@ def main() -> None:
             control_correct = answer_match(
                 completions[0], str(behavior.get("gold", ""))
             )
+            candidate_correct = [
+                answer_match(value, str(behavior.get("gold", "")))
+                for value in completions
+            ]
             problem_rows.append(
                 {
                     "dataset": behavior["dataset"],
                     "id": behavior["id"],
+                    "dense_trajectory_correct": dense_correct,
+                    "behavior_trajectory_correct": behavior_correct,
                     "generated_tokens_at_boundary": boundary,
                     "max_new_tokens": max_new_tokens,
                     "entropy": float(observation.entropy),
@@ -247,6 +271,14 @@ def main() -> None:
                     "candidate_flipped_from_on_policy_dense_control": [
                         extract_answer(value) != control_answer for value in completions
                     ],
+                    "candidate_harmful_flip": [
+                        bool(control_correct and not value)
+                        for value in candidate_correct
+                    ],
+                    "candidate_beneficial_correction": [
+                        bool(not control_correct and value)
+                        for value in candidate_correct
+                    ],
                     "candidate_window_token_divergence": [
                         token_divergence(control["window_ids"], branch["window_ids"])
                         for branch in branches
@@ -254,9 +286,7 @@ def main() -> None:
                     "candidate_terminal_eos": [
                         bool(branch["terminated_by_eos"]) for branch in branches
                     ],
-                    "candidate_correct": [
-                        answer_match(value, str(behavior.get("gold", ""))) for value in completions
-                    ],
+                    "candidate_correct": candidate_correct,
                     "candidate_answers": [extract_answer(value) for value in completions],
                     "replay_prefix_tokens": boundary,
                     "replay_verified": True,
@@ -273,10 +303,13 @@ def main() -> None:
         torch.save(torch.stack(output_hidden), paths["on_policy_hidden_states"])
     summary = {
         "schema": "rasp_on_policy_action_risk_smoke_v1",
+        "risk_label_semantics": "harmful_flip_conditioned_on_correct_dense_control_v1",
         "dataset": next(iter(behavior_rows))[0] if behavior_rows else "unknown",
         "behavior_policy_tag": bank["behavior_policy_tag"],
         "attempted_problems": attempted_problems,
         "valid_problems": valid_problems,
+        "eligible_dense_correct_problems": eligible_dense_correct_problems,
+        "eligible_behavior_correct_problems": eligible_behavior_correct_problems,
         "boundaries": len(output_rows),
         "replay_failures": replay_failures,
         "invalid_candidate_boundaries": invalid_candidate_boundaries,
@@ -317,6 +350,8 @@ def main() -> None:
         "minimum_valid_problems": valid_problems >= max_problems,
         "contains_prior_action_states": bool(output_rows)
         and all(int(row["prior_action_count"]) > 0 for row in output_rows),
+        "all_rows_originate_from_dense_correct_problems": bool(output_rows)
+        and all(bool(row["dense_trajectory_correct"]) for row in output_rows),
         "candidate_respects_dense_cooldown": bool(output_rows)
         and all(
             int(row["tokens_since_last_action"]) >= window_tokens + cooldown_tokens

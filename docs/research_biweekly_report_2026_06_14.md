@@ -1,257 +1,398 @@
 # RASP-LRM 项目双周进展汇报
 
-**汇报周期：** 2026-05-30 至 2026-06-14  
+**汇报周期：** 2026-05-30 至 2026-06-15
 **项目方向：** Reasoning-Aware Dynamic Structured Pruning for Large Reasoning Models
 
 ## 1. 本阶段工作概览
 
-Motivation 实验表明，大语言模型在不同推理状态下对结构化剪枝的敏感程度存在差异，固定剪枝策略难以同时兼顾推理准确率和剪枝强度。因此，过去两周的主要任务是将这一观察推进为可执行的动态剪枝方法。
+Motivation 实验表明，LRM 在不同推理状态下对结构化剪枝的敏感程度不同，固定剪枝策略难以同时
+兼顾推理正确率与剪枝强度。过去两周的核心任务，是将该观察推进为能够在真实生成过程中执行的
+动态剪枝方法。
 
-本阶段围绕以下问题进行了验证：
+本阶段先后完成了：
 
-1. Hidden state 能否表示当前推理阶段；
-2. 当前推理上下文能否预测执行某个剪枝动作的风险；
-3. 离线训练得到的风险模型能否在新题上进行在线剪枝决策；
-4. 当前实验设计中还有哪些因素阻碍控制器真正学习剪枝时机。
+1. 检查 uncertainty、hidden、stage 等特征能否预测局部剪枝风险；
+2. 建立严格的 Action-Risk 离线采集、problem-level OOF 和在线 paired evaluation 框架；
+3. 定位单窗口 learned controller 总在 token 32 执行动作的原因；
+4. 从固定 `32/96/160` 边界扩展到完整因果轨迹；
+5. 实现可重复执行多个 16-token 剪枝窗口的 runtime；
+6. 实现能够精确重放历史剪枝动作的 on-policy bank collector；
+7. 完成 Full-Trajectory Multi-Window 自动工作流的端到端验证。
 
-经过多轮离线和在线实验，目前项目已经从宽泛的“根据 uncertainty 或 hidden 决定是否剪枝”，收束为更明确的 **Stage-Aware Action-Risk Controller**：
-
-```text
-hidden state
-  → 识别当前推理状态
-
-causal context + stage + candidate action
-  → 预测执行具体剪枝动作的风险
-
-online controller
-  → 选择何时剪枝，以及采用多大的剪枝率
-```
-
-## 2. 前期实验的主要结论
-
-### 2.1 有效结论
-
-前期实验得到以下对当前方法设计仍然有效的结论：
-
-- **Hidden state 包含明显的推理阶段信息。** Stage probe 能够较好地区分 `setup / reasoning / final`，说明从 reasoning stage 层面研究剪枝行为是可行的。
-- **剪枝风险具有明显的状态差异和剂量响应。** 随着剪枝率增加，最终答案错误率整体上升；但相同剪枝率在不同题目和不同上下文中的风险并不相同。
-- **因果上下文能够帮助预测剪枝风险。** 将当前上下文与候选剪枝动作共同输入风险模型，整体优于只根据剪枝率做判断。
-- **动态选择剪枝率具有潜力。** GSM8K 在线 pilot 中，learned ratio selection 明显优于相近曝光量的固定剪枝动作。
-
-这些结果共同说明：项目不应回到固定剪枝策略，而应继续研究能够感知推理状态并预测具体动作风险的在线控制器。
-
-### 2.2 未通过实验的简要说明
-
-部分实验未通过，但帮助明确了方法边界：
-
-- Hidden state 无法稳定地直接预测单个 16-token 剪枝窗口是否会导致最终答案错误，因此 hidden 更适合作为 stage 和风险辅助特征，而不是独立的剪枝开关。
-- 连续在线剪枝会积累误差，与单窗口离线训练存在分布差异，因此当前先限制为每题最多执行一个剪枝窗口。
-- 第一版 learned controller 在线运行时几乎总在 token 32 执行动作，说明它主要学到了“剪多少”，尚未真正学会“何时等待、何时剪枝”。
-
-## 3. 当前核心问题
-
-在线控制器需要使用离线采集的数据学习通用决策规律：
+目前项目主线已经重新收束为：
 
 ```text
-当前已经生成的因果信息
-+ 当前推理状态
-+ 候选剪枝率
-→ 执行该动作的风险
+完整轨迹 causal state
+  + candidate pruning action
+  + soft reasoning-stage information
+  + prior pruning history
+→ 预测动作造成 harmful flip 的风险
+→ 在线选择何时剪枝、剪多少、是否继续剪枝
 ```
 
-随后，控制器才能在未见过的新题上，仅根据当前已经生成的信息进行实时判断。
+当前不再将 hard stage 直接作为剪枝开关，也不再限制每题只能执行一次剪枝。
 
-上一版离线 Action-Risk bank 存在候选边界不完整的问题：
+## 2. 前期失败实验与得到的教训
 
-| 数据来源 | Problem 数 | 包含 token 32 | 包含 token 96 | 包含 token 160 |
-|---|---:|---:|---:|---:|
-| GSM8K train | 118 | 83 | 70 | 70 |
-| MATH train | 160 | 93 | 83 | 75 |
+### 2.1 Hidden 不能直接承担短窗口风险判断
 
-由于同一道题不一定同时拥有 token `32 / 96 / 160` 的训练样本，离线模拟中的“等待到 token 96”可能只是因为该题没有 token 32 样本，而不是模型真正判断 token 32 不安全。
+Motivation 证明 hidden state 包含推理阶段与状态差异信息，但后续实验表明，hidden 无法稳定地
+直接预测某个 16-token 剪枝窗口是否会导致最终答案变化。
 
-在线运行时，每道题都一定会经过 token 32，因此控制器最终对几乎所有题目都立即执行动作。这使上一轮实验只能验证动态剪枝率选择，不能验证 reasoning-aware 时机选择。
-
-## 4. 当前计划：Stage-Action-Risk v2
-
-当前最重要的任务是构建 **Stage-Action-Risk v2 精确边界 bank**，修复训练数据中的时机监督问题。
-
-这一步并不是简单增加数据量，而是为控制器提供公平且完整的候选动作训练数据，使其能够真正学习：
+因此当前对 hidden 的客观定位是：
 
 ```text
-同一道题应该在什么时候剪，以及剪多少。
+可以用于表示推理状态、长期脆弱性或辅助风险判断；
+尚不能作为独立的局部剪枝开关。
 ```
 
-### 4.1 精确边界数据采集
+这并不推翻 Motivation，而是限制了 hidden 在在线 Controller 中的具体角色。
 
-对于每个保留的 dense-correct problem，强制采集完全相同的候选边界和动作：
+### 2.2 Hard Stage Gate 未通过
+
+当前 stage 分类结果高度集中于 reasoning，非 reasoning stage 样本过少。Stage-Action-Risk v2
+虽然修复了训练候选边界不完整的问题，但 stage 相对 causal context 只在 `1/5` folds 中同时改善
+ROC-AUC 与 PR-AUC，未通过 stage-controller 准入条件。
+
+因此：
+
+- hard stage 仅保留为诊断；
+- 在线模型使用 soft-stage probability 作为辅助特征；
+- 不再默认某个 stage 一定安全或一定不能剪枝。
+
+### 2.3 单窗口策略无法充分验证最终方法
+
+旧 learned single-window controller 几乎总在 token 32 立即执行动作。它主要学习了“剪多少”，
+没有真正学习“是否等待”。同时，每题只剪一个 16-token 窗口的理论 exposure 很低，无法代表最终
+动态剪枝方法。
+
+因此当前实验已经扩展为完整轨迹、多次决策和多窗口执行。
+
+## 3. Full-Trajectory Multi-Window 工作流
+
+为避免继续被 `32/96/160` 三个边界和单窗口假设限制，本阶段实现了新的自动工作流：
 
 ```text
-boundary = 32 / 96 / 160
-ratio    = 0 / 0.05 / 0.10 / 0.20 / 0.30 / 0.40 / 0.50
-window   = 16 tokens
+已有 Action-Risk Bank CPU 预审
+→ Causal-Grid Dense Bank Smoke
+→ Full-Trajectory Dense Bank Pilot + Grouped OOF
+→ Fixed Multi-Window Dev
+→ On-Policy 精确重放 Smoke
+→ 阶段 Gate 与最终报告
 ```
 
-每次非零剪枝动作只持续 16 token，窗口结束后立即恢复 dense。
+### 3.1 完整轨迹采集
 
-每条样本记录：
-
-- 当前已生成 token 数；
-- 当前 entropy 和 confidence；
-- 动作执行前的 causal hidden；
-- stage probability；
-- 候选剪枝率；
-- 剪枝窗口内的输出变化；
-- 最终答案是否发生 flip。
-
-完整性验证要求：
-
-- 每道题必须同时存在 `32 / 96 / 160` 三个边界；
-- 每个边界必须拥有完整 ratio grid；
-- 每个剪枝窗口必须完整执行 16 token；
-- stage 和 hidden 必须来自动作执行前的信息；
-- 缺失任何一项时，整道题不进入训练和评估。
-
-### 4.2 离线模型比较
-
-使用 problem-level 5-fold cross-validation，比较以下模型：
-
-1. `action-only`：只根据候选剪枝率预测风险；
-2. `causal context + action`：加入当前因果上下文；
-3. `stage + causal context + action`：进一步加入推理阶段；
-4. `hidden + stage + causal context + action`：加入 hidden 风险信息。
-
-这一实验重点回答：
-
-> 在所有题目都拥有相同候选时机的公平条件下，stage 信息是否能够稳定改善动作风险预测？
-
-只有当 stage 模型在跨 fold 和跨数据集条件下稳定优于 context-only，才允许继续实现 stage-gated 在线控制器。
-
-### 4.3 在线 Stage-Aware Controller
-
-如果离线分析通过，下一步实现能够真正等待的单窗口控制器：
+自然决策边界定义为：
 
 ```text
-生成到 token 32
-  → 评估当前 stage 和每个候选 ratio 的风险
-  → 风险过高则保持 dense，继续生成
-
-生成到 token 96
-  → 使用新的因果状态重新评估
-  → 接受安全动作，或继续等待
-
-生成到 token 160
-  → 进行最后一次评估
+decision_start  = 32 tokens
+decision_stride = 32 tokens
+window_tokens   = 16 tokens
 ```
 
-控制器执行规则：
-
-- 每道题最多执行一个 16-token 剪枝窗口；
-- 控制器可以拒绝所有动作并全程保持 dense；
-- hidden 和 stage 只能基于当前已经生成的信息；
-- 剪枝窗口结束后永久恢复 dense；
-- 优先选择风险可接受条件下更高的剪枝率；
-- 不允许读取正确答案、未来 token 或完整轨迹信息。
-
-### 4.4 在线验收
-
-在线实验将在 GSM8K 和 MATH500 上与 dense、固定剪枝策略进行 paired comparison，主要报告：
-
-- 题目级 accuracy delta；
-- dense-correct flip rate；
-- 实际执行剪枝窗口的题目比例；
-- 平均 action ratio；
-- 平均理论 MLP pruning exposure；
-- 不同数据集和边界下的风险分布；
-- bootstrap 95% confidence interval。
-
-当前阶段只报告 logical mask 对应的理论 MLP reduction，不宣称真实 wall-clock 加速。
-
-## 5. 阶段准入与停止条件
-
-为了避免继续扩大无效路线，后续采用明确的阶段门槛。
-
-### 离线阶段通过条件
-
-Stage-Action-Risk v2 必须证明：
-
-- stage 特征相对 context-only 在至少 4/5 folds 中改善风险预测；
-- 改进同时出现在 GSM8K train 和隔离的 MATH train；
-- 风险预测随 ratio 增大保持合理趋势；
-- 模拟 first-accepted policy 能够真正选择不同边界，而不是全部集中在 token 32；
-- 在保持足够剪枝曝光的同时，不增加两个数据集的 flip。
-
-### 在线阶段通过条件
-
-Stage-aware controller 必须：
-
-- 在 GSM8K 和 MATH500 上均保持可接受的准确率；
-- 相比相近曝光量的固定剪枝策略降低 dense-correct flip；
-- 实际产生非零剪枝曝光；
-- 能够根据题目状态选择不同剪枝时机；
-- 多 seed 下保持稳定。
-
-如果 stage 在精确边界数据上仍不能改善风险预测，则停止 stage-gated controller，不继续扩大数据规模。届时保留已经验证有效的 Action-Risk 结论，并重新考虑其他时机建模方法。
-
-## 6. 当前进度
-
-目前已经完成：
-
-- 真实 runtime 单窗口 MLP-channel 剪枝和恢复流程；
-- Hidden stage probe 与阶段标签审核；
-- Action-Risk 离线训练和 OOF 评估框架；
-- 固定单窗口与 learned single-window 在线诊断；
-- 第一版 learned controller 失败原因定位；
-- Stage-Action-Risk v2 精确边界采集、校验和分析代码实现。
-
-Stage-Action-Risk v2 精确边界 bank 已完成：
+每个 boundary 测试完整 action grid：
 
 ```text
-394 个 complete dense-correct problems
-1182 个精确 boundary
-7092 个非零 action rows
-54 / 54 shard validation 通过
+ratio = 0 / 0.10 / 0.20 / 0.30 / 0.40 / 0.50
 ```
 
-本轮成功修复了旧 bank 的候选边界缺失问题，但 stage 相对 causal context 仅在 `1/5` folds 中
-同时改善 ROC-AUC 和 PR-AUC，未通过 stage-controller 准入条件。进一步分析发现，
-first-accepted policy 即使拥有完整边界，仍会在 token 32 存在低风险动作时立即执行，因而没有
-显式学习“等待的价值”。
+模型可部署输入只包含当前已经生成的因果信息：
 
-当前正在推进的任务调整为：
+- generated token count；
+- entropy / confidence；
+- causal hidden；
+- causal soft-stage probabilities；
+- candidate ratio；
+- 在 on-policy 阶段加入历史动作信息。
+
+完整轨迹长度、相对位置、hard stage 和 tail-anchor 均只用于诊断，不进入在线模型。
+
+### 3.2 Fixed Multi-Window Runtime
+
+Runtime 允许每题执行多个剪枝窗口：
+
+- 每次动作持续 16 token；
+- 动作结束后恢复 dense；
+- 至少经过 16 token dense cooldown 后才能再次动作；
+- 达到最大窗口数量后永久恢复 dense；
+- 每次动作记录完整历史和累计理论 pruning exposure。
+
+### 3.3 On-Policy 精确重放
+
+On-policy collector 不使用 dense prefix 替代真实剪枝轨迹，而是重放此前所有历史动作。只有以下
+状态全部一致，boundary 才允许进入数据集：
+
+- action schedule；
+- forced token prefix；
+- boundary next token；
+- top-k logits、logits L2 和完整 logits hash；
+- entropy / confidence；
+- hidden state；
+- cooldown 与历史动作数量。
+
+## 4. 当前有效实验结果
+
+### 4.1 完整轨迹 Pilot 数据通过严格验证
+
+Full-Trajectory Pilot 最终保留：
 
 ```text
-Stage-Action-Risk v2 paired exact-boundary bank
-  → 构建 act-now vs wait 的 timing-value 标签
-  → problem-level OOF 判断当前因果状态能否预测等待价值
-  → 通过后再训练 stage-aware waiting controller
+GSM8K dense-correct problems      20
+MATH train dense-correct problems 20
+causal boundaries                332
+tail diagnostic boundaries        40
+nonzero action rows             1660
+positive answer-change labels    210
+dense replay mismatch rate         0
 ```
 
-当前结果目录：
+所有采集 Gate 均通过：
+
+- ratio grid 完整；
+- dense replay 一致；
+- 16-token 动作和 dense 恢复语义正确；
+- causal feature audit 通过；
+- 未使用 GSM8K test 或 MATH500。
+
+### 4.2 剪枝风险具有清晰剂量响应
+
+完整轨迹上的 final-answer change rate 随 ratio 单调上升：
+
+| Candidate Ratio | Answer-Change Rate |
+|---:|---:|
+| 0.10 | 7.23% |
+| 0.20 | 10.84% |
+| 0.30 | 12.35% |
+| 0.40 | 14.76% |
+| 0.50 | 18.07% |
+
+该结果说明：
+
+1. 当前真实 runtime action 确实具有稳定风险监督信号；
+2. 高 ratio 并非不能使用，但必须识别脆弱状态；
+3. Controller 需要联合选择动作时机和动作强度。
+
+两个来源存在明显差异：
+
+| Ratio | GSM8K Answer Change | MATH Answer Change |
+|---:|---:|---:|
+| 0.10 | 2.22% | 10.66% |
+| 0.20 | 6.67% | 13.71% |
+| 0.50 | 16.30% | 19.29% |
+
+MATH 对剪枝更敏感，后续必须报告分数据集 calibration，不能只使用合并风险阈值。
+
+### 4.3 Dense-State Grouped OOF
+
+使用 problem-level 5-fold OOF 比较不同特征：
+
+| Variant | ROC-AUC | PR-AUC |
+|---|---:|---:|
+| action-only | 0.5858 | 0.1672 |
+| causal context + action | 0.5919 | 0.1641 |
+| soft-stage + context + action | **0.6063** | **0.1712** |
+| hidden + context + action | 0.5592 | 0.1567 |
+| hidden + soft-stage + context + action | 0.5567 | 0.1543 |
+
+客观结论：
+
+- soft-stage 在合并结果上提供小幅增益，但只在 `2/5` folds 稳定胜过 context，当前只能作为辅助；
+- hidden 在当前局部 answer-change 预测任务上没有稳定增益；
+- GSM8K 的 causal context 信号较明显，但 MATH 上各模型接近随机；
+- 当前风险建模仍不足以直接训练可部署的 learned multi-window controller。
+
+### 4.4 多次剪枝具有可行性
+
+Fixed Multi-Window Dev 比较了不同 ratio、cadence 和最大窗口数。唯一同时通过两个训练来源方向
+Gate 的策略为：
 
 ```text
-runs/07_stage_aware/09_stage_action_risk_v2/
+r020_c32_m4
+ratio          = 0.20
+cadence        = 32 tokens
+maximum windows = 4
 ```
 
-## 7. 下一阶段任务
+| 数据集 | 理论 Exposure | Accuracy Delta | Dense-Correct Flip |
+|---|---:|---:|---:|
+| GSM8K | 4.48% | +5% | 0% |
+| MATH train | 2.46% | 0% | 10% |
 
-1. 基于 v2 exact-boundary bank 定义当前动作效用和未来安全动作价值。
-2. 训练并评估 `act-now vs wait` timing-value 模型。
-3. 判断 hidden/stage/context 是否能稳定预测等待价值，而不仅是局部动作风险。
-4. 若 timing-value 离线准入通过，实现新的 stage-aware single-window waiting controller。
-5. 在线跨数据集验收通过后，再扩大数据规模、增加 seed，并考虑双窗口或连续动态剪枝。
+该实验的价值不是证明固定策略已经足够安全，而是证明：
+
+- 多窗口 runtime 能够正确执行和恢复 dense；
+- 每题执行多次剪枝可以产生非零理论 exposure；
+- `r020_c32_m4` 可以作为采集真实 on-policy 状态的 behavior policy。
+
+由于每来源只有 20 题，准确率变化与置信区间仍不稳定，不能宣称性能提升或最终安全。
+
+### 4.5 On-Policy 精确重放通过
+
+On-policy Smoke 结果：
+
+```text
+每来源有效问题             4
+每来源 prior-action boundary 8
+replay failures             0
+invalid candidate boundaries 0
+```
+
+Action schedule、prefix、logits、hidden 和 cooldown 均能够精确复现。因此，当前实现已经具备采集
+真实多窗口状态分布的能力，工作流允许扩大 on-policy bank。
+
+## 5. On-Policy 扩大前发现并修复的问题
+
+### 5.1 Answer Change 不等于 Harmful Flip
+
+旧 on-policy 标签只记录 candidate 答案是否与 dense-control 不同。但当 dense-control 本身错误时，
+答案变化可能是有益纠正，而不是风险。
+
+Smoke 的 16 个 boundary 中确实出现了 1 个该情况：`ratio=0.10` 的唯一 answer change 将错误答案
+修正为正确答案。
+
+当前已经显式拆分：
+
+```text
+candidate_harmful_flip:
+  dense-control 正确，但 candidate 错误
+
+candidate_beneficial_correction:
+  dense-control 错误，但 candidate 正确
+```
+
+后续安全风险模型必须使用 `candidate_harmful_flip`，不能继续使用一般 answer-change 标签。
+
+### 5.2 排除 Behavior 错误会产生幸存者偏差
+
+旧 Smoke 只保留 dense 与 fixed behavior 都正确的问题。这会系统性排除 fixed policy 已经破坏答案
+的轨迹，使训练数据看不到最需要避免的失败状态。
+
+新采集条件改为：
+
+```text
+dense trajectory 必须正确；
+behavior trajectory 可以正确或错误；
+behavior correctness 作为显式标签保留。
+```
+
+因此，扩大后的 on-policy bank 将同时包含安全轨迹和 behavior 失败轨迹。
+
+## 6. 当前得到的项目结论
+
+### 6.1 已经得到支持的结论
+
+1. **动态剪枝问题具有可学习结构。**
+   风险随 ratio 呈稳定剂量响应，并且同一 ratio 在不同数据集和状态下差异明显。
+
+2. **多次剪枝是可行方向。**
+   当前 runtime 已经能够执行多个剪枝窗口、恢复 dense 并产生非零 exposure，不必继续限制为每题
+   只能剪一次。
+
+3. **完整轨迹与 on-policy 数据是必要的。**
+   Dense-state bank 只能描述首次动作风险；真实 Controller 必须学习历史动作已经改变状态后的风险。
+
+4. **Reasoning-aware 信息仍然有价值，但不能使用 hard stage。**
+   Soft-stage 提供了小幅辅助信号；stage 应作为连续状态特征，而不是人工规定哪些阶段允许剪枝。
+
+5. **GSM8K 与 MATH 的风险机制不同。**
+   MATH 更脆弱，且当前风险模型在 MATH 上泛化较弱，后续必须进行分数据集分析与 calibration。
+
+### 6.2 尚未得到支持的结论
+
+当前还不能证明：
+
+- hidden 能稳定预测短窗口 harmful flip；
+- 某个 hard reasoning stage 一定更安全；
+- `r020_c32_m4` 是最终安全策略；
+- learned multi-window controller 已经可以训练或部署；
+- logical MLP mask 能带来真实 wall-clock 加速。
+
+## 7. 下一阶段具体方向
+
+下一阶段不再继续扩大 dense-state bank，也不直接训练最终 Controller。当前优先级是建立可信的
+on-policy Action-Risk 数据与 grouped OOF。
+
+### Step 1：重新运行修正后的 On-Policy Smoke
+
+使用新的 harmful/beneficial 标签和无幸存者偏差准入条件，确认：
+
+- behavior 错误轨迹能够进入 bank；
+- 所有 retained problem 均来自 dense-correct trajectory；
+- harmful flip 和 beneficial correction 能正确区分；
+- 精确 replay 仍为 0 failure。
+
+### Step 2：扩大 On-Policy Bank
+
+使用 `r020_c32_m4` 作为数据采集 behavior policy，扩大两个训练来源上的真实多窗口状态：
+
+- 优先达到每来源至少约 50 个有效 dense-correct problem；
+- 每题采集多个包含 prior action 的 boundary；
+- 保留完整 candidate ratio grid；
+- 若 harmful positive 数量不足，再扩展至每来源约 100 个问题。
+
+### Step 3：On-Policy Problem-Grouped OOF
+
+比较：
+
+```text
+action-only
+causal context + action
+soft-stage + context + action
+history + context + action
+hidden + history + context + action
+```
+
+主要目标不是预测一般 answer change，而是预测：
+
+```text
+P(harmful flip | current on-policy state, action history, candidate action)
+```
+
+必须分别报告 GSM8K 与 MATH 的 ROC-AUC、PR-AUC、风险分桶和跨 fold 稳定性。
+
+### Step 4：训练 Learned Multi-Window Controller
+
+只有当 on-policy grouped OOF 证明风险模型相对 action-only 稳定提升后，才实现 learned controller：
+
+- 每 32 token 评估一次；
+- 根据当前状态、历史动作和候选 ratio 预测 harmful risk；
+- 风险过高则保持 dense；
+- 风险可接受时选择最高安全 ratio；
+- 达到风险预算或最大窗口数后永久恢复 dense；
+- soft-stage 作为辅助特征，hidden 仅在 OOF 证明增益后启用。
+
+### Step 5：Paired Online 验收
+
+最终对比：
+
+```text
+dense
+fixed r020_c32_m4
+learned multi-window
+conservative fixed multi-window
+```
+
+报告 accuracy delta、dense-correct harmful flip、实际动作数量、理论 exposure、bootstrap 95% CI，
+并分别在 GSM8K 与 MATH500 上验证。
 
 ## 8. 阶段性总结
 
-项目目前尚未得到最终可部署的在线剪枝控制器，但已经明确了下一步需要解决的核心问题：
+本阶段最重要的进展不是已经得到最终 Controller，而是完成了从离线单窗口实验到真实多窗口
+on-policy 学习问题的转换：
 
-> 不再只判断某个固定时刻应该剪多少，而是让控制器根据推理状态，在多个候选时机之间等待，并选择风险可接受的最高剪枝率。
+```text
+完整轨迹风险信号已验证
+→ 多窗口 runtime 已验证
+→ behavior policy 已选定
+→ on-policy 精确重放已验证
+→ 可以开始采集训练最终 Controller 所需的数据
+```
 
-当前证据仍然支持 reasoning-aware 动态剪枝主线：
+当前主线不再依赖“预先规定某个 reasoning stage 可以剪枝”，而是让 Controller 使用推理状态、
+soft-stage、历史动作和 candidate ratio，学习每次动作是否会造成 harmful flip。
 
-- hidden state 能够表示推理阶段；
-- 推理上下文能够提供局部剪枝风险信号；
-- 动态剪枝率选择已经显示出优于固定动作的潜力；
-- 当前主要瓶颈是公平、完整地学习剪枝时机。
+因此，下一阶段最明确的方向是：
 
-因此，下一阶段将以 Stage-Action-Risk v2 为核心，先验证 stage 是否真正帮助在线时机选择，再决定是否进入更大规模和连续剪枝实验。
+> 扩大无幸存者偏差的 on-policy bank，并验证当前因果状态和历史动作能否稳定预测 harmful pruning
+> risk；通过后再训练真正的 learned multi-window controller。
