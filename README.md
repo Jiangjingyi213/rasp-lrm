@@ -1,5 +1,32 @@
 # Reasoning-aware Dynamic Structured Pruning
 
+## Current Mainline
+
+The active research workflow is explicit reasoning-stage calibrated structured
+pruning:
+
+```text
+decontaminated Big-Math problems
+-> Qwen3 self-generated explicit-stage trajectories
+-> stage-conditioned WIFV calibration
+-> frozen structured MLP masks
+-> explicit stage-triggered runtime mask switching
+-> held-out GSM8K / MATH-500 evaluation
+```
+
+Run the centralized smoke workflow on the remote server:
+
+```bash
+PYTHON=/home/cike/jjy/envs/rasp_qwen3_eval/bin/python \
+bash scripts/preflight_stage_calibrated_pruning.sh
+
+PROFILE=smoke PYTHON=/home/cike/jjy/envs/rasp_qwen3_eval/bin/python \
+bash scripts/run_stage_calibrated_pruning.sh
+```
+
+See `docs/CURRENT_WORKFLOW_ZH.md`. The older action-risk and multi-window
+workflows are frozen legacy experiments and are no longer the default route.
+
 This repository contains a minimal closed-loop experiment for motivating reasoning-aware structured pruning in LRMs.
 
 ## Experiment Chain

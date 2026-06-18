@@ -5,6 +5,13 @@ from typing import Any
 
 def answer_instruction(prompt_config: dict[str, Any] | None = None) -> str:
     prompt_config = prompt_config or {}
+    if prompt_config.get("explicit_stage_protocol", False):
+        return (
+            "Solve the problem using exactly these four stage markers, each exactly once and in order:\n"
+            "<STAGE_SETUP>\n<STAGE_REASONING>\n<STAGE_VERIFY>\n<STAGE_FINAL>\n"
+            "Write the final answer in \\boxed{} inside <STAGE_FINAL>. "
+            "Do not write any other <STAGE_...> marker."
+        )
     if prompt_config.get("answer_format") == "boxed":
         return "Solve the problem step by step. Put the final answer in \\boxed{}."
     return "Solve the problem step by step. Put the final answer after 'Final answer:'."

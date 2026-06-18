@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+
+STAGES = ("setup", "reasoning", "verify", "final")
+MARKERS = {
+    "setup": "<STAGE_SETUP>",
+    "reasoning": "<STAGE_REASONING>",
+    "verify": "<STAGE_VERIFY>",
+    "final": "<STAGE_FINAL>",
+}
+MARKER_TO_STAGE = {marker: stage for stage, marker in MARKERS.items()}
+STAGE_TAG_RE = re.compile(r"<STAGE_[A-Z_]+>")
+
+
+def explicit_stage_instruction() -> str:
+    return (
+        "Solve the problem using exactly these four stage markers, each exactly once and in order:\n"
+        "<STAGE_SETUP>\n"
+        "<STAGE_REASONING>\n"
+        "<STAGE_VERIFY>\n"
+        "<STAGE_FINAL>\n"
+        "Write the final answer in \\boxed{} inside <STAGE_FINAL>. "
+        "Do not write any other <STAGE_...> marker."
+    )
+
+
+def marker_token_sequences(tokenizer) -> dict[str, tuple[tuple[int, ...], ...]]:
+    sequences = {}
+    for stage, marker in MARKERS.items():
+        variants = []
+        for prefix in ("", "\n", "\n\n", " "):
+            token_ids = tuple(
+                int(value)
+                for value in tokenizer(prefix + marker, add_special_tokens=False).input_ids
+            )
+            if token_ids and token_ids not in variants:
+                variants.append(token_ids)
+        if not variants:
+            raise ValueError(f"Tokenizer produced no ids for {marker}")
+        sequences[stage] = tuple(variants)
+    return sequences
+
+
+@dataclass
+class StageTokenTracker:
+    marker_sequences: dict[str, Any]
+    generated_ids: list[int] = field(default_factory=list)
+    active_stage: str | None = None
+    next_stage_index: int = 0
+    fallback_reason: str | None = None
+    transitions: list[dict[str, Any]] = field(default_factory=list)
+    marker_positions: list[tuple[int, int, str]] = field(default_factory=list)
+
+    def _variants(self, stage: str) -> tuple[tuple[int, ...], ...]:
+        value = self.marker_sequences[stage]
+        if value and isinstance(value[0], int):
+            return (tuple(value),)
+        return tuple(tuple(sequence) for sequence in value)
+
+    def feed(self, token_id: int) -> str | None:
+        self.generated_ids.append(int(token_id))
+        if self.fallback_reason is not None:
+            return None
+        matched = []
+        for stage in self.marker_sequences:
+            for sequence in self._variants(stage):
+                if len(self.generated_ids) >= len(sequence) and tuple(
+                    self.generated_ids[-len(sequence) :]
+                ) == sequence:
+                    matched.append((stage, sequence))
+        if not matched:
+            return None
+        stage, sequence = matched[0]
+        expected = STAGES[self.next_stage_index] if self.next_stage_index < len(STAGES) else None
+        if stage != expected:
+            self.fallback_reason = f"invalid_stage_transition:{expected}->{stage}"
+            self.active_stage = None
+            return None
+        end = len(self.generated_ids)
+        start = end - len(sequence)
+        self.marker_positions.append((start, end, stage))
+        self.active_stage = stage
+        self.next_stage_index += 1
+        self.transitions.append({"stage": stage, "generated_tokens": end})
+        return stage
+
+    def fallback_dense(self, reason: str) -> None:
+        if self.fallback_reason is None:
+            self.fallback_reason = str(reason)
+        self.active_stage = None
+
+    def finalize(self, decoded_text: str = "") -> dict[str, Any]:
+        unknown = [
+            marker for marker in STAGE_TAG_RE.findall(decoded_text) if marker not in MARKER_TO_STAGE
+        ]
+        if unknown:
+            self.fallback_dense(f"unknown_stage_marker:{unknown[0]}")
+        valid = self.fallback_reason is None and self.next_stage_index == len(STAGES)
+        if self.fallback_reason is None and not valid:
+            self.fallback_reason = f"missing_stage_markers:{self.next_stage_index}/{len(STAGES)}"
+        assignments: list[str | None] = [None] * len(self.generated_ids)
+        for index, (_start, end, stage) in enumerate(self.marker_positions):
+            content_end = (
+                self.marker_positions[index + 1][0]
+                if index + 1 < len(self.marker_positions)
+                else len(self.generated_ids)
+            )
+            for token_index in range(end, content_end):
+                assignments[token_index] = stage
+        spans = []
+        for start, end, stage in self.marker_positions:
+            content_end = next(
+                (
+                    marker_start
+                    for marker_start, _marker_end, _next_stage in self.marker_positions
+                    if marker_start >= end
+                ),
+                len(self.generated_ids),
+            )
+            spans.append(
+                {
+                    "stage": stage,
+                    "marker_start_token": start,
+                    "content_start_token": end,
+                    "content_end_token": content_end,
+                    "content_tokens": max(0, content_end - end),
+                }
+            )
+        return {
+            "valid": valid,
+            "fallback_reason": self.fallback_reason,
+            "transitions": self.transitions,
+            "stage_spans": spans,
+            "token_stages": assignments,
+        }
+
+
+def analyze_generated_ids(tokenizer, generated_ids: list[int]) -> dict[str, Any]:
+    tracker = StageTokenTracker(marker_token_sequences(tokenizer))
+    for token_id in generated_ids:
+        tracker.feed(int(token_id))
+    return tracker.finalize(tokenizer.decode(generated_ids, skip_special_tokens=True))

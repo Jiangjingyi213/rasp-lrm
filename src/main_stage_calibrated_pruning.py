@@ -1,0 +1,901 @@
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import random
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Any
+
+import torch
+from datasets import load_dataset
+from tqdm import tqdm
+
+from src.data.format_prompt import build_prompt
+from src.data.load_gsm8k import load_tasks
+from src.metrics.answer_match import answer_match, extract_answer, math_verify_available
+from src.models.load_model import load_model_bundle
+from src.stage_calibration.artifacts import manifest_hash, stable_hash
+from src.stage_calibration.calibrate import collect_stage_statistics
+from src.stage_calibration.evaluate import evaluate_method, uniform_ratios
+from src.stage_calibration.mask_bank import build_mask_bank, load_mask_bank, save_mask_bank
+from src.stage_calibration.pool import (
+    decontaminate,
+    normalize_big_math_row,
+    source_allowed,
+    source_counts,
+    stratified_split,
+)
+from src.stage_calibration.protocol import STAGES, analyze_generated_ids
+from src.utils.io import append_jsonl, ensure_dir, read_json, read_jsonl, read_yaml, write_json, write_jsonl
+from src.utils.seed import set_seed
+
+
+PHASES = {
+    "preflight": "00_preflight",
+    "build_pool": "01_pool",
+    "generate_trajectories": "02_trajectories",
+    "select_trajectories": "03_selected",
+    "calibrate_masks": "04_masks",
+    "validate_masks": "04_masks",
+    "evaluate_dev": "05_dev",
+    "evaluate_final": "06_final",
+    "summarize": ".",
+}
+
+
+def paths(cfg: dict[str, Any]) -> dict[str, Path]:
+    root = Path(str(cfg["workflow"]["root"]).format(profile=cfg["workflow"].get("profile", "smoke")))
+    return {
+        "root": root,
+        "preflight": root / "00_preflight" / "preflight.json",
+        "pool": root / "01_pool" / "candidate_pool.jsonl",
+        "excluded": root / "01_pool" / "excluded.jsonl",
+        "pool_summary": root / "01_pool" / "summary.json",
+        "candidates": root / "02_trajectories" / "candidate_trajectories.jsonl",
+        "trajectory_summary": root / "02_trajectories" / "summary.json",
+        "calibration": root / "03_selected" / "calibration.jsonl",
+        "dev": root / "03_selected" / "dev.jsonl",
+        "selection_summary": root / "03_selected" / "summary.json",
+        "expansion_request": root / "03_selected" / "expansion_request.json",
+        "bank": root / "04_masks" / "mask_bank.pt",
+        "bank_summary": root / "04_masks" / "summary.json",
+        "bank_validation": root / "04_masks" / "validation.json",
+        "dev_dir": root / "05_dev",
+        "dev_summary": root / "05_dev" / "summary.json",
+        "frozen": root / "05_dev" / "frozen_policy.json",
+        "final_dir": root / "06_final",
+        "final_summary": root / "06_final" / "summary.json",
+        "workflow_summary": root / "final_summary.json",
+        "workflow_gate": root / "workflow_gate.json",
+    }
+
+
+def profile(cfg: dict[str, Any]) -> dict[str, Any]:
+    name = str(cfg["workflow"].get("profile", "smoke"))
+    return cfg["profiles"][name]
+
+
+def metadata(cfg: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    return {
+        "config_hash": stable_hash(cfg),
+        "model_name": cfg["model"]["name_or_path"],
+        "profile": cfg["workflow"].get("profile", "smoke"),
+        **extra,
+    }
+
+
+def expected_bank_metadata(cfg: dict[str, Any], p: dict[str, Path]) -> dict[str, Any]:
+    rows = read_jsonl(p["calibration"])
+    return metadata(
+        cfg,
+        calibration_manifest_hash=manifest_hash(rows),
+        tokenizer_name=cfg["model"]["name_or_path"],
+        prompt_hash=stable_hash(cfg["prompt"]["structured"]),
+    )
+
+
+def command_preflight(cfg: dict[str, Any], p: dict[str, Path]) -> None:
+    import transformers
+
+    checks = {
+        "math_verify_available": math_verify_available(),
+        "cuda_available": torch.cuda.is_available(),
+        "explicit_four_stage_protocol": tuple(cfg["stages"]) == STAGES,
+        "test_sets_not_calibration_sources": not {
+            "gsm8k",
+            "math500",
+        } & {str(value).lower() for value in cfg["calibration_pool"]["allowed_sources"]},
+        "ratio_grid_valid": all(0.0 <= float(value) < 1.0 for value in cfg["masks"]["ratios"]),
+    }
+    result = {
+        "schema": "stage_calibration_preflight_v1",
+        **metadata(cfg),
+        "checks": checks,
+        "passed": all(checks.values()),
+        "environment": {
+            "torch_version": torch.__version__,
+            "transformers_version": transformers.__version__,
+            "cuda_available": torch.cuda.is_available(),
+            "cuda_device_count": torch.cuda.device_count(),
+        },
+    }
+    write_json(p["preflight"], result)
+    if not result["passed"]:
+        raise RuntimeError(f"Preflight failed: {checks}")
+
+
+def command_build_pool(cfg: dict[str, Any], p: dict[str, Path]) -> None:
+    pcfg = profile(cfg)
+    pool_cfg = cfg["calibration_pool"]
+    expansion_round = (
+        int(read_json(p["expansion_request"]).get("next_round", 0))
+        if p["expansion_request"].exists()
+        else 0
+    )
+    candidate_target = int(pcfg["candidate_problems"]) + (
+        expansion_round * int(pcfg.get("expansion_problems", 0))
+    )
+    protected = [
+        *load_tasks({"dataset": "gsm8k", "split": "test"}),
+        *load_tasks(
+            {
+                "dataset": "math500",
+                "name_or_path": cfg["evaluation"]["math500_name_or_path"],
+                "split": "test",
+            }
+        ),
+    ]
+    dataset = load_dataset(
+        pool_cfg["name_or_path"],
+        split=pool_cfg.get("split", "train"),
+        streaming=True,
+    )
+    rng = random.Random(int(cfg["seed"]))
+    reservoir: list[dict[str, Any]] = []
+    seen_allowed = 0
+    invalid = 0
+    max_scan = int(pool_cfg.get("max_scan", 100000))
+    reservoir_target = max(candidate_target * 4, candidate_target)
+    for index, raw in enumerate(dataset):
+        if index >= max_scan:
+            break
+        try:
+            row = normalize_big_math_row(dict(raw), index)
+        except ValueError:
+            invalid += 1
+            continue
+        if not source_allowed(
+            row["source"],
+            pool_cfg["allowed_sources"],
+            pool_cfg["excluded_sources"],
+        ):
+            continue
+        seen_allowed += 1
+        if len(reservoir) < reservoir_target:
+            reservoir.append(row)
+        else:
+            replacement = rng.randint(0, seen_allowed - 1)
+            if replacement < reservoir_target:
+                reservoir[replacement] = row
+    kept, excluded = decontaminate(
+        reservoir,
+        protected,
+        threshold=float(pool_cfg.get("near_duplicate_threshold", 0.80)),
+    )
+    rng.shuffle(kept)
+    kept = kept[:candidate_target]
+    if len(kept) < candidate_target:
+        raise RuntimeError("Insufficient decontaminated Big-Math candidates; increase max_scan")
+    write_jsonl(p["pool"], kept)
+    write_jsonl(p["excluded"], excluded)
+    write_json(
+        p["pool_summary"],
+        {
+            "schema": "stage_calibration_pool_v1",
+            **metadata(cfg, pool_manifest_hash=manifest_hash(kept)),
+            "candidate_rows": len(kept),
+            "candidate_target": candidate_target,
+            "expansion_round": expansion_round,
+            "excluded_rows": len(excluded),
+            "invalid_rows": invalid,
+            "source_counts": source_counts(kept),
+            "protected_rows": len(protected),
+        },
+    )
+
+
+@torch.no_grad()
+def command_generate_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None:
+    rows = read_jsonl(p["pool"])
+    pcfg = profile(cfg)
+    repeats = int(pcfg["generations_per_problem"])
+    bundle = load_model_bundle(cfg["model"])
+    output = p["candidates"]
+    existing_rows = read_jsonl(output) if output.exists() else []
+    existing_keys = {
+        (str(row["id"]), int(row["sample_index"])) for row in existing_rows
+    }
+    generation = cfg["generation"]
+    prompt_cfg = cfg["prompt"]["structured"]
+    eos = bundle.tokenizer.eos_token_id
+    eos_ids = {int(eos)} if isinstance(eos, int) else {int(value) for value in (eos or [])}
+    for problem_index, row in enumerate(tqdm(rows, desc="generate-stage-calibration-trajectories")):
+        prompt = build_prompt(row["question"], bundle.tokenizer, prompt_cfg)
+        inputs = bundle.tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=int(generation["max_input_tokens"]),
+        ).to(bundle.device)
+        prompt_ids = [int(value) for value in inputs["input_ids"][0].cpu().tolist()]
+        for sample_index in range(repeats):
+            if (str(row["id"]), sample_index) in existing_keys:
+                continue
+            sample_seed = int(cfg["seed"]) + problem_index * repeats + sample_index
+            torch.manual_seed(sample_seed)
+            out = bundle.model.generate(
+                **inputs,
+                max_new_tokens=int(generation["max_new_tokens"]),
+                do_sample=True,
+                temperature=float(generation["temperature"]),
+                top_p=float(generation["top_p"]),
+                top_k=int(generation["top_k"]),
+                pad_token_id=bundle.tokenizer.pad_token_id,
+                eos_token_id=bundle.tokenizer.eos_token_id,
+            )
+            generated = [int(value) for value in out[0, len(prompt_ids) :].cpu().tolist()]
+            completion = bundle.tokenizer.decode(generated, skip_special_tokens=True).strip()
+            stage_protocol = analyze_generated_ids(bundle.tokenizer, generated)
+            ended_with_eos = bool(generated and generated[-1] in eos_ids)
+            append_jsonl(
+                output,
+                {
+                    **row,
+                    "sample_index": sample_index,
+                    "sample_seed": sample_seed,
+                    "prompt": prompt,
+                    "prompt_token_ids": prompt_ids,
+                    "generated_token_ids": generated,
+                    "completion": completion,
+                    "prediction": extract_answer(completion),
+                    "correct": answer_match(completion, row["gold"]),
+                    "ended_with_eos": ended_with_eos,
+                    "truncated": not ended_with_eos and len(generated) >= int(generation["max_new_tokens"]),
+                    "stage_protocol": stage_protocol,
+                },
+            )
+    current_ids = {str(row["id"]) for row in rows}
+    generated_rows = [row for row in read_jsonl(output) if str(row["id"]) in current_ids]
+    write_json(
+        p["trajectory_summary"],
+        {
+            "schema": "stage_calibration_candidate_trajectories_v1",
+            **metadata(cfg, pool_manifest_hash=manifest_hash(rows)),
+            "rows": len(generated_rows),
+            "problems": len(rows),
+            "correct_rate": sum(int(row["correct"]) for row in generated_rows) / len(generated_rows),
+            "valid_stage_rate": sum(int(row["stage_protocol"]["valid"]) for row in generated_rows) / len(generated_rows),
+            "truncation_rate": sum(int(row["truncated"]) for row in generated_rows) / len(generated_rows),
+        },
+    )
+
+
+def command_select_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None:
+    pool_ids = {str(row["id"]) for row in read_jsonl(p["pool"])}
+    rows = [row for row in read_jsonl(p["candidates"]) if str(row["id"]) in pool_ids]
+    pcfg = profile(cfg)
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row["id"])].append(row)
+    eligible = []
+    rejection = Counter()
+    for values in grouped.values():
+        correct_count = sum(int(row["correct"]) for row in values)
+        if not 1 <= correct_count < len(values):
+            rejection["difficulty_filter"] += 1
+            continue
+        candidates = [
+            row
+            for row in values
+            if row["correct"] and row["stage_protocol"]["valid"] and not row["truncated"]
+        ]
+        if not candidates:
+            rejection["no_correct_valid_complete_trajectory"] += 1
+            continue
+        lengths = sorted(len(row["generated_token_ids"]) for row in candidates)
+        median = lengths[len(lengths) // 2]
+        selected = min(candidates, key=lambda row: (abs(len(row["generated_token_ids"]) - median), row["sample_index"]))
+        selected["selection_reason"] = "correct_valid_complete_closest_to_problem_median_length"
+        eligible.append(selected)
+    required = int(pcfg["calibration_problems"]) + int(pcfg["dev_problems"])
+    if len(eligible) < required:
+        _request_expansion_or_fail(
+            cfg,
+            p,
+            pcfg,
+            reason=f"eligible_problems:{len(eligible)}<{required}",
+        )
+    calibration, dev = stratified_split(
+        eligible,
+        int(pcfg["calibration_problems"]),
+        int(pcfg["dev_problems"]),
+        int(cfg["seed"]),
+    )
+    stage_tokens = Counter()
+    for row in calibration:
+        for stage in STAGES:
+            stage_tokens[stage] += sum(value == stage for value in row["stage_protocol"]["token_stages"])
+    min_stage_tokens = int(pcfg["min_stage_tokens"])
+    passed = all(stage_tokens[stage] >= min_stage_tokens for stage in STAGES)
+    write_jsonl(p["calibration"], calibration)
+    write_jsonl(p["dev"], dev)
+    write_json(
+        p["selection_summary"],
+        {
+            "schema": "stage_calibration_selection_v1",
+            **metadata(
+                cfg,
+                calibration_manifest_hash=manifest_hash(calibration),
+                dev_manifest_hash=manifest_hash(dev),
+            ),
+            "eligible_problems": len(eligible),
+            "calibration_problems": len(calibration),
+            "dev_problems": len(dev),
+            "stage_content_tokens": dict(stage_tokens),
+            "minimum_stage_tokens": min_stage_tokens,
+            "rejection_counts": dict(rejection),
+            "passed": passed,
+        },
+    )
+    if not passed:
+        _request_expansion_or_fail(
+            cfg,
+            p,
+            pcfg,
+            reason="selected calibration trajectories do not meet per-stage token gate",
+        )
+    p["expansion_request"].unlink(missing_ok=True)
+
+
+def _request_expansion_or_fail(
+    cfg: dict[str, Any],
+    p: dict[str, Path],
+    pcfg: dict[str, Any],
+    *,
+    reason: str,
+) -> None:
+    expansion = int(pcfg.get("expansion_problems", 0))
+    if cfg["workflow"]["profile"] != "formal" or expansion <= 0:
+        raise RuntimeError(reason)
+    current_round = (
+        int(read_json(p["expansion_request"]).get("next_round", 0))
+        if p["expansion_request"].exists()
+        else 0
+    )
+    write_json(
+        p["expansion_request"],
+        {
+            "schema": "stage_calibration_expansion_request_v1",
+            "next_round": current_round + 1,
+            "add_candidate_problems": expansion,
+            "reason": reason,
+        },
+    )
+    print(f"{reason}; formal workflow requested another {expansion} candidate problems")
+    raise SystemExit(42)
+
+
+def command_calibrate_masks(cfg: dict[str, Any], p: dict[str, Path]) -> None:
+    rows = read_jsonl(p["calibration"])
+    bundle = load_model_bundle(cfg["model"])
+    metrics, means, stats_summary = collect_stage_statistics(
+        bundle.model,
+        bundle.tokenizer,
+        rows,
+        c4_samples=int(cfg["masks"]["c4_samples"]),
+        max_input_tokens=int(cfg["generation"]["max_input_tokens"]),
+    )
+    bank_metadata = metadata(
+        cfg,
+        calibration_manifest_hash=manifest_hash(rows),
+        tokenizer_name=cfg["model"]["name_or_path"],
+        prompt_hash=stable_hash(cfg["prompt"]["structured"]),
+    )
+    bank = build_mask_bank(
+        metadata=bank_metadata,
+        metrics=metrics,
+        means=means,
+        ratios=[float(value) for value in cfg["masks"]["ratios"]],
+    )
+    save_mask_bank(p["bank"], bank)
+    write_json(p["bank_summary"], {"schema": "stage_calibrated_mask_summary_v1", **bank_metadata, **stats_summary})
+
+
+def _jaccard_masks(left: torch.Tensor, right: torch.Tensor) -> float:
+    left = left.bool()
+    right = right.bool()
+    union = left | right
+    return float((left & right).sum().item() / max(1, union.sum().item()))
+
+
+def command_validate_masks(cfg: dict[str, Any], p: dict[str, Path]) -> None:
+    bank = load_mask_bank(p["bank"], expected_bank_metadata(cfg, p))
+    overlaps = {}
+    for ratio in bank["ratios"]:
+        key = f"{float(ratio):.4f}"
+        overlaps[key] = {}
+        for left_index, left in enumerate(STAGES):
+            for right in STAGES[left_index + 1 :]:
+                values = [
+                    _jaccard_masks(
+                        bank["policies"]["stage_specific"][left][layer_id]["masks"][key],
+                        bank["policies"]["stage_specific"][right][layer_id]["masks"][key],
+                    )
+                    for layer_id in bank["layers"]
+                ]
+                overlaps[key][f"{left}:{right}"] = sum(values) / len(values)
+    rank_correlations = {}
+    for left, right in (
+        ("trajectory_global", "c4_global"),
+        ("trajectory_global", "prompt_only_global"),
+        ("trajectory_global", "stage_balanced_global"),
+    ):
+        values = []
+        for layer_id in bank["layers"]:
+            x = bank["policies"][left]["reasoning"][layer_id]["metric"].float()
+            y = bank["policies"][right]["reasoning"][layer_id]["metric"].float()
+            x_rank = torch.argsort(torch.argsort(x)).float()
+            y_rank = torch.argsort(torch.argsort(y)).float()
+            values.append(float(torch.corrcoef(torch.stack([x_rank, y_rank]))[0, 1].item()))
+        rank_correlations[f"{left}:{right}"] = sum(values) / len(values)
+    write_json(
+        p["bank_validation"],
+        {
+            "schema": "stage_calibrated_mask_validation_v1",
+            **metadata(cfg, calibration_manifest_hash=manifest_hash(read_jsonl(p["calibration"]))),
+            "passed": True,
+            "policies": sorted(bank["policies"]),
+            "ratios": bank["ratios"],
+            "layers": len(bank["layers"]),
+            "stage_mask_mean_jaccard": overlaps,
+            "mean_layerwise_spearman_rank_correlation": rank_correlations,
+        },
+    )
+
+
+def structured_prompt(cfg: dict[str, Any]) -> dict[str, Any]:
+    return dict(cfg["prompt"]["structured"])
+
+
+def ordinary_prompt(cfg: dict[str, Any]) -> dict[str, Any]:
+    return dict(cfg["prompt"]["ordinary"])
+
+
+def method(name: str, policy: str, ratios: dict[str, float], prompt: dict[str, Any], bias: bool = True) -> dict[str, Any]:
+    return {"name": name, "policy": policy, "stage_ratios": ratios, "prompt": prompt, "bias_compensation": bias}
+
+
+def _run_methods(cfg, p, tasks, bank, bundle, methods, output_dir, seed: int | None = None) -> list[dict[str, Any]]:
+    summaries = []
+    ensure_dir(output_dir)
+    seed = int(cfg["seed"]) if seed is None else int(seed)
+    for value in methods:
+        rows, summary = evaluate_method(
+            model=bundle.model,
+            tokenizer=bundle.tokenizer,
+            tasks=tasks,
+            bank=bank,
+            method=value,
+            generation=cfg["generation"],
+            seed=seed,
+        )
+        suffix = f"_seed{seed}"
+        write_jsonl(output_dir / f"{value['name']}{suffix}.jsonl", rows)
+        write_json(output_dir / f"{value['name']}{suffix}.summary.json", summary)
+        summaries.append(summary)
+    return summaries
+
+
+def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
+    tasks = read_jsonl(p["dev"])
+    bank = load_mask_bank(p["bank"], expected_bank_metadata(cfg, p))
+    bundle = load_model_bundle(cfg["model"])
+    ratios = [float(value) for value in cfg["masks"]["ratios"]]
+    methods = [
+        method("ordinary_dense", "trajectory_global", uniform_ratios(0.0), ordinary_prompt(cfg)),
+        method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg)),
+    ]
+    for ratio in ratios:
+        if ratio <= 0:
+            continue
+        tag = f"{ratio:.2f}".replace(".", "p")
+        for policy in ("c4_global", "prompt_only_global", "trajectory_global", "stage_balanced_global"):
+            methods.append(method(f"{policy}_{tag}", policy, uniform_ratios(ratio), structured_prompt(cfg)))
+        methods.append(method(f"stage_specific_{tag}", "stage_specific", uniform_ratios(ratio), structured_prompt(cfg)))
+        methods.append(method(f"shuffled_stage_{tag}", "shuffled_stage", uniform_ratios(ratio), structured_prompt(cfg)))
+        if abs(ratio - 0.10) < 1e-12:
+            methods.append(
+                method(
+                    "stage_specific_0p10_no_bias_compensation",
+                    "stage_specific",
+                    uniform_ratios(ratio),
+                    structured_prompt(cfg),
+                    bias=False,
+                )
+            )
+    if cfg["workflow"]["profile"] == "formal":
+        methods.extend(
+            [
+                method(
+                    "trajectory_global_al_am_0p10",
+                    "trajectory_global_al_am",
+                    uniform_ratios(0.10),
+                    structured_prompt(cfg),
+                ),
+                method(
+                    "stage_specific_al_am_0p10",
+                    "stage_specific_al_am",
+                    uniform_ratios(0.10),
+                    structured_prompt(cfg),
+                ),
+            ]
+        )
+    summaries = _run_methods(cfg, p, tasks, bank, bundle, methods, p["dev_dir"] / "uniform")
+    dense = next(row for row in summaries if row["method"]["name"] == "structured_dense")
+    ordinary = next(row for row in summaries if row["method"]["name"] == "ordinary_dense")
+    accuracy_floor = float(dense["accuracy"]) - float(cfg["evaluation"]["max_dev_accuracy_drop"])
+    prompt_gate = {
+        "structured_protocol_rate": dense["valid_stage_protocol_rate"],
+        "structured_truncation_rate": dense["truncation_rate"],
+        "ordinary_dense_accuracy": ordinary["accuracy"],
+        "structured_dense_accuracy": dense["accuracy"],
+        "passed": bool(
+            float(dense["valid_stage_protocol_rate"])
+            >= float(cfg["evaluation"]["minimum_stage_protocol_rate"])
+            and float(dense["truncation_rate"])
+            <= float(cfg["evaluation"]["maximum_truncation_rate"])
+            and float(dense["accuracy"])
+            >= float(ordinary["accuracy"])
+            - float(cfg["evaluation"]["maximum_structured_prompt_accuracy_drop"])
+        ),
+    }
+    calibration_comparisons = []
+    for ratio in ratios:
+        if ratio <= 0:
+            continue
+        matching = [
+            row
+            for row in summaries
+            if list(row["method"]["stage_ratios"].values()) == [ratio] * len(STAGES)
+        ]
+        by_policy = {row["method"]["policy"]: row for row in matching}
+        if {"trajectory_global", "c4_global", "prompt_only_global"} <= set(by_policy):
+            calibration_comparisons.append(
+                {
+                    "ratio": ratio,
+                    "trajectory_accuracy": by_policy["trajectory_global"]["accuracy"],
+                    "c4_accuracy": by_policy["c4_global"]["accuracy"],
+                    "prompt_only_accuracy": by_policy["prompt_only_global"]["accuracy"],
+                    "trajectory_strictly_best": (
+                        float(by_policy["trajectory_global"]["accuracy"])
+                        > max(
+                            float(by_policy["c4_global"]["accuracy"]),
+                            float(by_policy["prompt_only_global"]["accuracy"]),
+                        )
+                    ),
+                }
+            )
+    calibration_gate = {
+        "comparisons": calibration_comparisons,
+        "trajectory_calibration_promising": any(
+            row["trajectory_strictly_best"] for row in calibration_comparisons
+        ),
+    }
+    if not prompt_gate["passed"] or not calibration_gate["trajectory_calibration_promising"]:
+        write_json(
+            p["dev_summary"],
+            {
+                "schema": "stage_calibrated_dev_summary_v1",
+                **metadata(cfg, dev_manifest_hash=manifest_hash(tasks)),
+                "methods": summaries,
+                "prompt_gate": prompt_gate,
+                "calibration_gate": calibration_gate,
+                "stage_budget_search_performed": False,
+                "frozen_policy": None,
+            },
+        )
+        raise RuntimeError(
+            "Development gate failed; do not search stage budgets or use final test sets"
+        )
+    current = uniform_ratios(0.0)
+    coordinate_summaries = []
+    for round_index in range(2):
+        for stage in STAGES:
+            candidates = []
+            for ratio in ratios:
+                candidate = dict(current)
+                candidate[stage] = ratio
+                name = f"coordinate_r{round_index}_{stage}_{ratio:.2f}".replace(".", "p")
+                result = _run_methods(
+                    cfg,
+                    p,
+                    tasks,
+                    bank,
+                    bundle,
+                    [method(name, "stage_specific", candidate, structured_prompt(cfg))],
+                    p["dev_dir"] / "coordinate",
+                )[0]
+                coordinate_summaries.append(result)
+                if float(result["accuracy"]) >= accuracy_floor:
+                    candidates.append(result)
+            if candidates:
+                best = max(candidates, key=lambda row: (row["theoretical_average_mlp_pruning_ratio"], row["accuracy"]))
+                current = dict(best["method"]["stage_ratios"])
+    all_summaries = summaries + coordinate_summaries
+    feasible_trajectory = [
+        row
+        for row in summaries
+        if row["method"]["policy"] == "trajectory_global"
+        and float(row["accuracy"]) >= accuracy_floor
+    ]
+    best_global = max(
+        feasible_trajectory,
+        key=lambda row: (row["theoretical_average_mlp_pruning_ratio"], row["accuracy"]),
+    )
+    frozen = {
+        "schema": "stage_calibrated_frozen_policy_v1",
+        "accuracy_floor": accuracy_floor,
+        "structured_dense_accuracy": dense["accuracy"],
+        "best_trajectory_global": best_global["method"],
+        "stage_budget": method("stage_budget", "stage_specific", current, structured_prompt(cfg)),
+        "test_sets_consulted": False,
+    }
+    write_json(p["frozen"], frozen)
+    write_json(
+        p["dev_summary"],
+        {
+            "schema": "stage_calibrated_dev_summary_v1",
+            **metadata(cfg, dev_manifest_hash=manifest_hash(tasks)),
+            "methods": all_summaries,
+            "prompt_gate": prompt_gate,
+            "calibration_gate": calibration_gate,
+            "stage_budget_search_performed": True,
+            "frozen_policy": frozen,
+        },
+    )
+
+
+def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
+    bank = load_mask_bank(p["bank"], expected_bank_metadata(cfg, p))
+    dev_summary = read_json(p["dev_summary"])
+    if not dev_summary.get("stage_budget_search_performed") or not dev_summary.get("frozen_policy"):
+        raise RuntimeError("Development gates did not pass; final evaluation is forbidden")
+    frozen = read_json(p["frozen"])
+    bundle = load_model_bundle(cfg["model"])
+    stage_budget = frozen["stage_budget"]
+    shuffled_budget = method(
+        "shuffled_stage_budget",
+        "shuffled_stage",
+        stage_budget["stage_ratios"],
+        structured_prompt(cfg),
+    )
+    methods = [
+        method("ordinary_dense", "trajectory_global", uniform_ratios(0.0), ordinary_prompt(cfg)),
+        method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg)),
+        frozen["best_trajectory_global"],
+        method(
+            "stage_specific_matched_global",
+            "stage_specific",
+            frozen["best_trajectory_global"]["stage_ratios"],
+            structured_prompt(cfg),
+        ),
+        stage_budget,
+        shuffled_budget,
+    ]
+    output = {}
+    seeds = [int(value) for value in profile(cfg).get("final_seeds", [cfg["seed"]])]
+    for dataset_cfg in (
+        {"dataset": "gsm8k", "split": "test"},
+        {
+            "dataset": "math500",
+            "name_or_path": cfg["evaluation"]["math500_name_or_path"],
+            "split": "test",
+        },
+    ):
+        tasks = load_tasks(dataset_cfg)
+        name = dataset_cfg["dataset"]
+        output[name] = []
+        for seed in seeds:
+            output[name].extend(
+                _run_methods(
+                    cfg,
+                    p,
+                    tasks,
+                    bank,
+                    bundle,
+                    methods,
+                    p["final_dir"] / name,
+                    seed=seed,
+                )
+            )
+    aggregates = {}
+    rng = random.Random(int(cfg["seed"]))
+    for dataset, summaries in output.items():
+        by_method: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for summary in summaries:
+            by_method[summary["method"]["name"]].append(summary)
+        aggregates[dataset] = {}
+        for name, values in by_method.items():
+            accuracies = [float(value["accuracy"]) for value in values]
+            mean = sum(accuracies) / len(accuracies)
+            std = math.sqrt(sum((value - mean) ** 2 for value in accuracies) / max(1, len(accuracies) - 1))
+            aggregates[dataset][name] = {
+                "seeds": [value["seed"] for value in values],
+                "accuracy_mean": mean,
+                "accuracy_std": std,
+                "theoretical_average_mlp_pruning_ratio_mean": (
+                    sum(float(value["theoretical_average_mlp_pruning_ratio"]) for value in values)
+                    / len(values)
+                ),
+            }
+        dense_files = sorted((p["final_dir"] / dataset).glob("structured_dense_seed*.jsonl"))
+        for name in by_method:
+            if name == "structured_dense":
+                continue
+            method_files = sorted((p["final_dir"] / dataset).glob(f"{name}_seed*.jsonl"))
+            paired_deltas = []
+            for dense_file, method_file in zip(dense_files, method_files):
+                dense_rows = read_jsonl(dense_file)
+                method_rows = read_jsonl(method_file)
+                paired_deltas.extend(
+                    int(candidate["correct"]) - int(dense["correct"])
+                    for dense, candidate in zip(dense_rows, method_rows)
+                )
+            if paired_deltas:
+                bootstrap = []
+                for _ in range(1000):
+                    sample = [paired_deltas[rng.randrange(len(paired_deltas))] for _ in paired_deltas]
+                    bootstrap.append(sum(sample) / len(sample))
+                bootstrap.sort()
+                aggregates[dataset][name]["paired_accuracy_delta_vs_structured_dense"] = (
+                    sum(paired_deltas) / len(paired_deltas)
+                )
+                aggregates[dataset][name]["paired_bootstrap_95ci"] = [
+                    bootstrap[int(0.025 * (len(bootstrap) - 1))],
+                    bootstrap[int(0.975 * (len(bootstrap) - 1))],
+                ]
+    write_json(
+        p["final_summary"],
+        {
+            "schema": "stage_calibrated_final_eval_v1",
+            **metadata(cfg, frozen_policy_hash=stable_hash(frozen)),
+            "datasets": output,
+            "aggregates": aggregates,
+        },
+    )
+
+
+def command_summarize(cfg: dict[str, Any], p: dict[str, Path]) -> None:
+    required = [
+        p["preflight"],
+        p["pool_summary"],
+        p["trajectory_summary"],
+        p["selection_summary"],
+        p["bank_validation"],
+        p["dev_summary"],
+        p["final_summary"],
+    ]
+    missing = [str(path) for path in required if not path.exists()]
+    dev = read_json(p["dev_summary"]) if p["dev_summary"].exists() else None
+    final = read_json(p["final_summary"]) if p["final_summary"].exists() else None
+    gate = {
+        "schema": "stage_calibrated_workflow_gate_v1",
+        "completed": not missing,
+        "missing_artifacts": missing,
+        "logical_mask_only": True,
+        "real_speedup_claimed": False,
+        "final_test_questions_used_for_decontamination": True,
+        "final_test_labels_or_metrics_used_only_after_freeze": bool(
+            final and dev and dev["frozen_policy"].get("test_sets_consulted") is False
+        ),
+    }
+    write_json(p["workflow_gate"], gate)
+    write_json(
+        p["workflow_summary"],
+        {
+            "schema": "stage_calibrated_workflow_summary_v1",
+            **metadata(cfg),
+            "gate": gate,
+            "pool": read_json(p["pool_summary"]) if p["pool_summary"].exists() else None,
+            "trajectories": read_json(p["trajectory_summary"]) if p["trajectory_summary"].exists() else None,
+            "selection": read_json(p["selection_summary"]) if p["selection_summary"].exists() else None,
+            "mask_validation": read_json(p["bank_validation"]) if p["bank_validation"].exists() else None,
+            "dev": dev,
+            "final": final,
+        },
+    )
+
+
+COMMANDS = {
+    "preflight": command_preflight,
+    "build_pool": command_build_pool,
+    "generate_trajectories": command_generate_trajectories,
+    "select_trajectories": command_select_trajectories,
+    "calibrate_masks": command_calibrate_masks,
+    "validate_masks": command_validate_masks,
+    "evaluate_dev": command_evaluate_dev,
+    "evaluate_final": command_evaluate_final,
+    "summarize": command_summarize,
+}
+
+
+def completion_artifacts(p: dict[str, Path], stage: str) -> tuple[Path, ...]:
+    return {
+        "preflight": (p["preflight"],),
+        "build_pool": (p["pool_summary"], p["pool"]),
+        "generate_trajectories": (p["trajectory_summary"], p["candidates"]),
+        "select_trajectories": (p["selection_summary"], p["calibration"], p["dev"]),
+        "calibrate_masks": (p["bank_summary"], p["bank"]),
+        "validate_masks": (p["bank_validation"],),
+        "evaluate_dev": (p["dev_summary"], p["frozen"]),
+        "evaluate_final": (p["final_summary"],),
+        "summarize": (p["workflow_summary"], p["workflow_gate"]),
+    }[stage]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--stage", choices=tuple(COMMANDS), required=True)
+    parser.add_argument("--profile", choices=("smoke", "pilot", "formal"))
+    parser.add_argument("--force", action="store_true")
+    args = parser.parse_args()
+    cfg = read_yaml(args.config)
+    if args.profile:
+        cfg["workflow"]["profile"] = args.profile
+    set_seed(int(cfg["seed"]))
+    p = paths(cfg)
+    ensure_dir(p["root"] / PHASES[args.stage])
+    config_manifest = p["root"] / "00_preflight" / "config_manifest.json"
+    config_hash = stable_hash(cfg)
+    if config_manifest.exists():
+        existing = read_json(config_manifest)
+        if existing.get("config_hash") != config_hash:
+            raise RuntimeError(
+                "Workflow config fingerprint changed. Use a different workflow.root "
+                "instead of reusing incompatible artifacts."
+            )
+    elif args.stage != "preflight":
+        raise RuntimeError("Run preflight before other workflow stages")
+    else:
+        write_json(
+            config_manifest,
+            {
+                "schema": "stage_calibrated_workflow_config_v1",
+                "config_hash": config_hash,
+                "profile": cfg["workflow"]["profile"],
+                "model_name": cfg["model"]["name_or_path"],
+            },
+        )
+    artifacts = completion_artifacts(p, args.stage)
+    expansion_pending = p["expansion_request"].exists() and args.stage in {
+        "build_pool",
+        "generate_trajectories",
+        "select_trajectories",
+    }
+    if (
+        args.stage == "summarize"
+        and p["workflow_gate"].exists()
+        and not bool(read_json(p["workflow_gate"]).get("completed"))
+    ):
+        expansion_pending = True
+    if not args.force and not expansion_pending and all(path.exists() for path in artifacts):
+        print(f"SKIP completed stage={args.stage}")
+        return
+    COMMANDS[args.stage](cfg, p)
+
+
+if __name__ == "__main__":
+    main()
