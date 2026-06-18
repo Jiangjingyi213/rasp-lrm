@@ -52,13 +52,28 @@ def normalize_big_math_row(row: dict[str, Any], index: int) -> dict[str, Any]:
         raise ValueError("Big-Math row is missing problem/question or answer")
     source = source_name(row)
     return {
-        "id": str(row.get("id") or row.get("unique_id") or f"big-math-{index}"),
-        "dataset": "big_math_rl_verified",
+        "id": str(row.get("id") or row.get("unique_id") or row.get("uuid") or f"math-pool-{index}"),
+        "dataset": str(row.get("dataset") or "math_calibration_pool"),
         "source": source,
-        "domain": str(row.get("domain") or row.get("type") or row.get("subject") or "unknown"),
+        "domain": str(
+            row.get("domain")
+            or row.get("problem_type")
+            or row.get("type")
+            or row.get("subject")
+            or "unknown"
+        ),
         "question": str(question),
         "gold": str(answer),
     }
+
+
+def _source_pattern_matches(source: str, pattern: str) -> bool:
+    if pattern == "*":
+        return True
+    if "*" in pattern:
+        regex = "^" + re.escape(pattern.lower()).replace("\\*", ".*") + "$"
+        return re.search(regex, source.lower()) is not None
+    return normalize_text(source) == normalize_text(pattern)
 
 
 def source_allowed(
@@ -66,10 +81,10 @@ def source_allowed(
     allowed: Iterable[str] = DEFAULT_ALLOWED_SOURCES,
     excluded: Iterable[str] = DEFAULT_EXCLUDED_SOURCES,
 ) -> bool:
-    normalized = normalize_text(source)
-    excluded_values = {normalize_text(value) for value in excluded}
-    allowed_values = {normalize_text(value) for value in allowed}
-    return normalized in allowed_values and normalized not in excluded_values
+    source = str(source)
+    return any(_source_pattern_matches(source, str(value)) for value in allowed) and not any(
+        _source_pattern_matches(source, str(value)) for value in excluded
+    )
 
 
 def decontaminate(

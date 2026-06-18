@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import math
+import os
 import random
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -43,6 +45,96 @@ PHASES = {
     "evaluate_final": "06_final",
     "summarize": ".",
 }
+
+
+def _load_dataset_token_kwargs(token_value: Any) -> dict[str, Any]:
+    if token_value in (None, False, "false", "False", "0"):
+        return {}
+    parameters = inspect.signature(load_dataset).parameters
+    if "token" in parameters:
+        return {"token": token_value}
+    if "use_auth_token" in parameters:
+        return {"use_auth_token": token_value}
+    return {}
+
+
+def _resolve_hf_token(pool_cfg: dict[str, Any], *, default_gated: bool) -> Any:
+    configured = pool_cfg.get("token", None)
+    if isinstance(configured, str) and configured.startswith("$"):
+        return os.environ.get(configured[1:])
+    if configured is not None:
+        return configured
+
+    env_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    if env_token:
+        return env_token
+
+    # SynthLabsAI/Big-Math-RL-Verified is gated. Passing True lets datasets use
+    # the cached huggingface-cli token when present and fails loudly when absent.
+    return True if default_gated else None
+
+
+def _dataset_load_error_message(pool_cfg: dict[str, Any], error: Exception) -> str:
+    name = pool_cfg.get("name_or_path", "<missing>")
+    endpoint = os.environ.get("HF_ENDPOINT") or os.environ.get("HUGGINGFACE_HUB_BASE_URL") or "<default>"
+    data_files_hint = (
+        "  - 或者先把数据集 parquet 下载到服务器本地，然后在 config 的 "
+        "`calibration_pool.data_files` 指向这些 parquet 文件；代码会用 "
+        "`load_dataset('parquet', data_files=...)` 读取。\n"
+    )
+    mirror_hint = ""
+    if "hf-mirror" in str(endpoint):
+        mirror_hint = (
+            "  - 你当前的 HF endpoint 看起来是镜像站。gated 数据集在镜像站上"
+            "经常会对 dataset_infos.json 返回 403；建议本次运行显式加 "
+            "`HF_ENDPOINT=https://huggingface.co`。\n"
+        )
+    return (
+        f"Failed to load calibration dataset `{name}`.\n"
+        "这通常不是 workflow 逻辑错误，而是 Big-Math-RL-Verified 是 Hugging Face "
+        "gated dataset，当前服务器没有通过官方端点携带有效 token，或镜像站拒绝了元数据请求。\n"
+        f"Current HF endpoint: {endpoint}\n"
+        "Recommended fixes:\n"
+        "  - 先在浏览器打开 https://huggingface.co/datasets/SynthLabsAI/Big-Math-RL-Verified "
+        "并接受数据集访问条款。\n"
+        "  - 在远程服务器运行 `huggingface-cli login`，使用有访问权限的 token 登录。\n"
+        f"{mirror_hint}"
+        "  - 重新运行：`HF_ENDPOINT=https://huggingface.co PROFILE=smoke "
+        "PYTHON=/home/cike/jjy/envs/rasp_qwen3_eval/bin/python "
+        "bash scripts/run_stage_calibrated_pruning.sh`。\n"
+        f"{data_files_hint}"
+        f"Original error: {type(error).__name__}: {error}"
+    )
+
+
+def _load_calibration_pool_dataset(pool_cfg: dict[str, Any]):
+    split = pool_cfg.get("split", "train")
+    data_files = pool_cfg.get("data_files")
+    name_or_path = pool_cfg["name_or_path"]
+    dataset_config = pool_cfg.get("dataset_config") or pool_cfg.get("config_name") or pool_cfg.get("subset")
+    default_gated = str(name_or_path).lower() == "synthlabsai/big-math-rl-verified"
+    token_value = _resolve_hf_token(pool_cfg, default_gated=default_gated)
+
+    try:
+        if data_files:
+            return load_dataset(
+                str(pool_cfg.get("file_format", "parquet")),
+                data_files=data_files,
+                split=split,
+                streaming=True,
+                **_load_dataset_token_kwargs(token_value),
+            )
+        args = [name_or_path]
+        if dataset_config:
+            args.append(str(dataset_config))
+        return load_dataset(
+            *args,
+            split=split,
+            streaming=True,
+            **_load_dataset_token_kwargs(token_value),
+        )
+    except Exception as exc:
+        raise RuntimeError(_dataset_load_error_message(pool_cfg, exc)) from exc
 
 
 def paths(cfg: dict[str, Any]) -> dict[str, Path]:
@@ -147,11 +239,7 @@ def command_build_pool(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             }
         ),
     ]
-    dataset = load_dataset(
-        pool_cfg["name_or_path"],
-        split=pool_cfg.get("split", "train"),
-        streaming=True,
-    )
+    dataset = _load_calibration_pool_dataset(pool_cfg)
     rng = random.Random(int(cfg["seed"]))
     reservoir: list[dict[str, Any]] = []
     seen_allowed = 0

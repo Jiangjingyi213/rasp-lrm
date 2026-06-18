@@ -14,8 +14,11 @@ from src.stage_calibration.pool import (
 class StageCalibrationPoolTest(unittest.TestCase):
     def test_source_allowlist_excludes_math(self) -> None:
         self.assertTrue(source_allowed("HARP"))
+        self.assertTrue(source_allowed("Orca-Math"))
         self.assertFalse(source_allowed("MATH"))
         self.assertFalse(source_allowed("unknown"))
+        self.assertTrue(source_allowed("olympiads", allowed=("*",), excluded=("MATH",)))
+        self.assertFalse(source_allowed("synthetic-gsm8k", allowed=("*",), excluded=("*gsm8k*",)))
 
     def test_exact_and_near_test_overlap_are_removed(self) -> None:
         protected = [{"id": "test-1", "question": "Compute the value of 2 + 2."}]
