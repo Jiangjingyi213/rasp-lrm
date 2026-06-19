@@ -265,6 +265,10 @@ def command_build_pool(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         except ValueError:
             invalid += 1
             continue
+        if not row.get("source") and pool_cfg.get("default_source"):
+            row["source"] = str(pool_cfg["default_source"])
+        if row.get("domain") == "unknown" and pool_cfg.get("default_domain"):
+            row["domain"] = str(pool_cfg["default_domain"])
         if not source_allowed(
             row["source"],
             pool_cfg["allowed_sources"],
@@ -629,14 +633,16 @@ def _request_expansion_or_fail(
 def command_calibrate_masks(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     rows = read_jsonl(p["calibration"])
     bundle = load_model_bundle(cfg["model"])
+    c4_samples = _effective_c4_samples(cfg)
     metrics, means, stats_summary = collect_stage_statistics(
         bundle.model,
         bundle.tokenizer,
         rows,
-        c4_samples=int(cfg["masks"]["c4_samples"]),
+        c4_samples=c4_samples,
         max_input_tokens=int(cfg["generation"]["max_input_tokens"]),
         forward_chunk_tokens=int(cfg.get("calibration", {}).get("forward_chunk_tokens", 1024)),
     )
+    stats_summary["effective_c4_samples"] = c4_samples
     bank_metadata = metadata(
         cfg,
         calibration_manifest_hash=manifest_hash(rows),
@@ -651,6 +657,16 @@ def command_calibrate_masks(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     )
     save_mask_bank(p["bank"], bank)
     write_json(p["bank_summary"], {"schema": "stage_calibrated_mask_summary_v1", **bank_metadata, **stats_summary})
+
+
+def _effective_c4_samples(cfg: dict[str, Any]) -> int:
+    env_override = os.environ.get("STAGE_C4_SAMPLES")
+    if env_override is not None:
+        return int(env_override)
+    pcfg = profile(cfg)
+    if "c4_samples" in pcfg:
+        return int(pcfg["c4_samples"])
+    return int(cfg["masks"]["c4_samples"])
 
 
 def _jaccard_masks(left: torch.Tensor, right: torch.Tensor) -> float:
