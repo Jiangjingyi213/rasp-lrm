@@ -45,6 +45,18 @@ def source_name(row: dict[str, Any]) -> str:
     return ""
 
 
+def strip_embedded_answer(question: str) -> str:
+    markers = list(
+        re.finditer(
+            r"(?im)^\s*(?:answer|final\s+answer|答案)\s*[:：]",
+            str(question),
+        )
+    )
+    if not markers:
+        return str(question).strip()
+    return str(question)[: markers[-1].start()].strip()
+
+
 def normalize_big_math_row(row: dict[str, Any], index: int) -> dict[str, Any]:
     question = row.get("problem") or row.get("question") or row.get("prompt")
     answer = row.get("answer") or row.get("final_answer") or row.get("target")
@@ -62,7 +74,7 @@ def normalize_big_math_row(row: dict[str, Any], index: int) -> dict[str, Any]:
             or row.get("subject")
             or "unknown"
         ),
-        "question": str(question),
+        "question": strip_embedded_answer(str(question)),
         "gold": str(answer),
     }
 

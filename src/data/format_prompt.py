@@ -6,15 +6,32 @@ from typing import Any
 def answer_instruction(prompt_config: dict[str, Any] | None = None) -> str:
     prompt_config = prompt_config or {}
     if prompt_config.get("explicit_stage_protocol", False):
+        prefix = forced_assistant_prefix(prompt_config)
+        prefix_sentence = (
+            f"The assistant response will begin with {prefix.strip()}; continue from there. "
+            if prefix
+            else "Begin your response with <STAGE_SETUP>. "
+        )
         return (
             "Solve the problem using exactly these four stage markers, each exactly once and in order:\n"
             "<STAGE_SETUP>\n<STAGE_REASONING>\n<STAGE_VERIFY>\n<STAGE_FINAL>\n"
             "Write the final answer in \\boxed{} inside <STAGE_FINAL>. "
+            f"{prefix_sentence}"
+            "After the setup section, write <STAGE_REASONING> on its own line. "
+            "After the reasoning section, write <STAGE_VERIFY> on its own line. "
+            "After the verification section, write <STAGE_FINAL> on its own line. "
+            "Do not discuss these marker instructions in the solution. "
+            "Do not repeat a stage marker after it has appeared. "
             "Do not write any other <STAGE_...> marker."
         )
     if prompt_config.get("answer_format") == "boxed":
         return "Solve the problem step by step. Put the final answer in \\boxed{}."
     return "Solve the problem step by step. Put the final answer after 'Final answer:'."
+
+
+def forced_assistant_prefix(prompt_config: dict[str, Any] | None = None) -> str:
+    prompt_config = prompt_config or {}
+    return str(prompt_config.get("forced_assistant_prefix") or "")
 
 
 def reasoning_prompt(question: str, prompt_config: dict[str, Any] | None = None) -> str:

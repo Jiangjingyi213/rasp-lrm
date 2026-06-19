@@ -7,7 +7,7 @@ from typing import Any
 import torch
 from tqdm import tqdm
 
-from src.data.format_prompt import build_prompt
+from src.data.format_prompt import build_prompt, forced_assistant_prefix
 from src.metrics.answer_match import answer_match, extract_answer
 
 from .decode import decode_with_stage_masks
@@ -42,11 +42,13 @@ def evaluate_method(
     for task in tqdm(tasks, desc=f"eval-{method['name']}"):
         prompt_cfg = dict(method.get("prompt", {}))
         prompt = build_prompt(task["question"], tokenizer, prompt_cfg)
+        prefill = forced_assistant_prefix(prompt_cfg)
         result = decode_with_stage_masks(
             model,
             tokenizer,
             prompt,
             runtime,
+            prefill=prefill,
             max_new_tokens=int(generation["max_new_tokens"]),
             max_input_tokens=int(generation.get("max_input_tokens", 4096)),
             temperature=float(generation.get("temperature", 0.6)),

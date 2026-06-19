@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 import unittest
 
-from src.stage_calibration.protocol import STAGES, StageTokenTracker
+from src.stage_calibration.protocol import STAGES, StageTokenTracker, analyze_generated_ids
 
 
 SEQUENCES = {stage: (index + 10,) for index, stage in enumerate(STAGES)}
@@ -49,6 +50,31 @@ class StageCalibrationProtocolTest(unittest.TestCase):
         self.assertIsNone(tracker.feed(20))
         self.assertEqual(tracker.feed(21), "setup")
         self.assertEqual(tracker.transitions[0]["generated_tokens"], 2)
+
+    def test_decoded_text_fallback_handles_contextual_marker_tokens(self) -> None:
+        class FakeTokenizer:
+            chunks = [
+                "`",
+                "<STAGE_SETUP>",
+                "` setup ",
+                "<STAGE_REASONING>",
+                " reason ",
+                "<STAGE_VERIFY>",
+                " verify ",
+                "<STAGE_FINAL>",
+                " \\boxed{1}",
+            ]
+
+            def __call__(self, _text, add_special_tokens=False):
+                return SimpleNamespace(input_ids=[999])
+
+            def decode(self, ids, skip_special_tokens=True):
+                return "".join(self.chunks[: len(ids)])
+
+        result = analyze_generated_ids(FakeTokenizer(), list(range(9)))
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["detected_by"], "decoded_text")
+        self.assertEqual(result["stage_spans"][-1]["stage"], "final")
 
 
 if __name__ == "__main__":

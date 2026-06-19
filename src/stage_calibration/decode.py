@@ -6,6 +6,7 @@ import torch
 
 from src.models.hooks import model_device
 
+from .prefill import tokenize_prompt_with_prefill
 from .protocol import MARKER_TO_STAGE, STAGE_TAG_RE, StageTokenTracker, marker_token_sequences
 from .runtime import StageMaskRuntime
 
@@ -35,6 +36,7 @@ def decode_with_stage_masks(
     prompt: str,
     runtime: StageMaskRuntime,
     *,
+    prefill: str = "",
     max_new_tokens: int,
     max_input_tokens: int,
     temperature: float,
@@ -44,17 +46,34 @@ def decode_with_stage_masks(
     runtime.reset()
     tracker = StageTokenTracker(marker_token_sequences(tokenizer))
     device = model_device(model)
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_input_tokens).to(device)
+    inputs, _prompt_ids, prefill_ids = tokenize_prompt_with_prefill(
+        tokenizer,
+        prompt,
+        prefill,
+        max_input_tokens=max_input_tokens,
+        device=device,
+    )
+    generated: list[int] = []
+    prefill_stage: str | None = None
+    for token_id in prefill_ids:
+        generated.append(int(token_id))
+        new_stage = tracker.feed(int(token_id))
+        if new_stage:
+            prefill_stage = new_stage
     outputs = model(**inputs, use_cache=True, return_dict=True)
+    if prefill_stage:
+        runtime.set_stage(prefill_stage)
     past = outputs.past_key_values
     eos = tokenizer.eos_token_id
     eos_ids = {int(eos)} if isinstance(eos, int) else {int(value) for value in (eos or [])}
-    generated: list[int] = []
     ended_with_eos = False
+    sampled_tokens = 0
     for _ in range(max_new_tokens):
         token = _sample(outputs.logits[:, -1, :], temperature, top_p, top_k)
         token_id = int(token.item())
+        sampled_tokens += 1
         generated.append(token_id)
+        runtime.record_token()
         new_stage = tracker.feed(token_id)
         if new_stage:
             runtime.set_stage(new_stage)
@@ -65,7 +84,6 @@ def decode_with_stage_masks(
         if unknown:
             tracker.fallback_dense(f"unknown_stage_marker:{unknown[0]}")
             runtime.fallback_dense(tracker.fallback_reason or "unknown_stage_marker")
-        runtime.record_token()
         if token_id in eos_ids:
             ended_with_eos = True
             break
@@ -80,7 +98,7 @@ def decode_with_stage_masks(
         "generated_token_ids": generated,
         "generated_tokens": len(generated),
         "ended_with_eos": ended_with_eos,
-        "truncated": not ended_with_eos and len(generated) >= max_new_tokens,
+        "truncated": not ended_with_eos and sampled_tokens >= max_new_tokens,
         "stage_protocol": protocol,
         "runtime_stage_mask": runtime.summary(),
     }

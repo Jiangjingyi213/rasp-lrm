@@ -5,8 +5,10 @@ import unittest
 from src.stage_calibration.pool import (
     decontaminate,
     jaccard,
+    normalize_big_math_row,
     normalize_text,
     source_allowed,
+    strip_embedded_answer,
     stratified_split,
 )
 
@@ -43,6 +45,15 @@ class StageCalibrationPoolTest(unittest.TestCase):
     def test_normalization_and_jaccard(self) -> None:
         self.assertEqual(normalize_text("Value: 2+2"), "value 2 2")
         self.assertEqual(jaccard({"a", "b"}, {"a", "b"}), 1.0)
+
+    def test_embedded_answer_is_removed_from_question(self) -> None:
+        self.assertEqual(strip_embedded_answer("Compute 1+1.\n\nAnswer: 2."), "Compute 1+1.")
+        row = normalize_big_math_row(
+            {"question": "Compute 2+2.\nAnswer: 4", "answer": "4", "source": "olympiads"},
+            0,
+        )
+        self.assertEqual(row["question"], "Compute 2+2.")
+        self.assertEqual(row["gold"], "4")
 
 
 if __name__ == "__main__":

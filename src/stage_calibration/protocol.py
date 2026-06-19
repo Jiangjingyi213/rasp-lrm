@@ -140,7 +140,89 @@ class StageTokenTracker:
 
 
 def analyze_generated_ids(tokenizer, generated_ids: list[int]) -> dict[str, Any]:
+    decoded_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
     tracker = StageTokenTracker(marker_token_sequences(tokenizer))
     for token_id in generated_ids:
         tracker.feed(int(token_id))
-    return tracker.finalize(tokenizer.decode(generated_ids, skip_special_tokens=True))
+    result = tracker.finalize(decoded_text)
+    if result["valid"]:
+        result["detected_by"] = "token_sequence"
+        return result
+    text_result = analyze_decoded_text_markers(tokenizer, generated_ids, decoded_text)
+    if text_result is not None and text_result["valid"]:
+        return text_result
+    result["detected_by"] = "token_sequence"
+    return result
+
+
+def analyze_decoded_text_markers(
+    tokenizer, generated_ids: list[int], decoded_text: str
+) -> dict[str, Any] | None:
+    matches = list(STAGE_TAG_RE.finditer(decoded_text))
+    if not matches:
+        return None
+    markers = [match.group(0) for match in matches]
+    if any(marker not in MARKER_TO_STAGE for marker in markers):
+        return None
+    stages = [MARKER_TO_STAGE[marker] for marker in markers]
+    if tuple(stages) != STAGES:
+        return None
+
+    marker_positions = []
+    for match, stage in zip(matches, stages):
+        start = _token_index_at_decoded_char(tokenizer, generated_ids, match.start())
+        end = _token_index_at_decoded_char(tokenizer, generated_ids, match.end())
+        marker_positions.append((start, max(start, end), stage))
+
+    assignments: list[str | None] = [None] * len(generated_ids)
+    spans = []
+    for index, (start, end, stage) in enumerate(marker_positions):
+        content_end = (
+            marker_positions[index + 1][0]
+            if index + 1 < len(marker_positions)
+            else len(generated_ids)
+        )
+        for token_index in range(end, content_end):
+            assignments[token_index] = stage
+        spans.append(
+            {
+                "stage": stage,
+                "marker_start_token": start,
+                "content_start_token": end,
+                "content_end_token": content_end,
+                "content_tokens": max(0, content_end - end),
+            }
+        )
+
+    return {
+        "valid": True,
+        "fallback_reason": None,
+        "transitions": [
+            {"stage": stage, "generated_tokens": end}
+            for _start, end, stage in marker_positions
+        ],
+        "stage_spans": spans,
+        "token_stages": assignments,
+        "detected_by": "decoded_text",
+    }
+
+
+def _token_index_at_decoded_char(tokenizer, generated_ids: list[int], char_index: int) -> int:
+    if char_index <= 0:
+        return 0
+    cache: dict[int, int] = {}
+
+    def decoded_len(end: int) -> int:
+        if end not in cache:
+            cache[end] = len(tokenizer.decode(generated_ids[:end], skip_special_tokens=True))
+        return cache[end]
+
+    low = 0
+    high = len(generated_ids)
+    while low < high:
+        mid = (low + high) // 2
+        if decoded_len(mid) < char_index:
+            low = mid + 1
+        else:
+            high = mid
+    return low

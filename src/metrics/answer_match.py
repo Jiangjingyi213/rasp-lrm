@@ -96,6 +96,8 @@ def is_numeric_like(answer: str) -> bool:
 
 def is_number_with_units(answer: str) -> bool:
     answer = clean_answer_for_numeric_check(answer)
+    if SYMBOLIC_HINT_RE.search(answer):
+        return False
     if any(ch in answer for ch in "()=+*/") or "-" in answer:
         return False
     return bool(NUMBER_RE.search(answer))
@@ -188,4 +190,7 @@ def answer_match(prediction: str, gold: str, use_math_verify: bool = True) -> bo
     if re.fullmatch(r"[A-Za-z]+", gold_answer):
         if re.search(rf"\b{re.escape(gold_answer)}\b", pred, re.IGNORECASE):
             return True
-    return use_math_verify and _math_verify_match(prediction, gold)
+    return use_math_verify and (
+        _math_verify_match(pred, gold_answer)
+        or _math_verify_match(pred, gold)
+    )

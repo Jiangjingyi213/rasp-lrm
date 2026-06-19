@@ -22,6 +22,7 @@ prompt:
     use_chat_template: true
     enable_thinking: true
     explicit_stage_protocol: true
+    forced_assistant_prefix: "<STAGE_SETUP>\n"
 
 generation:
   max_input_tokens: 4096
@@ -37,6 +38,12 @@ calibration_pool:
   allowed_sources: [Orca-Math, olympiads, aops_forum, HARP, Big-Math-Reformulated]
   excluded_sources: [GSM8k, MATH, Omni-MATH, amc_aime, cn_k12]
   near_duplicate_threshold: 0.80
+
+selection:
+  difficulty_filter: moderate
+
+calibration:
+  forward_chunk_tokens: 1024
 
 masks:
   metric: WIFV
@@ -60,6 +67,7 @@ profiles:
     dev_problems: 8
     min_stage_tokens: 128
     expansion_problems: 0
+    difficulty_filter: any_correct
     final_seeds: [1]
   pilot:
     candidate_problems: 300

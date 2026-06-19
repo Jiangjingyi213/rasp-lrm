@@ -12,9 +12,10 @@ from typing import Any
 
 import torch
 from datasets import load_dataset
+from transformers import AutoTokenizer
 from tqdm import tqdm
 
-from src.data.format_prompt import build_prompt
+from src.data.format_prompt import build_prompt, forced_assistant_prefix
 from src.data.load_gsm8k import load_tasks
 from src.metrics.answer_match import answer_match, extract_answer, math_verify_available
 from src.models.load_model import load_model_bundle
@@ -22,6 +23,7 @@ from src.stage_calibration.artifacts import manifest_hash, stable_hash
 from src.stage_calibration.calibrate import collect_stage_statistics
 from src.stage_calibration.evaluate import evaluate_method, uniform_ratios
 from src.stage_calibration.mask_bank import build_mask_bank, load_mask_bank, save_mask_bank
+from src.stage_calibration.prefill import tokenize_prompt_with_prefill
 from src.stage_calibration.pool import (
     decontaminate,
     normalize_big_math_row,
@@ -311,13 +313,15 @@ def command_generate_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> No
     eos_ids = {int(eos)} if isinstance(eos, int) else {int(value) for value in (eos or [])}
     for problem_index, row in enumerate(tqdm(rows, desc="generate-stage-calibration-trajectories")):
         prompt = build_prompt(row["question"], bundle.tokenizer, prompt_cfg)
-        inputs = bundle.tokenizer(
+        prefill = forced_assistant_prefix(prompt_cfg)
+        inputs, prompt_ids, prefill_ids = tokenize_prompt_with_prefill(
+            bundle.tokenizer,
             prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=int(generation["max_input_tokens"]),
-        ).to(bundle.device)
-        prompt_ids = [int(value) for value in inputs["input_ids"][0].cpu().tolist()]
+            prefill,
+            max_input_tokens=int(generation["max_input_tokens"]),
+            device=bundle.device,
+        )
+        input_length = len(prompt_ids) + len(prefill_ids)
         for sample_index in range(repeats):
             if (str(row["id"]), sample_index) in existing_keys:
                 continue
@@ -333,7 +337,8 @@ def command_generate_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> No
                 pad_token_id=bundle.tokenizer.pad_token_id,
                 eos_token_id=bundle.tokenizer.eos_token_id,
             )
-            generated = [int(value) for value in out[0, len(prompt_ids) :].cpu().tolist()]
+            continuation = [int(value) for value in out[0, input_length:].cpu().tolist()]
+            generated = [*prefill_ids, *continuation]
             completion = bundle.tokenizer.decode(generated, skip_special_tokens=True).strip()
             stage_protocol = analyze_generated_ids(bundle.tokenizer, generated)
             ended_with_eos = bool(generated and generated[-1] in eos_ids)
@@ -373,6 +378,7 @@ def command_generate_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> No
 def command_select_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     pool_ids = {str(row["id"]) for row in read_jsonl(p["pool"])}
     rows = [row for row in read_jsonl(p["candidates"]) if str(row["id"]) in pool_ids]
+    rows = _refresh_candidate_metadata(cfg, rows)
     pcfg = profile(cfg)
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -381,7 +387,7 @@ def command_select_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None
     rejection = Counter()
     for values in grouped.values():
         correct_count = sum(int(row["correct"]) for row in values)
-        if not 1 <= correct_count < len(values):
+        if not _passes_difficulty_filter(correct_count, len(values), cfg, pcfg):
             rejection["difficulty_filter"] += 1
             continue
         candidates = [
@@ -399,6 +405,7 @@ def command_select_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None
         eligible.append(selected)
     required = int(pcfg["calibration_problems"]) + int(pcfg["dev_problems"])
     if len(eligible) < required:
+        _write_selection_failure_summary(cfg, p, rows, grouped, eligible, rejection, required)
         _request_expansion_or_fail(
             cfg,
             p,
@@ -433,6 +440,7 @@ def command_select_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None
             "dev_problems": len(dev),
             "stage_content_tokens": dict(stage_tokens),
             "minimum_stage_tokens": min_stage_tokens,
+            "difficulty_filter": _difficulty_filter_mode(cfg, pcfg),
             "rejection_counts": dict(rejection),
             "passed": passed,
         },
@@ -445,6 +453,99 @@ def command_select_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None
             reason="selected calibration trajectories do not meet per-stage token gate",
         )
     p["expansion_request"].unlink(missing_ok=True)
+
+
+def _passes_difficulty_filter(
+    correct_count: int,
+    attempts: int,
+    cfg: dict[str, Any],
+    pcfg: dict[str, Any],
+) -> bool:
+    mode = _difficulty_filter_mode(cfg, pcfg)
+    if mode == "moderate":
+        return 1 <= correct_count < attempts
+    if mode == "any_correct":
+        return correct_count >= 1
+    raise ValueError(f"Unknown difficulty_filter mode: {mode}")
+
+
+def _difficulty_filter_mode(cfg: dict[str, Any], pcfg: dict[str, Any]) -> str:
+    return str(
+        pcfg.get(
+            "difficulty_filter",
+            cfg.get("selection", {}).get("difficulty_filter", "moderate"),
+        )
+    )
+
+
+def _refresh_candidate_metadata(cfg: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return rows
+    tokenizer = AutoTokenizer.from_pretrained(
+        cfg["model"]["name_or_path"],
+        trust_remote_code=cfg["model"].get("trust_remote_code", True),
+    )
+    refreshed = []
+    for row in rows:
+        row = dict(row)
+        generated = [int(value) for value in row.get("generated_token_ids", [])]
+        if generated:
+            row["stage_protocol"] = analyze_generated_ids(tokenizer, generated)
+        completion = str(row.get("completion", ""))
+        gold = str(row.get("gold", ""))
+        row["prediction"] = extract_answer(completion)
+        row["correct"] = answer_match(completion, gold)
+        refreshed.append(row)
+    return refreshed
+
+
+def _write_selection_failure_summary(
+    cfg: dict[str, Any],
+    p: dict[str, Path],
+    rows: list[dict[str, Any]],
+    grouped: dict[str, list[dict[str, Any]]],
+    eligible: list[dict[str, Any]],
+    rejection: Counter,
+    required: int,
+) -> None:
+    correct_counts = Counter(str(sum(int(row["correct"]) for row in values)) for values in grouped.values())
+    fallback_reasons = Counter(
+        str(row.get("stage_protocol", {}).get("fallback_reason") or "valid")
+        for row in rows
+    )
+    detected_by = Counter(str(row.get("stage_protocol", {}).get("detected_by", "unknown")) for row in rows)
+    row_count = len(rows)
+    write_json(
+        p["selection_summary"],
+        {
+            "schema": "stage_calibration_selection_v1",
+            **metadata(cfg),
+            "passed": False,
+            "failure_reason": f"eligible_problems:{len(eligible)}<{required}",
+            "eligible_problems": len(eligible),
+            "required_problems": required,
+            "candidate_rows": row_count,
+            "candidate_problems": len(grouped),
+            "row_correct_rate": (
+                sum(int(row["correct"]) for row in rows) / row_count if row_count else None
+            ),
+            "row_valid_stage_rate": (
+                sum(int(row.get("stage_protocol", {}).get("valid")) for row in rows) / row_count
+                if row_count
+                else None
+            ),
+            "row_truncation_rate": (
+                sum(int(row.get("truncated", False)) for row in rows) / row_count
+                if row_count
+                else None
+            ),
+            "problem_correct_count_histogram": dict(correct_counts),
+            "stage_fallback_reasons": dict(fallback_reasons),
+            "stage_detected_by": dict(detected_by),
+            "difficulty_filter": _difficulty_filter_mode(cfg, profile(cfg)),
+            "rejection_counts": dict(rejection),
+        },
+    )
 
 
 def _request_expansion_or_fail(
@@ -484,6 +585,7 @@ def command_calibrate_masks(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         rows,
         c4_samples=int(cfg["masks"]["c4_samples"]),
         max_input_tokens=int(cfg["generation"]["max_input_tokens"]),
+        forward_chunk_tokens=int(cfg.get("calibration", {}).get("forward_chunk_tokens", 1024)),
     )
     bank_metadata = metadata(
         cfg,

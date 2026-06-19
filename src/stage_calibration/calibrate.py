@@ -28,6 +28,7 @@ def collect_stage_statistics(
     *,
     c4_samples: int,
     max_input_tokens: int,
+    forward_chunk_tokens: int = 1024,
 ) -> tuple[dict[str, dict[int, torch.Tensor]], dict[str, dict[int, torch.Tensor]], dict[str, Any]]:
     layers = get_decoder_layers(model)
     channels = {layer_id: int(_mlp(layer).down_proj.weight.shape[1]) for layer_id, layer in enumerate(layers)}
@@ -51,6 +52,25 @@ def collect_stage_statistics(
     for layer_id, layer in enumerate(layers):
         handles.append(_mlp(layer).down_proj.register_forward_hook(make_hook(layer_id)))
     try:
+        def run_input_ids(input_ids: torch.Tensor, full_masks: dict[str, torch.Tensor]) -> None:
+            nonlocal active_masks
+            chunk = max(1, int(forward_chunk_tokens))
+            past_key_values = None
+            seq = int(input_ids.shape[1])
+            for start in range(0, seq, chunk):
+                end = min(seq, start + chunk)
+                active_masks = {
+                    source: mask[start:end]
+                    for source, mask in full_masks.items()
+                }
+                outputs = model(
+                    input_ids=input_ids[:, start:end],
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                    return_dict=True,
+                )
+                past_key_values = outputs.past_key_values
+
         for row in tqdm(trajectories, desc="stage-wifv-calibration"):
             prompt_ids = [int(value) for value in row["prompt_token_ids"]]
             generated_ids = [int(value) for value in row["generated_token_ids"]]
@@ -73,18 +93,28 @@ def collect_stage_statistics(
                     + [token_stages[index] == stage for index in range(generated_end)],
                     dtype=torch.bool,
                 )
-            model(input_ids=input_ids, use_cache=False)
+            run_input_ids(input_ids, active_masks)
 
-        c4 = load_dataset("allenai/c4", "en", split="train", streaming=True)
-        for row in tqdm(c4.take(c4_samples), total=c4_samples, desc="c4-wifv-calibration"):
-            inputs = tokenizer(
-                str(row["text"]),
-                return_tensors="pt",
-                truncation=True,
-                max_length=max_input_tokens,
-            ).to(model_device(model))
-            active_masks = {"c4": torch.ones(inputs["input_ids"].shape[1], dtype=torch.bool)}
-            model(**inputs, use_cache=False)
+        if c4_samples > 0:
+            try:
+                c4 = load_dataset("allenai/c4", "en", split="train", streaming=True)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Failed to load allenai/c4 for the C4 global mask baseline. "
+                    "If the remote server can only use hf-mirror, rerun with "
+                    "`HF_ENDPOINT=https://hf-mirror.com`. For a pure workflow smoke test, "
+                    "set `masks.c4_samples: 0` in a temporary config, but do not use that "
+                    "as the formal C4 baseline."
+                ) from exc
+            for row in tqdm(c4.take(c4_samples), total=c4_samples, desc="c4-wifv-calibration"):
+                inputs = tokenizer(
+                    str(row["text"]),
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=max_input_tokens,
+                ).to(model_device(model))
+                active_masks = {"c4": torch.ones(inputs["input_ids"].shape[1], dtype=torch.bool)}
+                run_input_ids(inputs["input_ids"], active_masks)
     finally:
         for handle in handles:
             handle.remove()
