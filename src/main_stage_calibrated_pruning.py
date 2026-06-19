@@ -246,9 +246,18 @@ def command_build_pool(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     reservoir: list[dict[str, Any]] = []
     seen_allowed = 0
     invalid = 0
-    max_scan = int(pool_cfg.get("max_scan", 100000))
-    reservoir_target = max(candidate_target * 4, candidate_target)
+    max_scan = int(pcfg.get("pool_max_scan", pool_cfg.get("max_scan", 100000)))
+    reservoir_multiplier = int(pcfg.get("pool_reservoir_multiplier", pool_cfg.get("reservoir_multiplier", 4)))
+    reservoir_target = max(candidate_target * reservoir_multiplier, candidate_target)
+    stop_after_reservoir = bool(
+        pcfg.get(
+            "pool_stop_after_reservoir_target",
+            pool_cfg.get("stop_after_reservoir_target", False),
+        )
+    )
+    scanned_rows = 0
     for index, raw in enumerate(dataset):
+        scanned_rows = index + 1
         if index >= max_scan:
             break
         try:
@@ -269,6 +278,8 @@ def command_build_pool(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             replacement = rng.randint(0, seen_allowed - 1)
             if replacement < reservoir_target:
                 reservoir[replacement] = row
+        if stop_after_reservoir and len(reservoir) >= reservoir_target:
+            break
     kept, excluded = decontaminate(
         reservoir,
         protected,
@@ -288,6 +299,10 @@ def command_build_pool(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             "candidate_rows": len(kept),
             "candidate_target": candidate_target,
             "expansion_round": expansion_round,
+            "scanned_rows": scanned_rows,
+            "seen_allowed_rows": seen_allowed,
+            "reservoir_target": reservoir_target,
+            "pool_stop_after_reservoir_target": stop_after_reservoir,
             "excluded_rows": len(excluded),
             "invalid_rows": invalid,
             "source_counts": source_counts(kept),

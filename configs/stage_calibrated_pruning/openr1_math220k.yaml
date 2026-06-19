@@ -2,7 +2,7 @@ seed: 1
 
 workflow:
   profile: smoke
-  root: runs/08_stage_calibrated_pruning/main_{profile}_openr1_math220k_v2
+  root: runs/08_stage_calibrated_pruning/main_{profile}_openr1_math220k_v3
 
 stages: [setup, reasoning, verify, final]
 
@@ -68,6 +68,9 @@ profiles:
     min_stage_tokens: 128
     expansion_problems: 0
     difficulty_filter: any_correct
+    pool_max_scan: 2000
+    pool_reservoir_multiplier: 2
+    pool_stop_after_reservoir_target: true
     final_seeds: [1]
   pilot:
     candidate_problems: 300
