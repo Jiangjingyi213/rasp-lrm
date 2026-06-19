@@ -73,6 +73,8 @@ profiles:
     expansion_problems: 0
     difficulty_filter: any_correct
     c4_samples: 0
+    final_eval_limit: 8
+    final_methods: [ordinary_dense, structured_dense, stage_budget]
     final_seeds: [1]
   pilot:
     candidate_problems: 300

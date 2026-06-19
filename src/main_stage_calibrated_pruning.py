@@ -995,8 +995,10 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         stage_budget,
         shuffled_budget,
     ]
+    methods = _limit_final_methods_for_smoke(cfg, methods)
     output = {}
     seeds = [int(value) for value in profile(cfg).get("final_seeds", [cfg["seed"]])]
+    final_limit = _final_eval_limit(cfg)
     for dataset_cfg in (
         {"dataset": "gsm8k", "split": "test"},
         {
@@ -1007,6 +1009,8 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     ):
         tasks = load_tasks(dataset_cfg)
         name = dataset_cfg["dataset"]
+        if final_limit is not None:
+            tasks = tasks[:final_limit]
         output[name] = []
         for seed in seeds:
             output[name].extend(
@@ -1072,10 +1076,38 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         {
             "schema": "stage_calibrated_final_eval_v1",
             **metadata(cfg, frozen_policy_hash=stable_hash(frozen)),
+            "final_eval_limit": final_limit,
             "datasets": output,
             "aggregates": aggregates,
         },
     )
+
+
+def _final_eval_limit(cfg: dict[str, Any]) -> int | None:
+    env_limit = os.environ.get("STAGE_FINAL_EVAL_LIMIT")
+    if env_limit is not None:
+        value = int(env_limit)
+        return value if value > 0 else None
+    pcfg = profile(cfg)
+    if "final_eval_limit" in pcfg:
+        value = int(pcfg["final_eval_limit"])
+        return value if value > 0 else None
+    return None
+
+
+def _limit_final_methods_for_smoke(cfg: dict[str, Any], methods: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    env_names = os.environ.get("STAGE_FINAL_METHODS")
+    if env_names:
+        allowed = {name.strip() for name in env_names.split(",") if name.strip()}
+        return [row for row in methods if row["name"] in allowed]
+    pcfg = profile(cfg)
+    if "final_methods" in pcfg:
+        allowed = {str(name) for name in pcfg["final_methods"]}
+        return [row for row in methods if row["name"] in allowed]
+    if cfg["workflow"].get("profile") == "smoke":
+        allowed = {"ordinary_dense", "structured_dense", "stage_budget"}
+        return [row for row in methods if row["name"] in allowed]
+    return methods
 
 
 def command_summarize(cfg: dict[str, Any], p: dict[str, Path]) -> None:
