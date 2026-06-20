@@ -1099,15 +1099,27 @@ def _limit_final_methods_for_smoke(cfg: dict[str, Any], methods: list[dict[str, 
     env_names = os.environ.get("STAGE_FINAL_METHODS")
     if env_names:
         allowed = {name.strip() for name in env_names.split(",") if name.strip()}
-        return [row for row in methods if row["name"] in allowed]
+        return _dedupe_methods_by_name([row for row in methods if row["name"] in allowed])
     pcfg = profile(cfg)
     if "final_methods" in pcfg:
         allowed = {str(name) for name in pcfg["final_methods"]}
-        return [row for row in methods if row["name"] in allowed]
+        return _dedupe_methods_by_name([row for row in methods if row["name"] in allowed])
     if cfg["workflow"].get("profile") == "smoke":
         allowed = {"ordinary_dense", "structured_dense", "stage_budget"}
-        return [row for row in methods if row["name"] in allowed]
-    return methods
+        return _dedupe_methods_by_name([row for row in methods if row["name"] in allowed])
+    return _dedupe_methods_by_name(methods)
+
+
+def _dedupe_methods_by_name(methods: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen = set()
+    output = []
+    for row in methods:
+        name = str(row["name"])
+        if name in seen:
+            continue
+        seen.add(name)
+        output.append(row)
+    return output
 
 
 def command_summarize(cfg: dict[str, Any], p: dict[str, Path]) -> None:

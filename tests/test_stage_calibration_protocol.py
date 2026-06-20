@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 import unittest
 
-from src.stage_calibration.protocol import STAGES, StageTokenTracker, analyze_generated_ids
+from src.stage_calibration.protocol import STAGES, StageTokenTracker, analyze_generated_ids, marker_token_sequences
 
 
 SEQUENCES = {stage: (index + 10,) for index, stage in enumerate(STAGES)}
@@ -75,6 +75,22 @@ class StageCalibrationProtocolTest(unittest.TestCase):
         self.assertTrue(result["valid"])
         self.assertEqual(result["detected_by"], "decoded_text")
         self.assertEqual(result["stage_spans"][-1]["stage"], "final")
+
+    def test_marker_token_sequences_include_trailing_newline_variant(self) -> None:
+        class FakeTokenizer:
+            def __call__(self, text, add_special_tokens=False):
+                table = {
+                    "<STAGE_SETUP>": [10],
+                    "<STAGE_SETUP>\n": [110],
+                    "<STAGE_REASONING>": [11],
+                    "<STAGE_VERIFY>": [12],
+                    "<STAGE_FINAL>": [13],
+                }
+                return SimpleNamespace(input_ids=table.get(text, [999]))
+
+        sequences = marker_token_sequences(FakeTokenizer())
+        tracker = StageTokenTracker(sequences)
+        self.assertEqual(tracker.feed(110), "setup")
 
 
 if __name__ == "__main__":

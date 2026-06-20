@@ -33,6 +33,13 @@ def marker_token_sequences(tokenizer) -> dict[str, tuple[tuple[int, ...], ...]]:
     for stage, marker in MARKERS.items():
         variants = []
         for prefix in ("", "\n", "\n\n", " "):
+            for suffix in ("", "\n", "\n\n", " "):
+                token_ids = tuple(
+                    int(value)
+                    for value in tokenizer(prefix + marker + suffix, add_special_tokens=False).input_ids
+                )
+                if token_ids and token_ids not in variants:
+                    variants.append(token_ids)
             token_ids = tuple(
                 int(value)
                 for value in tokenizer(prefix + marker, add_special_tokens=False).input_ids
