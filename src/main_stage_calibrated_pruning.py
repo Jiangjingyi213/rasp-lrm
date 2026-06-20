@@ -865,6 +865,8 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
                 "schema": "stage_calibrated_frozen_policy_v1",
                 "smoke_relaxed_e2e": True,
                 "relaxation_reason": "development gate failed in smoke profile",
+                "stage_budget_is_pruned": False,
+                "reason": "dev gate failed; ratios inherited only for e2e smoke",
                 "best_trajectory_global": best_global["method"],
                 "stage_budget": method(
                     "stage_budget",
@@ -943,6 +945,7 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         "schema": "stage_calibrated_frozen_policy_v1",
         "accuracy_floor": accuracy_floor,
         "structured_dense_accuracy": dense["accuracy"],
+        "stage_budget_is_pruned": True,
         "best_trajectory_global": best_global["method"],
         "stage_budget": method("stage_budget", "stage_specific", current, structured_prompt(cfg)),
         "test_sets_consulted": False,
@@ -974,6 +977,20 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     ):
         raise RuntimeError("Development gates did not pass; final evaluation is forbidden")
     frozen = read_json(p["frozen"])
+    final_limit = _final_eval_limit(cfg)
+    if final_limit == 0:
+        write_json(
+            p["final_summary"],
+            {
+                "schema": "stage_calibrated_final_eval_v1",
+                **metadata(cfg, frozen_policy_hash=stable_hash(frozen)),
+                "final_eval_limit": final_limit,
+                "final_eval_skipped": True,
+                "datasets": {},
+                "aggregates": {},
+            },
+        )
+        return
     bundle = load_model_bundle(cfg["model"])
     stage_budget = frozen["stage_budget"]
     shuffled_budget = method(
@@ -998,7 +1015,6 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     methods = _limit_final_methods_for_smoke(cfg, methods)
     output = {}
     seeds = [int(value) for value in profile(cfg).get("final_seeds", [cfg["seed"]])]
-    final_limit = _final_eval_limit(cfg)
     for dataset_cfg in (
         {"dataset": "gsm8k", "split": "test"},
         {
@@ -1087,11 +1103,11 @@ def _final_eval_limit(cfg: dict[str, Any]) -> int | None:
     env_limit = os.environ.get("STAGE_FINAL_EVAL_LIMIT")
     if env_limit is not None:
         value = int(env_limit)
-        return value if value > 0 else None
+        return value if value >= 0 else None
     pcfg = profile(cfg)
     if "final_eval_limit" in pcfg:
         value = int(pcfg["final_eval_limit"])
-        return value if value > 0 else None
+        return value if value >= 0 else None
     return None
 
 

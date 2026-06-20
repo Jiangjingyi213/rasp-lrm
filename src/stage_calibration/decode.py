@@ -7,7 +7,7 @@ import torch
 from src.models.hooks import model_device
 
 from .prefill import tokenize_prompt_with_prefill
-from .protocol import MARKER_TO_STAGE, STAGE_TAG_RE, StageTokenTracker, marker_token_sequences
+from .protocol import StageTokenTracker, illegal_stage_tag_reason, marker_token_sequences
 from .runtime import StageMaskRuntime
 
 
@@ -80,10 +80,10 @@ def decode_with_stage_masks(
         if tracker.fallback_reason and runtime.fallback_reason is None:
             runtime.fallback_dense(tracker.fallback_reason)
         decoded = tokenizer.decode(generated, skip_special_tokens=True)
-        unknown = [value for value in STAGE_TAG_RE.findall(decoded) if value not in MARKER_TO_STAGE]
-        if unknown:
-            tracker.fallback_dense(f"unknown_stage_marker:{unknown[0]}")
-            runtime.fallback_dense(tracker.fallback_reason or "unknown_stage_marker")
+        illegal_reason = illegal_stage_tag_reason(decoded)
+        if illegal_reason:
+            tracker.fallback_dense(illegal_reason)
+            runtime.fallback_dense(tracker.fallback_reason or illegal_reason)
         if token_id in eos_ids:
             ended_with_eos = True
             break

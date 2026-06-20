@@ -15,7 +15,9 @@ def answer_instruction(prompt_config: dict[str, Any] | None = None) -> str:
         return (
             "Solve the problem using exactly these four stage markers, each exactly once and in order:\n"
             "<STAGE_SETUP>\n<STAGE_REASONING>\n<STAGE_VERIFY>\n<STAGE_FINAL>\n"
-            "Write the final answer in \\boxed{} inside <STAGE_FINAL>. "
+            "Only use these opening markers. Never write closing markers such as </STAGE_SETUP>. "
+            "Never restart from <STAGE_SETUP> after <STAGE_FINAL>. "
+            "Inside <STAGE_FINAL>, output only the final boxed answer in \\boxed{} and then stop. "
             f"{prefix_sentence}"
             "After the setup section, write <STAGE_REASONING> on its own line. "
             "After the reasoning section, write <STAGE_VERIFY> on its own line. "

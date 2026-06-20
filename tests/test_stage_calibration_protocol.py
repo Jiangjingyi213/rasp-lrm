@@ -43,6 +43,20 @@ class StageCalibrationProtocolTest(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertIn("unknown_stage_marker", result["fallback_reason"])
 
+    def test_closing_marker_is_invalid(self) -> None:
+        tracker = StageTokenTracker(SEQUENCES)
+        result = tracker.finalize("<STAGE_SETUP> setup </STAGE_SETUP>")
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["fallback_reason"], "closing_stage_marker:</STAGE_SETUP>")
+
+    def test_restarting_after_final_is_invalid(self) -> None:
+        tracker = StageTokenTracker(SEQUENCES)
+        for token in (10, 1, 11, 2, 12, 3, 13, 4, 10):
+            tracker.feed(token)
+        result = tracker.finalize()
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["fallback_reason"], "invalid_stage_transition:None->setup")
+
     def test_transition_occurs_only_after_complete_multitoken_marker(self) -> None:
         sequences = dict(SEQUENCES)
         sequences["setup"] = (20, 21)
@@ -75,6 +89,30 @@ class StageCalibrationProtocolTest(unittest.TestCase):
         self.assertTrue(result["valid"])
         self.assertEqual(result["detected_by"], "decoded_text")
         self.assertEqual(result["stage_spans"][-1]["stage"], "final")
+
+    def test_decoded_text_fallback_rejects_closing_marker(self) -> None:
+        class FakeTokenizer:
+            chunks = [
+                "<STAGE_SETUP>",
+                " setup ",
+                "</STAGE_SETUP>",
+                "<STAGE_REASONING>",
+                " reason ",
+                "<STAGE_VERIFY>",
+                " verify ",
+                "<STAGE_FINAL>",
+                " \\boxed{1}",
+            ]
+
+            def __call__(self, _text, add_special_tokens=False):
+                return SimpleNamespace(input_ids=[999])
+
+            def decode(self, ids, skip_special_tokens=True):
+                return "".join(self.chunks[: len(ids)])
+
+        result = analyze_generated_ids(FakeTokenizer(), list(range(9)))
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["fallback_reason"], "closing_stage_marker:</STAGE_SETUP>")
 
     def test_marker_token_sequences_include_trailing_newline_variant(self) -> None:
         class FakeTokenizer:

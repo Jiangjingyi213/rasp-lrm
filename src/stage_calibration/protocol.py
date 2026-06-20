@@ -14,6 +14,7 @@ MARKERS = {
 }
 MARKER_TO_STAGE = {marker: stage for stage, marker in MARKERS.items()}
 STAGE_TAG_RE = re.compile(r"<STAGE_[A-Z_]+>")
+ANY_STAGE_TAG_RE = re.compile(r"</?STAGE_[A-Z_]+>")
 
 
 def explicit_stage_instruction() -> str:
@@ -23,9 +24,21 @@ def explicit_stage_instruction() -> str:
         "<STAGE_REASONING>\n"
         "<STAGE_VERIFY>\n"
         "<STAGE_FINAL>\n"
-        "Write the final answer in \\boxed{} inside <STAGE_FINAL>. "
+        "Only use these opening markers. Never write closing markers such as </STAGE_SETUP>. "
+        "Never restart from <STAGE_SETUP> after <STAGE_FINAL>. "
+        "Inside <STAGE_FINAL>, output only the final boxed answer in \\boxed{} and then stop. "
         "Do not write any other <STAGE_...> marker."
     )
+
+
+def illegal_stage_tag_reason(decoded_text: str) -> str | None:
+    for match in ANY_STAGE_TAG_RE.finditer(decoded_text):
+        marker = match.group(0)
+        if marker.startswith("</"):
+            return f"closing_stage_marker:{marker}"
+        if marker not in MARKER_TO_STAGE:
+            return f"unknown_stage_marker:{marker}"
+    return None
 
 
 def marker_token_sequences(tokenizer) -> dict[str, tuple[tuple[int, ...], ...]]:
@@ -101,11 +114,9 @@ class StageTokenTracker:
         self.active_stage = None
 
     def finalize(self, decoded_text: str = "") -> dict[str, Any]:
-        unknown = [
-            marker for marker in STAGE_TAG_RE.findall(decoded_text) if marker not in MARKER_TO_STAGE
-        ]
-        if unknown:
-            self.fallback_dense(f"unknown_stage_marker:{unknown[0]}")
+        illegal_reason = illegal_stage_tag_reason(decoded_text)
+        if illegal_reason:
+            self.fallback_dense(illegal_reason)
         valid = self.fallback_reason is None and self.next_stage_index == len(STAGES)
         if self.fallback_reason is None and not valid:
             self.fallback_reason = f"missing_stage_markers:{self.next_stage_index}/{len(STAGES)}"
@@ -165,6 +176,8 @@ def analyze_generated_ids(tokenizer, generated_ids: list[int]) -> dict[str, Any]
 def analyze_decoded_text_markers(
     tokenizer, generated_ids: list[int], decoded_text: str
 ) -> dict[str, Any] | None:
+    if illegal_stage_tag_reason(decoded_text):
+        return None
     matches = list(STAGE_TAG_RE.finditer(decoded_text))
     if not matches:
         return None
