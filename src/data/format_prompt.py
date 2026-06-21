@@ -10,21 +10,22 @@ def answer_instruction(prompt_config: dict[str, Any] | None = None) -> str:
         prefix_sentence = (
             f"The assistant response will begin with {prefix.strip()}; continue from there. "
             if prefix
-            else "Begin your response with <STAGE_SETUP>. "
+            else "Begin your response with [[STAGE_SETUP]]. "
         )
         return (
-            "Solve the problem using exactly these four stage markers, each exactly once and in order:\n"
-            "<STAGE_SETUP>\n<STAGE_REASONING>\n<STAGE_VERIFY>\n<STAGE_FINAL>\n"
-            "Only use these opening markers. Never write closing markers such as </STAGE_SETUP>. "
-            "Never restart from <STAGE_SETUP> after <STAGE_FINAL>. "
-            "Inside <STAGE_FINAL>, output only the final boxed answer in \\boxed{} and then stop. "
+            "Solve the problem using exactly these four plain one-line labels, each exactly once and in order:\n"
+            "[[STAGE_SETUP]]\n[[STAGE_REASONING]]\n[[STAGE_VERIFY]]\n[[STAGE_FINAL]]\n"
+            "These labels are not XML tags. Never write labels like <STAGE_SETUP> "
+            "or closing tags such as </STAGE_SETUP>. "
+            "Never restart from [[STAGE_SETUP]] after [[STAGE_FINAL]]. "
+            "Inside [[STAGE_FINAL]], output only the final boxed answer in \\boxed{} and then stop. "
             f"{prefix_sentence}"
-            "After the setup section, write <STAGE_REASONING> on its own line. "
-            "After the reasoning section, write <STAGE_VERIFY> on its own line. "
-            "After the verification section, write <STAGE_FINAL> on its own line. "
-            "Do not discuss these marker instructions in the solution. "
-            "Do not repeat a stage marker after it has appeared. "
-            "Do not write any other <STAGE_...> marker."
+            "After the setup section, write [[STAGE_REASONING]] on its own line. "
+            "After the reasoning section, write [[STAGE_VERIFY]] on its own line. "
+            "After the verification section, write [[STAGE_FINAL]] on its own line. "
+            "Do not discuss these label instructions in the solution. "
+            "Do not repeat a stage label after it has appeared. "
+            "Do not write any other [[STAGE_...]] label."
         )
     if prompt_config.get("answer_format") == "boxed":
         return "Solve the problem step by step. Put the final answer in \\boxed{}."

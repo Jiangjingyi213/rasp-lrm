@@ -57,8 +57,12 @@ class StageCalibrationRuntimeTest(unittest.TestCase):
 
     def test_runtime_keeps_protocol_illegal_tag_reason(self) -> None:
         runtime = StageMaskRuntime(tiny_bank(), "stage_specific", {stage: 0.5 for stage in STAGES})
-        reason = illegal_stage_tag_reason("<STAGE_SETUP> done </STAGE_SETUP>")
+        reason = illegal_stage_tag_reason("[[STAGE_SETUP]] done </STAGE_SETUP>")
         self.assertEqual(reason, "closing_stage_marker:</STAGE_SETUP>")
+        self.assertEqual(
+            illegal_stage_tag_reason("<STAGE_SETUP> done"),
+            "legacy_stage_marker:<STAGE_SETUP>",
+        )
         runtime.set_stage("setup")
         runtime.fallback_dense(reason)
         self.assertEqual(runtime.summary()["fallback_reason"], reason)

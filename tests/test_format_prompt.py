@@ -19,11 +19,14 @@ class FormatPromptTest(unittest.TestCase):
             "What is 1+1?",
             prompt_config={
                 "explicit_stage_protocol": True,
-                "forced_assistant_prefix": "<STAGE_SETUP>\n",
+                "forced_assistant_prefix": "[[STAGE_SETUP]]\n",
             },
         )
-        self.assertIn("Never write closing markers such as </STAGE_SETUP>.", prompt)
-        self.assertIn("Never restart from <STAGE_SETUP> after <STAGE_FINAL>.", prompt)
+        self.assertIn("[[STAGE_SETUP]]", prompt)
+        self.assertIn("These labels are not XML tags.", prompt)
+        self.assertIn("Never write labels like <STAGE_SETUP>", prompt)
+        self.assertIn("or closing tags such as </STAGE_SETUP>.", prompt)
+        self.assertIn("Never restart from [[STAGE_SETUP]] after [[STAGE_FINAL]].", prompt)
         self.assertIn("output only the final boxed answer", prompt)
         self.assertIn("and then stop", prompt)
 

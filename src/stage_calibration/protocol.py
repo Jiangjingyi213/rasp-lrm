@@ -7,35 +7,38 @@ from typing import Any
 
 STAGES = ("setup", "reasoning", "verify", "final")
 MARKERS = {
-    "setup": "<STAGE_SETUP>",
-    "reasoning": "<STAGE_REASONING>",
-    "verify": "<STAGE_VERIFY>",
-    "final": "<STAGE_FINAL>",
+    "setup": "[[STAGE_SETUP]]",
+    "reasoning": "[[STAGE_REASONING]]",
+    "verify": "[[STAGE_VERIFY]]",
+    "final": "[[STAGE_FINAL]]",
 }
 MARKER_TO_STAGE = {marker: stage for stage, marker in MARKERS.items()}
-STAGE_TAG_RE = re.compile(r"<STAGE_[A-Z_]+>")
-ANY_STAGE_TAG_RE = re.compile(r"</?STAGE_[A-Z_]+>")
+STAGE_LABEL_RE = re.compile(r"\[\[STAGE_[A-Z_]+\]\]")
+ANY_STAGE_LABEL_RE = re.compile(r"\[\[STAGE_[A-Z_]+\]\]|</?STAGE_[A-Z_]+>")
 
 
 def explicit_stage_instruction() -> str:
     return (
         "Solve the problem using exactly these four stage markers, each exactly once and in order:\n"
-        "<STAGE_SETUP>\n"
-        "<STAGE_REASONING>\n"
-        "<STAGE_VERIFY>\n"
-        "<STAGE_FINAL>\n"
-        "Only use these opening markers. Never write closing markers such as </STAGE_SETUP>. "
-        "Never restart from <STAGE_SETUP> after <STAGE_FINAL>. "
-        "Inside <STAGE_FINAL>, output only the final boxed answer in \\boxed{} and then stop. "
-        "Do not write any other <STAGE_...> marker."
+        "[[STAGE_SETUP]]\n"
+        "[[STAGE_REASONING]]\n"
+        "[[STAGE_VERIFY]]\n"
+        "[[STAGE_FINAL]]\n"
+        "These are plain one-line labels, not XML tags. Never write labels like <STAGE_SETUP> "
+        "or closing tags such as </STAGE_SETUP>. "
+        "Never restart from [[STAGE_SETUP]] after [[STAGE_FINAL]]. "
+        "Inside [[STAGE_FINAL]], output only the final boxed answer in \\boxed{} and then stop. "
+        "Do not write any other [[STAGE_...]] label."
     )
 
 
 def illegal_stage_tag_reason(decoded_text: str) -> str | None:
-    for match in ANY_STAGE_TAG_RE.finditer(decoded_text):
+    for match in ANY_STAGE_LABEL_RE.finditer(decoded_text):
         marker = match.group(0)
         if marker.startswith("</"):
             return f"closing_stage_marker:{marker}"
+        if marker.startswith("<"):
+            return f"legacy_stage_marker:{marker}"
         if marker not in MARKER_TO_STAGE:
             return f"unknown_stage_marker:{marker}"
     return None
@@ -178,7 +181,7 @@ def analyze_decoded_text_markers(
 ) -> dict[str, Any] | None:
     if illegal_stage_tag_reason(decoded_text):
         return None
-    matches = list(STAGE_TAG_RE.finditer(decoded_text))
+    matches = list(STAGE_LABEL_RE.finditer(decoded_text))
     if not matches:
         return None
     markers = [match.group(0) for match in matches]

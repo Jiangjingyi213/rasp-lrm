@@ -451,7 +451,10 @@ def command_select_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None
         for stage in STAGES:
             stage_tokens[stage] += sum(value == stage for value in row["stage_protocol"]["token_stages"])
     min_stage_tokens = int(pcfg["min_stage_tokens"])
-    token_gate_passed = all(stage_tokens[stage] >= min_stage_tokens for stage in STAGES)
+    min_stage_tokens_by_stage = _stage_token_thresholds(pcfg, min_stage_tokens)
+    token_gate_passed = all(
+        stage_tokens[stage] >= min_stage_tokens_by_stage[stage] for stage in STAGES
+    )
     token_gate_relaxed = (
         cfg["workflow"].get("profile") == "smoke"
         and not token_gate_passed
@@ -477,6 +480,7 @@ def command_select_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None
             "dev_problems": len(dev),
             "stage_content_tokens": dict(stage_tokens),
             "minimum_stage_tokens": min_stage_tokens,
+            "minimum_stage_tokens_by_stage": min_stage_tokens_by_stage,
             "stage_token_gate_passed": token_gate_passed,
             "stage_token_gate_relaxed": token_gate_relaxed,
             "difficulty_filter": _difficulty_filter_mode(cfg, pcfg),
@@ -492,6 +496,11 @@ def command_select_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None
             reason="selected calibration trajectories do not meet per-stage token gate",
         )
     p["expansion_request"].unlink(missing_ok=True)
+
+
+def _stage_token_thresholds(pcfg: dict[str, Any], default_value: int) -> dict[str, int]:
+    overrides = pcfg.get("min_stage_tokens_by_stage", {})
+    return {stage: int(overrides.get(stage, default_value)) for stage in STAGES}
 
 
 def _adaptive_smoke_selection_sizes(
@@ -733,6 +742,68 @@ def method(name: str, policy: str, ratios: dict[str, float], prompt: dict[str, A
     return {"name": name, "policy": policy, "stage_ratios": ratios, "prompt": prompt, "bias_compensation": bias}
 
 
+def _evaluation_threshold(cfg: dict[str, Any], name: str, default: float | int | None = None) -> Any:
+    pcfg = profile(cfg)
+    if name in pcfg:
+        return pcfg[name]
+    return cfg.get("evaluation", {}).get(name, default)
+
+
+def _metric_value(summary: dict[str, Any], name: str, default: float = 0.0) -> float:
+    value = summary.get(name)
+    return default if value is None else float(value)
+
+
+def _prompt_accuracy_gate_passed(
+    cfg: dict[str, Any],
+    *,
+    ordinary: dict[str, Any],
+    dense: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    ordinary_accuracy = _metric_value(ordinary, "accuracy")
+    dense_accuracy = _metric_value(dense, "accuracy")
+    max_drop = float(_evaluation_threshold(cfg, "maximum_structured_prompt_accuracy_drop", 0.02))
+    percentage_passed = dense_accuracy >= ordinary_accuracy - max_drop
+    extra_error_limit = _evaluation_threshold(cfg, "maximum_structured_prompt_extra_errors", None)
+    extra_error_passed = False
+    extra_errors = None
+    if extra_error_limit is not None:
+        ordinary_errors = int(ordinary["problems"]) - int(ordinary["correct"])
+        dense_errors = int(dense["problems"]) - int(dense["correct"])
+        extra_errors = dense_errors - ordinary_errors
+        extra_error_passed = extra_errors <= int(extra_error_limit)
+    return percentage_passed or extra_error_passed, {
+        "maximum_structured_prompt_accuracy_drop": max_drop,
+        "percentage_drop_passed": percentage_passed,
+        "maximum_structured_prompt_extra_errors": extra_error_limit,
+        "structured_prompt_extra_errors": extra_errors,
+        "extra_error_passed": extra_error_passed,
+    }
+
+
+def _method_quality_passed(cfg: dict[str, Any], summary: dict[str, Any]) -> bool:
+    min_protocol = float(
+        _evaluation_threshold(
+            cfg,
+            "minimum_candidate_stage_protocol_rate",
+            _evaluation_threshold(cfg, "minimum_stage_protocol_rate", 0.0),
+        )
+    )
+    max_fallback = float(_evaluation_threshold(cfg, "maximum_candidate_fallback_rate", 1.0))
+    max_truncation = float(
+        _evaluation_threshold(
+            cfg,
+            "maximum_candidate_truncation_rate",
+            _evaluation_threshold(cfg, "maximum_truncation_rate", 1.0),
+        )
+    )
+    return (
+        _metric_value(summary, "valid_stage_protocol_rate") >= min_protocol
+        and _metric_value(summary, "fallback_rate") <= max_fallback
+        and _metric_value(summary, "truncation_rate") <= max_truncation
+    )
+
+
 def _run_methods(cfg, p, tasks, bank, bundle, methods, output_dir, seed: int | None = None) -> list[dict[str, Any]]:
     summaries = []
     ensure_dir(output_dir)
@@ -802,19 +873,31 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     dense = next(row for row in summaries if row["method"]["name"] == "structured_dense")
     ordinary = next(row for row in summaries if row["method"]["name"] == "ordinary_dense")
     accuracy_floor = float(dense["accuracy"]) - float(cfg["evaluation"]["max_dev_accuracy_drop"])
+    prompt_accuracy_passed, prompt_accuracy_details = _prompt_accuracy_gate_passed(
+        cfg,
+        ordinary=ordinary,
+        dense=dense,
+    )
+    minimum_stage_protocol_rate = float(
+        _evaluation_threshold(cfg, "minimum_stage_protocol_rate", 0.90)
+    )
+    maximum_truncation_rate = float(
+        _evaluation_threshold(cfg, "maximum_truncation_rate", 0.05)
+    )
     prompt_gate = {
         "structured_protocol_rate": dense["valid_stage_protocol_rate"],
         "structured_truncation_rate": dense["truncation_rate"],
         "ordinary_dense_accuracy": ordinary["accuracy"],
         "structured_dense_accuracy": dense["accuracy"],
+        "minimum_stage_protocol_rate": minimum_stage_protocol_rate,
+        "maximum_truncation_rate": maximum_truncation_rate,
+        **prompt_accuracy_details,
         "passed": bool(
             float(dense["valid_stage_protocol_rate"])
-            >= float(cfg["evaluation"]["minimum_stage_protocol_rate"])
+            >= minimum_stage_protocol_rate
             and float(dense["truncation_rate"])
-            <= float(cfg["evaluation"]["maximum_truncation_rate"])
-            and float(dense["accuracy"])
-            >= float(ordinary["accuracy"])
-            - float(cfg["evaluation"]["maximum_structured_prompt_accuracy_drop"])
+            <= maximum_truncation_rate
+            and prompt_accuracy_passed
         ),
     }
     calibration_comparisons = []
@@ -828,13 +911,21 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         ]
         by_policy = {row["method"]["policy"]: row for row in matching}
         if {"trajectory_global", "c4_global", "prompt_only_global"} <= set(by_policy):
+            trajectory_quality_passed = _method_quality_passed(cfg, by_policy["trajectory_global"])
             calibration_comparisons.append(
                 {
                     "ratio": ratio,
                     "trajectory_accuracy": by_policy["trajectory_global"]["accuracy"],
                     "c4_accuracy": by_policy["c4_global"]["accuracy"],
                     "prompt_only_accuracy": by_policy["prompt_only_global"]["accuracy"],
+                    "trajectory_valid_stage_protocol_rate": by_policy["trajectory_global"][
+                        "valid_stage_protocol_rate"
+                    ],
+                    "trajectory_fallback_rate": by_policy["trajectory_global"]["fallback_rate"],
+                    "trajectory_quality_passed": trajectory_quality_passed,
                     "trajectory_strictly_best": (
+                        trajectory_quality_passed
+                        and
                         float(by_policy["trajectory_global"]["accuracy"])
                         > max(
                             float(by_policy["c4_global"]["accuracy"]),
@@ -854,6 +945,11 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             global_candidates = [
                 row for row in summaries if row["method"]["policy"] == "trajectory_global"
             ]
+            quality_global_candidates = [
+                row for row in global_candidates if _method_quality_passed(cfg, row)
+            ]
+            if quality_global_candidates:
+                global_candidates = quality_global_candidates
             best_global = max(
                 global_candidates,
                 key=lambda row: (
@@ -925,7 +1021,7 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
                     p["dev_dir"] / "coordinate",
                 )[0]
                 coordinate_summaries.append(result)
-                if float(result["accuracy"]) >= accuracy_floor:
+                if float(result["accuracy"]) >= accuracy_floor and _method_quality_passed(cfg, result):
                     candidates.append(result)
             if candidates:
                 best = max(candidates, key=lambda row: (row["theoretical_average_mlp_pruning_ratio"], row["accuracy"]))
@@ -936,7 +1032,10 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         for row in summaries
         if row["method"]["policy"] == "trajectory_global"
         and float(row["accuracy"]) >= accuracy_floor
+        and _method_quality_passed(cfg, row)
     ]
+    if not feasible_trajectory:
+        raise RuntimeError("No trajectory_global method passed dev accuracy and protocol/fallback gates")
     best_global = max(
         feasible_trajectory,
         key=lambda row: (row["theoretical_average_mlp_pruning_ratio"], row["accuracy"]),

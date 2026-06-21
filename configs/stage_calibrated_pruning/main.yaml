@@ -2,7 +2,7 @@ seed: 1
 
 workflow:
   profile: smoke
-  root: runs/08_stage_calibrated_pruning/main_{profile}
+  root: runs/08_stage_calibrated_pruning/main_{profile}_labels_v2
 
 stages: [setup, reasoning, verify, final]
 
@@ -22,7 +22,7 @@ prompt:
     use_chat_template: true
     enable_thinking: true
     explicit_stage_protocol: true
-    forced_assistant_prefix: "<STAGE_SETUP>\n"
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
 
 generation:
   max_input_tokens: 4096
@@ -75,6 +75,11 @@ profiles:
     calibration_problems: 64
     dev_problems: 64
     min_stage_tokens: 2048
+    min_stage_tokens_by_stage:
+      setup: 2048
+      reasoning: 2048
+      verify: 2048
+      final: 512
     expansion_problems: 0
     final_seeds: [1]
   formal:

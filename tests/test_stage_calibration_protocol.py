@@ -39,15 +39,21 @@ class StageCalibrationProtocolTest(unittest.TestCase):
 
     def test_unknown_marker_is_invalid(self) -> None:
         tracker = StageTokenTracker(SEQUENCES)
-        result = tracker.finalize("<STAGE_OTHER>")
+        result = tracker.finalize("[[STAGE_OTHER]]")
         self.assertFalse(result["valid"])
         self.assertIn("unknown_stage_marker", result["fallback_reason"])
 
     def test_closing_marker_is_invalid(self) -> None:
         tracker = StageTokenTracker(SEQUENCES)
-        result = tracker.finalize("<STAGE_SETUP> setup </STAGE_SETUP>")
+        result = tracker.finalize("[[STAGE_SETUP]] setup </STAGE_SETUP>")
         self.assertFalse(result["valid"])
         self.assertEqual(result["fallback_reason"], "closing_stage_marker:</STAGE_SETUP>")
+
+    def test_legacy_xml_marker_is_invalid(self) -> None:
+        tracker = StageTokenTracker(SEQUENCES)
+        result = tracker.finalize("<STAGE_SETUP> setup")
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["fallback_reason"], "legacy_stage_marker:<STAGE_SETUP>")
 
     def test_restarting_after_final_is_invalid(self) -> None:
         tracker = StageTokenTracker(SEQUENCES)
@@ -69,13 +75,13 @@ class StageCalibrationProtocolTest(unittest.TestCase):
         class FakeTokenizer:
             chunks = [
                 "`",
-                "<STAGE_SETUP>",
+                "[[STAGE_SETUP]]",
                 "` setup ",
-                "<STAGE_REASONING>",
+                "[[STAGE_REASONING]]",
                 " reason ",
-                "<STAGE_VERIFY>",
+                "[[STAGE_VERIFY]]",
                 " verify ",
-                "<STAGE_FINAL>",
+                "[[STAGE_FINAL]]",
                 " \\boxed{1}",
             ]
 
@@ -93,14 +99,14 @@ class StageCalibrationProtocolTest(unittest.TestCase):
     def test_decoded_text_fallback_rejects_closing_marker(self) -> None:
         class FakeTokenizer:
             chunks = [
-                "<STAGE_SETUP>",
+                "[[STAGE_SETUP]]",
                 " setup ",
                 "</STAGE_SETUP>",
-                "<STAGE_REASONING>",
+                "[[STAGE_REASONING]]",
                 " reason ",
-                "<STAGE_VERIFY>",
+                "[[STAGE_VERIFY]]",
                 " verify ",
-                "<STAGE_FINAL>",
+                "[[STAGE_FINAL]]",
                 " \\boxed{1}",
             ]
 
@@ -118,11 +124,11 @@ class StageCalibrationProtocolTest(unittest.TestCase):
         class FakeTokenizer:
             def __call__(self, text, add_special_tokens=False):
                 table = {
-                    "<STAGE_SETUP>": [10],
-                    "<STAGE_SETUP>\n": [110],
-                    "<STAGE_REASONING>": [11],
-                    "<STAGE_VERIFY>": [12],
-                    "<STAGE_FINAL>": [13],
+                    "[[STAGE_SETUP]]": [10],
+                    "[[STAGE_SETUP]]\n": [110],
+                    "[[STAGE_REASONING]]": [11],
+                    "[[STAGE_VERIFY]]": [12],
+                    "[[STAGE_FINAL]]": [13],
                 }
                 return SimpleNamespace(input_ids=table.get(text, [999]))
 

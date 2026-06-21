@@ -2,7 +2,7 @@ seed: 1
 
 workflow:
   profile: smoke
-  root: runs/08_stage_calibrated_pruning/main_{profile}_openr1_math220k_v3
+  root: runs/08_stage_calibrated_pruning/main_{profile}_openr1_math220k_labels_v2
 
 stages: [setup, reasoning, verify, final]
 
@@ -22,7 +22,7 @@ prompt:
     use_chat_template: true
     enable_thinking: true
     explicit_stage_protocol: true
-    forced_assistant_prefix: "<STAGE_SETUP>\n"
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
 
 generation:
   max_input_tokens: 4096
