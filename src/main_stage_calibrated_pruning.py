@@ -12,7 +12,7 @@ from typing import Any
 
 import torch
 from datasets import load_dataset
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, StoppingCriteria, StoppingCriteriaList
 from tqdm import tqdm
 
 from src.data.format_prompt import build_prompt, forced_assistant_prefix
@@ -31,7 +31,11 @@ from src.stage_calibration.pool import (
     source_counts,
     stratified_split,
 )
-from src.stage_calibration.protocol import STAGES, analyze_generated_ids
+from src.stage_calibration.protocol import (
+    STAGES,
+    analyze_generated_ids,
+    decoded_text_has_complete_stage_answer,
+)
 from src.utils.io import append_jsonl, ensure_dir, read_json, read_jsonl, read_yaml, write_json, write_jsonl
 from src.utils.seed import set_seed
 
@@ -47,6 +51,21 @@ PHASES = {
     "evaluate_final": "06_final",
     "summarize": ".",
 }
+
+
+class CompleteStageAnswerStoppingCriteria(StoppingCriteria):
+    def __init__(self, tokenizer, protocol_start_index: int) -> None:
+        self.tokenizer = tokenizer
+        self.protocol_start_index = int(protocol_start_index)
+        self.triggered = False
+
+    def __call__(self, input_ids, scores, **kwargs) -> bool:
+        generated = input_ids[0, self.protocol_start_index :]
+        if generated.numel() == 0:
+            return False
+        decoded = self.tokenizer.decode(generated, skip_special_tokens=True)
+        self.triggered = decoded_text_has_complete_stage_answer(decoded)
+        return self.triggered
 
 
 def _load_dataset_token_kwargs(token_value: Any) -> dict[str, Any]:
@@ -346,6 +365,10 @@ def command_generate_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> No
                 continue
             sample_seed = int(cfg["seed"]) + problem_index * repeats + sample_index
             torch.manual_seed(sample_seed)
+            stopping_criteria = CompleteStageAnswerStoppingCriteria(
+                bundle.tokenizer,
+                len(prompt_ids),
+            )
             out = bundle.model.generate(
                 **inputs,
                 max_new_tokens=int(generation["max_new_tokens"]),
@@ -355,6 +378,7 @@ def command_generate_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> No
                 top_k=int(generation["top_k"]),
                 pad_token_id=bundle.tokenizer.pad_token_id,
                 eos_token_id=bundle.tokenizer.eos_token_id,
+                stopping_criteria=StoppingCriteriaList([stopping_criteria]),
             )
             continuation = [int(value) for value in out[0, input_length:].cpu().tolist()]
             generated = [*prefill_ids, *continuation]
@@ -374,6 +398,7 @@ def command_generate_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> No
                     "prediction": extract_answer(completion),
                     "correct": answer_match(completion, row["gold"]),
                     "ended_with_eos": ended_with_eos,
+                    "stopped_after_complete_stage_answer": stopping_criteria.triggered,
                     "truncated": not ended_with_eos and len(generated) >= int(generation["max_new_tokens"]),
                     "stage_protocol": stage_protocol,
                 },

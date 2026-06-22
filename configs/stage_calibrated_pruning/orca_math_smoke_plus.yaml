@@ -2,7 +2,7 @@ seed: 1
 
 workflow:
   profile: smoke
-  root: runs/08_stage_calibrated_pruning/main_smoke_plus_orca_math_labels_v2
+  root: runs/08_stage_calibrated_pruning/main_smoke_plus_orca_math_labels_v3
 
 stages: [setup, reasoning, verify, final]
 

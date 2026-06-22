@@ -7,7 +7,12 @@ import torch
 from src.models.hooks import model_device
 
 from .prefill import tokenize_prompt_with_prefill
-from .protocol import StageTokenTracker, illegal_stage_tag_reason, marker_token_sequences
+from .protocol import (
+    StageTokenTracker,
+    illegal_stage_tag_reason,
+    marker_token_sequences,
+    should_stop_after_complete_stage_answer,
+)
 from .runtime import StageMaskRuntime
 
 
@@ -67,6 +72,7 @@ def decode_with_stage_masks(
     eos = tokenizer.eos_token_id
     eos_ids = {int(eos)} if isinstance(eos, int) else {int(value) for value in (eos or [])}
     ended_with_eos = False
+    stopped_after_complete_stage_answer = False
     sampled_tokens = 0
     for _ in range(max_new_tokens):
         token = _sample(outputs.logits[:, -1, :], temperature, top_p, top_k)
@@ -84,6 +90,12 @@ def decode_with_stage_masks(
         if illegal_reason:
             tracker.fallback_dense(illegal_reason)
             runtime.fallback_dense(tracker.fallback_reason or illegal_reason)
+        if (
+            tracker.fallback_reason is None
+            and should_stop_after_complete_stage_answer(tracker, decoded)
+        ):
+            stopped_after_complete_stage_answer = True
+            break
         if token_id in eos_ids:
             ended_with_eos = True
             break
@@ -98,6 +110,7 @@ def decode_with_stage_masks(
         "generated_token_ids": generated,
         "generated_tokens": len(generated),
         "ended_with_eos": ended_with_eos,
+        "stopped_after_complete_stage_answer": stopped_after_complete_stage_answer,
         "truncated": not ended_with_eos and sampled_tokens >= max_new_tokens,
         "stage_protocol": protocol,
         "runtime_stage_mask": runtime.summary(),

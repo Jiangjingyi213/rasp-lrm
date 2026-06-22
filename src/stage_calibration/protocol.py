@@ -15,6 +15,7 @@ MARKERS = {
 MARKER_TO_STAGE = {marker: stage for stage, marker in MARKERS.items()}
 STAGE_LABEL_RE = re.compile(r"\[\[STAGE_[A-Z_]+\]\]")
 ANY_STAGE_LABEL_RE = re.compile(r"\[\[STAGE_[A-Z_]+\]\]|</?STAGE_[A-Z_]+>")
+BOXED_RE = re.compile(r"\\boxed\s*\{")
 
 
 def explicit_stage_instruction() -> str:
@@ -77,6 +78,7 @@ class StageTokenTracker:
     fallback_reason: str | None = None
     transitions: list[dict[str, Any]] = field(default_factory=list)
     marker_positions: list[tuple[int, int, str]] = field(default_factory=list)
+    protocol_restarts: int = 0
 
     def _variants(self, stage: str) -> tuple[tuple[int, ...], ...]:
         value = self.marker_sequences[stage]
@@ -99,6 +101,8 @@ class StageTokenTracker:
             return None
         stage, sequence = matched[0]
         expected = STAGES[self.next_stage_index] if self.next_stage_index < len(STAGES) else None
+        if self._can_restart_from_setup(stage, expected):
+            return self._restart_from_setup(sequence)
         if stage != expected:
             self.fallback_reason = f"invalid_stage_transition:{expected}->{stage}"
             self.active_stage = None
@@ -110,6 +114,32 @@ class StageTokenTracker:
         self.next_stage_index += 1
         self.transitions.append({"stage": stage, "generated_tokens": end})
         return stage
+
+    def _can_restart_from_setup(self, stage: str, expected: str | None) -> bool:
+        return (
+            stage == "setup"
+            and expected != "setup"
+            and expected is not None
+            and self.next_stage_index > 0
+            and self.next_stage_index < len(STAGES)
+        )
+
+    def _restart_from_setup(self, sequence: tuple[int, ...]) -> str:
+        self.protocol_restarts += 1
+        end = len(self.generated_ids)
+        start = end - len(sequence)
+        self.marker_positions = [(start, end, "setup")]
+        self.active_stage = "setup"
+        self.next_stage_index = 1
+        self.transitions = [
+            {
+                "stage": "setup",
+                "generated_tokens": end,
+                "protocol_restart": True,
+                "restart_index": self.protocol_restarts,
+            }
+        ]
+        return "setup"
 
     def fallback_dense(self, reason: str) -> None:
         if self.fallback_reason is None:
@@ -157,6 +187,7 @@ class StageTokenTracker:
             "transitions": self.transitions,
             "stage_spans": spans,
             "token_stages": assignments,
+            "protocol_restarts": self.protocol_restarts,
         }
 
 
@@ -187,9 +218,15 @@ def analyze_decoded_text_markers(
     markers = [match.group(0) for match in matches]
     if any(marker not in MARKER_TO_STAGE for marker in markers):
         return None
-    stages = [MARKER_TO_STAGE[marker] for marker in markers]
-    if tuple(stages) != STAGES:
+    all_stages = [MARKER_TO_STAGE[marker] for marker in markers]
+    block_start = _last_complete_stage_block_start(all_stages)
+    if block_start is None:
         return None
+    block_end = block_start + len(STAGES)
+    if block_end != len(all_stages):
+        return None
+    matches = matches[block_start:block_end]
+    stages = all_stages[block_start:block_end]
 
     marker_positions = []
     for match, stage in zip(matches, stages):
@@ -227,7 +264,66 @@ def analyze_decoded_text_markers(
         "stage_spans": spans,
         "token_stages": assignments,
         "detected_by": "decoded_text",
+        "leading_stage_labels_ignored": block_start,
+        "protocol_restarts": sum(stage == "setup" for stage in all_stages[:block_start]),
     }
+
+
+def stage_protocol_complete(tracker: StageTokenTracker) -> bool:
+    return tracker.fallback_reason is None and tracker.next_stage_index == len(STAGES)
+
+
+def boxed_answer_complete(decoded_text: str) -> bool:
+    final_index = decoded_text.rfind(MARKERS["final"])
+    if final_index < 0:
+        return False
+    text = decoded_text[final_index + len(MARKERS["final"]) :]
+    match = BOXED_RE.search(text)
+    if match is None:
+        return False
+    depth = 0
+    opened = False
+    for char in text[match.start() :]:
+        if char == "{":
+            depth += 1
+            opened = True
+        elif char == "}":
+            depth -= 1
+            if opened and depth == 0:
+                return True
+            if depth < 0:
+                return False
+    return False
+
+
+def should_stop_after_complete_stage_answer(
+    tracker: StageTokenTracker,
+    decoded_text: str,
+) -> bool:
+    return stage_protocol_complete(tracker) and boxed_answer_complete(decoded_text)
+
+
+def decoded_text_has_complete_stage_answer(decoded_text: str) -> bool:
+    if illegal_stage_tag_reason(decoded_text):
+        return False
+    matches = list(STAGE_LABEL_RE.finditer(decoded_text))
+    if not matches:
+        return False
+    markers = [match.group(0) for match in matches]
+    if any(marker not in MARKER_TO_STAGE for marker in markers):
+        return False
+    stages = [MARKER_TO_STAGE[marker] for marker in markers]
+    block_start = _last_complete_stage_block_start(stages)
+    if block_start is None or block_start + len(STAGES) != len(stages):
+        return False
+    return boxed_answer_complete(decoded_text)
+
+
+def _last_complete_stage_block_start(stages: list[str]) -> int | None:
+    for start in range(len(stages) - len(STAGES), -1, -1):
+        if tuple(stages[start : start + len(STAGES)]) == STAGES:
+            return start
+    return None
 
 
 def _token_index_at_decoded_char(tokenizer, generated_ids: list[int], char_index: int) -> int:
