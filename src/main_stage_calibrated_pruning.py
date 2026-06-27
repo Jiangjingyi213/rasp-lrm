@@ -1492,10 +1492,24 @@ def main() -> None:
     if config_manifest.exists():
         existing = read_json(config_manifest)
         if existing.get("config_hash") != config_hash:
-            raise RuntimeError(
-                "Workflow config fingerprint changed. Use a different workflow.root "
-                "instead of reusing incompatible artifacts."
-            )
+            if args.stage == "preflight" and args.force:
+                write_json(
+                    config_manifest,
+                    {
+                        "schema": "stage_calibrated_workflow_config_v1",
+                        "config_hash": config_hash,
+                        "profile": cfg["workflow"]["profile"],
+                        "model_name": cfg["model"]["name_or_path"],
+                        "refreshed_with_force": True,
+                        "previous_config_hash": existing.get("config_hash"),
+                    },
+                )
+            else:
+                raise RuntimeError(
+                    "Workflow config fingerprint changed. Run preflight with --force "
+                    "only if the existing reusable artifacts are compatible, or use a "
+                    "different workflow.root."
+                )
     elif args.stage != "preflight":
         raise RuntimeError("Run preflight before other workflow stages")
     else:
