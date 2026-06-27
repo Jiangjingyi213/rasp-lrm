@@ -69,12 +69,13 @@ profiles:
     generations_per_problem: 4
     calibration_problems: 64
     dev_problems: 64
-    min_stage_tokens: 2048
+    min_stage_tokens: 1024
     min_stage_tokens_by_stage:
-      setup: 2048
+      setup: 1024
       reasoning: 2048
-      verify: 2048
-      final: 512
+      verify: 1024
+      final: 128
+    stage_token_balanced_selection: true
     expansion_problems: 0
     difficulty_filter: any_correct
     c4_samples: 0

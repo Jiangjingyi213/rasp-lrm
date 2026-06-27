@@ -470,18 +470,28 @@ def command_select_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None
             )
         calibration_size, dev_size = adapted
         adaptive_selection = True
+    min_stage_tokens = int(pcfg["min_stage_tokens"])
+    min_stage_tokens_by_stage = _stage_token_thresholds(pcfg, min_stage_tokens)
+    selection_strategy = "stratified"
     calibration, dev = stratified_split(
         eligible,
         calibration_size,
         dev_size,
         int(cfg["seed"]),
     )
-    stage_tokens = Counter()
-    for row in calibration:
-        for stage in STAGES:
-            stage_tokens[stage] += sum(value == stage for value in row["stage_protocol"]["token_stages"])
-    min_stage_tokens = int(pcfg["min_stage_tokens"])
-    min_stage_tokens_by_stage = _stage_token_thresholds(pcfg, min_stage_tokens)
+    stage_tokens = _stage_token_totals(calibration)
+    if not _stage_token_gate_passed(stage_tokens, min_stage_tokens_by_stage) and bool(
+        pcfg.get("stage_token_balanced_selection", False)
+    ):
+        calibration, dev = _stage_token_balanced_split(
+            eligible,
+            calibration_size,
+            dev_size,
+            int(cfg["seed"]),
+            min_stage_tokens_by_stage,
+        )
+        stage_tokens = _stage_token_totals(calibration)
+        selection_strategy = "stage_token_balanced"
     token_gate_passed = all(
         stage_tokens[stage] >= min_stage_tokens_by_stage[stage] for stage in STAGES
     )
@@ -511,6 +521,7 @@ def command_select_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None
             "stage_content_tokens": dict(stage_tokens),
             "minimum_stage_tokens": min_stage_tokens,
             "minimum_stage_tokens_by_stage": min_stage_tokens_by_stage,
+            "selection_strategy": selection_strategy,
             "stage_token_gate_passed": token_gate_passed,
             "stage_token_gate_relaxed": token_gate_relaxed,
             "difficulty_filter": _difficulty_filter_mode(cfg, pcfg),
@@ -531,6 +542,75 @@ def command_select_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None
 def _stage_token_thresholds(pcfg: dict[str, Any], default_value: int) -> dict[str, int]:
     overrides = pcfg.get("min_stage_tokens_by_stage", {})
     return {stage: int(overrides.get(stage, default_value)) for stage in STAGES}
+
+
+def _stage_token_counts(row: dict[str, Any]) -> Counter[str]:
+    stages = row.get("stage_protocol", {}).get("token_stages", [])
+    return Counter(stage for stage in stages if stage in STAGES)
+
+
+def _stage_token_totals(rows: list[dict[str, Any]]) -> Counter[str]:
+    totals: Counter[str] = Counter()
+    for row in rows:
+        totals.update(_stage_token_counts(row))
+    return totals
+
+
+def _stage_token_gate_passed(
+    stage_tokens: Counter[str],
+    min_stage_tokens_by_stage: dict[str, int],
+) -> bool:
+    return all(stage_tokens[stage] >= min_stage_tokens_by_stage[stage] for stage in STAGES)
+
+
+def _stage_token_balanced_split(
+    rows: list[dict[str, Any]],
+    calibration_size: int,
+    dev_size: int,
+    seed: int,
+    min_stage_tokens_by_stage: dict[str, int],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if calibration_size + dev_size > len(rows):
+        raise ValueError("Not enough eligible rows for disjoint calibration/dev split")
+    rng = random.Random(seed)
+    remaining = list(rows)
+    rng.shuffle(remaining)
+    calibration: list[dict[str, Any]] = []
+    stage_tokens: Counter[str] = Counter()
+
+    while remaining and len(calibration) < calibration_size:
+        deficits = {
+            stage: max(0, int(min_stage_tokens_by_stage[stage]) - stage_tokens[stage])
+            for stage in STAGES
+        }
+        if any(deficits.values()):
+            best_index = max(
+                range(len(remaining)),
+                key=lambda index: _stage_token_balance_score(remaining[index], deficits),
+            )
+        else:
+            best_index = 0
+        row = remaining.pop(best_index)
+        calibration.append(row)
+        stage_tokens.update(_stage_token_counts(row))
+
+    dev = stratified_split(remaining, 0, dev_size, seed + 7919)[1]
+    if {row["id"] for row in calibration} & {row["id"] for row in dev}:
+        raise ValueError("Calibration/dev split overlap")
+    return calibration, dev
+
+
+def _stage_token_balance_score(row: dict[str, Any], deficits: dict[str, int]) -> tuple[float, int, int, int]:
+    counts = _stage_token_counts(row)
+    normalized_gain = sum(
+        min(counts[stage], deficits[stage]) / max(1, deficits[stage])
+        for stage in STAGES
+        if deficits[stage] > 0
+    )
+    raw_gain = sum(min(counts[stage], deficits[stage]) for stage in STAGES)
+    scarce_stage_gain = counts["verify"] + counts["final"]
+    total_tokens = sum(counts.values())
+    return (normalized_gain, raw_gain, scarce_stage_gain, total_tokens)
 
 
 def _adaptive_smoke_selection_sizes(
