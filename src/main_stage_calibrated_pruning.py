@@ -159,7 +159,12 @@ def _load_calibration_pool_dataset(pool_cfg: dict[str, Any]):
 
 
 def paths(cfg: dict[str, Any]) -> dict[str, Path]:
-    root = Path(str(cfg["workflow"]["root"]).format(profile=cfg["workflow"].get("profile", "smoke")))
+    root = Path(
+        str(cfg["workflow"]["root"]).format(
+            profile=cfg["workflow"].get("profile", "smoke"),
+            seed=cfg.get("seed", 1),
+        )
+    )
     return {
         "root": root,
         "preflight": root / "00_preflight" / "preflight.json",
@@ -712,6 +717,7 @@ def _jaccard_masks(left: torch.Tensor, right: torch.Tensor) -> float:
 
 def command_validate_masks(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     bank = load_mask_bank(p["bank"], expected_bank_metadata(cfg, p))
+    c4_enabled = _effective_c4_samples(cfg) > 0
     overlaps = {}
     for ratio in bank["ratios"]:
         key = f"{float(ratio):.4f}"
@@ -727,11 +733,13 @@ def command_validate_masks(cfg: dict[str, Any], p: dict[str, Path]) -> None:
                 ]
                 overlaps[key][f"{left}:{right}"] = sum(values) / len(values)
     rank_correlations = {}
-    for left, right in (
-        ("trajectory_global", "c4_global"),
+    rank_pairs = [
         ("trajectory_global", "prompt_only_global"),
         ("trajectory_global", "stage_balanced_global"),
-    ):
+    ]
+    if c4_enabled:
+        rank_pairs.insert(0, ("trajectory_global", "c4_global"))
+    for left, right in rank_pairs:
         values = []
         for layer_id in bank["layers"]:
             x = bank["policies"][left]["reasoning"][layer_id]["metric"].float()
@@ -749,6 +757,7 @@ def command_validate_masks(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             "policies": sorted(bank["policies"]),
             "ratios": bank["ratios"],
             "layers": len(bank["layers"]),
+            "c4_evaluated": c4_enabled,
             "stage_mask_mean_jaccard": overlaps,
             "mean_layerwise_spearman_rank_correlation": rank_correlations,
         },
@@ -772,6 +781,19 @@ def _evaluation_threshold(cfg: dict[str, Any], name: str, default: float | int |
     if name in pcfg:
         return pcfg[name]
     return cfg.get("evaluation", {}).get(name, default)
+
+
+def _profile_list(cfg: dict[str, Any], name: str, default: list[Any]) -> list[Any]:
+    pcfg = profile(cfg)
+    if name in pcfg:
+        return list(pcfg[name])
+    if name in cfg.get("evaluation", {}):
+        return list(cfg["evaluation"][name])
+    return list(default)
+
+
+def _profile_float_list(cfg: dict[str, Any], name: str, default: list[float]) -> list[float]:
+    return [float(value) for value in _profile_list(cfg, name, list(default))]
 
 
 def _metric_value(summary: dict[str, Any], name: str, default: float = 0.0) -> float:
@@ -855,19 +877,38 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     bank = load_mask_bank(p["bank"], expected_bank_metadata(cfg, p))
     bundle = load_model_bundle(cfg["model"])
     ratios = [float(value) for value in cfg["masks"]["ratios"]]
+    uniform_ratio_grid = _profile_float_list(cfg, "dev_uniform_ratios", ratios)
+    budget_search_ratios = _profile_float_list(cfg, "budget_search_ratios", ratios)
+    coordinate_rounds = int(_evaluation_threshold(cfg, "coordinate_rounds", 2))
+    run_no_bias_ablation = bool(_evaluation_threshold(cfg, "run_no_bias_compensation_ablation", True))
+    c4_enabled = _effective_c4_samples(cfg) > 0
+    default_global_policies = ["prompt_only_global", "trajectory_global", "stage_balanced_global"]
+    if c4_enabled:
+        default_global_policies.insert(0, "c4_global")
+    global_policies = [
+        str(policy)
+        for policy in _profile_list(cfg, "dev_global_policies", default_global_policies)
+        if c4_enabled or str(policy) != "c4_global"
+    ]
+    run_stage_specific_uniform = bool(
+        _evaluation_threshold(cfg, "run_stage_specific_uniform", True)
+    )
+    run_shuffled_uniform = bool(_evaluation_threshold(cfg, "run_shuffled_uniform", True))
     methods = [
         method("ordinary_dense", "trajectory_global", uniform_ratios(0.0), ordinary_prompt(cfg)),
         method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg)),
     ]
-    for ratio in ratios:
+    for ratio in uniform_ratio_grid:
         if ratio <= 0:
             continue
         tag = f"{ratio:.2f}".replace(".", "p")
-        for policy in ("c4_global", "prompt_only_global", "trajectory_global", "stage_balanced_global"):
+        for policy in global_policies:
             methods.append(method(f"{policy}_{tag}", policy, uniform_ratios(ratio), structured_prompt(cfg)))
-        methods.append(method(f"stage_specific_{tag}", "stage_specific", uniform_ratios(ratio), structured_prompt(cfg)))
-        methods.append(method(f"shuffled_stage_{tag}", "shuffled_stage", uniform_ratios(ratio), structured_prompt(cfg)))
-        if abs(ratio - 0.10) < 1e-12:
+        if run_stage_specific_uniform:
+            methods.append(method(f"stage_specific_{tag}", "stage_specific", uniform_ratios(ratio), structured_prompt(cfg)))
+        if run_shuffled_uniform:
+            methods.append(method(f"shuffled_stage_{tag}", "shuffled_stage", uniform_ratios(ratio), structured_prompt(cfg)))
+        if run_no_bias_ablation and abs(ratio - 0.10) < 1e-12:
             methods.append(
                 method(
                     "stage_specific_0p10_no_bias_compensation",
@@ -926,7 +967,7 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         ),
     }
     calibration_comparisons = []
-    for ratio in ratios:
+    for ratio in uniform_ratio_grid:
         if ratio <= 0:
             continue
         matching = [
@@ -935,13 +976,23 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             if list(row["method"]["stage_ratios"].values()) == [ratio] * len(STAGES)
         ]
         by_policy = {row["method"]["policy"]: row for row in matching}
-        if {"trajectory_global", "c4_global", "prompt_only_global"} <= set(by_policy):
+        reference_policies = [
+            policy for policy in ("c4_global", "prompt_only_global") if policy in by_policy
+        ]
+        if "trajectory_global" in by_policy and reference_policies:
             trajectory_quality_passed = _method_quality_passed(cfg, by_policy["trajectory_global"])
+            reference_accuracies = [
+                float(by_policy[policy]["accuracy"]) for policy in reference_policies
+            ]
             calibration_comparisons.append(
                 {
                     "ratio": ratio,
+                    "c4_evaluated": c4_enabled,
+                    "reference_policies": reference_policies,
                     "trajectory_accuracy": by_policy["trajectory_global"]["accuracy"],
-                    "c4_accuracy": by_policy["c4_global"]["accuracy"],
+                    "c4_accuracy": (
+                        by_policy["c4_global"]["accuracy"] if "c4_global" in by_policy else None
+                    ),
                     "prompt_only_accuracy": by_policy["prompt_only_global"]["accuracy"],
                     "trajectory_valid_stage_protocol_rate": by_policy["trajectory_global"][
                         "valid_stage_protocol_rate"
@@ -951,11 +1002,7 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
                     "trajectory_strictly_best": (
                         trajectory_quality_passed
                         and
-                        float(by_policy["trajectory_global"]["accuracy"])
-                        > max(
-                            float(by_policy["c4_global"]["accuracy"]),
-                            float(by_policy["prompt_only_global"]["accuracy"]),
-                        )
+                        float(by_policy["trajectory_global"]["accuracy"]) > max(reference_accuracies)
                     ),
                 }
             )
@@ -1004,6 +1051,11 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
                     "schema": "stage_calibrated_dev_summary_v1",
                     **metadata(cfg, dev_manifest_hash=manifest_hash(tasks)),
                     "methods": summaries,
+                    "c4_evaluated": c4_enabled,
+                    "evaluated_uniform_policies": global_policies,
+                    "evaluated_uniform_ratios": uniform_ratio_grid,
+                    "budget_search_ratios": budget_search_ratios,
+                    "coordinate_rounds": coordinate_rounds,
                     "prompt_gate": prompt_gate,
                     "calibration_gate": calibration_gate,
                     "stage_budget_search_performed": False,
@@ -1018,6 +1070,11 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
                 "schema": "stage_calibrated_dev_summary_v1",
                 **metadata(cfg, dev_manifest_hash=manifest_hash(tasks)),
                 "methods": summaries,
+                "c4_evaluated": c4_enabled,
+                "evaluated_uniform_policies": global_policies,
+                "evaluated_uniform_ratios": uniform_ratio_grid,
+                "budget_search_ratios": budget_search_ratios,
+                "coordinate_rounds": coordinate_rounds,
                 "prompt_gate": prompt_gate,
                 "calibration_gate": calibration_gate,
                 "stage_budget_search_performed": False,
@@ -1029,10 +1086,10 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         )
     current = uniform_ratios(0.0)
     coordinate_summaries = []
-    for round_index in range(2):
+    for round_index in range(coordinate_rounds):
         for stage in STAGES:
             candidates = []
-            for ratio in ratios:
+            for ratio in budget_search_ratios:
                 candidate = dict(current)
                 candidate[stage] = ratio
                 name = f"coordinate_r{round_index}_{stage}_{ratio:.2f}".replace(".", "p")
@@ -1081,6 +1138,11 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             "schema": "stage_calibrated_dev_summary_v1",
             **metadata(cfg, dev_manifest_hash=manifest_hash(tasks)),
             "methods": all_summaries,
+            "c4_evaluated": c4_enabled,
+            "evaluated_uniform_policies": global_policies,
+            "evaluated_uniform_ratios": uniform_ratio_grid,
+            "budget_search_ratios": budget_search_ratios,
+            "coordinate_rounds": coordinate_rounds,
             "prompt_gate": prompt_gate,
             "calibration_gate": calibration_gate,
             "stage_budget_search_performed": True,
@@ -1340,6 +1402,8 @@ def main() -> None:
     cfg = read_yaml(args.config)
     if args.profile:
         cfg["workflow"]["profile"] = args.profile
+    if os.environ.get("STAGE_SEED") is not None:
+        cfg["seed"] = int(os.environ["STAGE_SEED"])
     set_seed(int(cfg["seed"]))
     p = paths(cfg)
     ensure_dir(p["root"] / PHASES[args.stage])
