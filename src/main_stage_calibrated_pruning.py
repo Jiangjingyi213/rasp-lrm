@@ -936,6 +936,12 @@ def _run_methods(cfg, p, tasks, bank, bundle, methods, output_dir, seed: int | N
     ensure_dir(output_dir)
     seed = int(cfg["seed"]) if seed is None else int(seed)
     for value in methods:
+        suffix = f"_seed{seed}"
+        rows_path = output_dir / f"{value['name']}{suffix}.jsonl"
+        summary_path = output_dir / f"{value['name']}{suffix}.summary.json"
+        if bool(_evaluation_threshold(cfg, "reuse_existing_method_summaries", True)) and summary_path.exists():
+            summaries.append(read_json(summary_path))
+            continue
         rows, summary = evaluate_method(
             model=bundle.model,
             tokenizer=bundle.tokenizer,
@@ -945,9 +951,8 @@ def _run_methods(cfg, p, tasks, bank, bundle, methods, output_dir, seed: int | N
             generation=cfg["generation"],
             seed=seed,
         )
-        suffix = f"_seed{seed}"
-        write_jsonl(output_dir / f"{value['name']}{suffix}.jsonl", rows)
-        write_json(output_dir / f"{value['name']}{suffix}.summary.json", summary)
+        write_jsonl(rows_path, rows)
+        write_json(summary_path, summary)
         summaries.append(summary)
     return summaries
 
@@ -1092,7 +1097,17 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             row["trajectory_strictly_best"] for row in calibration_comparisons
         ),
     }
-    if not prompt_gate["passed"] or not calibration_gate["trajectory_calibration_promising"]:
+    prompt_gate_passed = bool(prompt_gate["passed"])
+    calibration_gate_passed = bool(calibration_gate["trajectory_calibration_promising"])
+    gate_failure_reasons = []
+    if not prompt_gate_passed:
+        gate_failure_reasons.append("prompt_gate_failed")
+    if not calibration_gate_passed:
+        gate_failure_reasons.append("calibration_gate_failed")
+    diagnostic_budget_search = bool(
+        _evaluation_threshold(cfg, "diagnostic_budget_search_on_gate_failure", False)
+    ) and calibration_gate_passed
+    if gate_failure_reasons and not diagnostic_budget_search:
         if cfg["workflow"].get("profile") == "smoke":
             global_candidates = [
                 row for row in summaries if row["method"]["policy"] == "trajectory_global"
@@ -1115,6 +1130,7 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
                 "relaxation_reason": "development gate failed in smoke profile",
                 "stage_budget_is_pruned": False,
                 "reason": "dev gate failed; ratios inherited only for e2e smoke",
+                "gate_failure_reasons": gate_failure_reasons,
                 "best_trajectory_global": best_global["method"],
                 "stage_budget": method(
                     "stage_budget",
@@ -1206,7 +1222,15 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         "schema": "stage_calibrated_frozen_policy_v1",
         "accuracy_floor": accuracy_floor,
         "structured_dense_accuracy": dense["accuracy"],
-        "stage_budget_is_pruned": True,
+        "stage_budget_is_pruned": not bool(gate_failure_reasons),
+        "diagnostic_only": bool(gate_failure_reasons),
+        "final_evaluation_forbidden": bool(gate_failure_reasons),
+        "gate_failure_reasons": gate_failure_reasons,
+        "diagnostic_reason": (
+            "budget search continued for pilot diagnostics despite failed development gate"
+            if gate_failure_reasons
+            else None
+        ),
         "best_trajectory_global": best_global["method"],
         "stage_budget": method("stage_budget", "stage_specific", current, structured_prompt(cfg)),
         "test_sets_consulted": False,
@@ -1226,6 +1250,8 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             "prompt_gate": prompt_gate,
             "calibration_gate": calibration_gate,
             "stage_budget_search_performed": True,
+            "diagnostic_budget_search": bool(gate_failure_reasons),
+            "gate_failure_reasons": gate_failure_reasons,
             "frozen_policy": frozen,
         },
     )
@@ -1257,6 +1283,8 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             },
         )
         return
+    if bool(frozen.get("final_evaluation_forbidden")):
+        raise RuntimeError("Frozen policy is diagnostic only; final evaluation is forbidden")
     bundle = load_model_bundle(cfg["model"])
     stage_budget = frozen["stage_budget"]
     shuffled_budget = method(

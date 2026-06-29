@@ -85,6 +85,8 @@ profiles:
     budget_search_ratios: [0.00, 0.20, 0.25, 0.30, 0.35, 0.40]
     coordinate_rounds: 1
     run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: true
+    reuse_existing_method_summaries: true
     minimum_candidate_stage_protocol_rate: 0.90
     maximum_candidate_fallback_rate: 0.10
     maximum_candidate_truncation_rate: 0.05
