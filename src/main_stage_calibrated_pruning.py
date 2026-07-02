@@ -22,7 +22,18 @@ from src.models.load_model import load_model_bundle
 from src.stage_calibration.artifacts import manifest_hash, stable_hash
 from src.stage_calibration.calibrate import collect_stage_statistics
 from src.stage_calibration.evaluate import evaluate_method, uniform_ratios
+from src.stage_calibration.final_shards import (
+    aggregate_final_summaries,
+    annotate_final_eval_indices,
+    infer_shard_count,
+    merge_final_shards,
+    shard_dataset_dir,
+    shard_summary_path,
+    shard_tasks,
+    validate_shard,
+)
 from src.stage_calibration.mask_bank import build_mask_bank, load_mask_bank, save_mask_bank
+from src.stage_calibration.policy_selection import load_downstream_methods_from_selection
 from src.stage_calibration.prefill import tokenize_prompt_with_prefill
 from src.stage_calibration.pool import (
     decontaminate,
@@ -49,6 +60,7 @@ PHASES = {
     "validate_masks": "04_masks",
     "evaluate_dev": "05_dev",
     "evaluate_final": "06_final",
+    "merge_final_shards": "06_final",
     "summarize": ".",
 }
 
@@ -1260,54 +1272,79 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
 def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     bank = load_mask_bank(p["bank"], expected_bank_metadata(cfg, p))
     dev_summary = read_json(p["dev_summary"])
+    policy_selection_path = _policy_selection_path(cfg)
+    policy_methods = None
+    policy_selection = None
+    if policy_selection_path is not None:
+        policy_methods, policy_selection = load_downstream_methods_from_selection(policy_selection_path)
     smoke_relaxed = cfg["workflow"].get("profile") == "smoke" and bool(
         dev_summary.get("smoke_relaxed_e2e")
     )
     if (
-        not smoke_relaxed
+        policy_selection_path is None
+        and not smoke_relaxed
         and (not dev_summary.get("stage_budget_search_performed") or not dev_summary.get("frozen_policy"))
     ):
         raise RuntimeError("Development gates did not pass; final evaluation is forbidden")
-    frozen = read_json(p["frozen"])
+    frozen = read_json(p["frozen"]) if p["frozen"].exists() else {}
+    metadata_extra = {
+        "frozen_policy_hash": stable_hash(frozen),
+    }
+    if policy_selection is not None:
+        metadata_extra.update(
+            {
+                "policy_selection_path": str(policy_selection_path),
+                "policy_selection_hash": stable_hash(policy_selection),
+                "policy_selection_input_manifest_hash": policy_selection.get("input_manifest_hash"),
+            }
+        )
     final_limit = _final_eval_limit(cfg)
     if final_limit == 0:
+        summary_path = _effective_final_summary_path(p)
         write_json(
-            p["final_summary"],
+            summary_path,
             {
                 "schema": "stage_calibrated_final_eval_v1",
-                **metadata(cfg, frozen_policy_hash=stable_hash(frozen)),
+                **metadata(cfg, **metadata_extra),
                 "final_eval_limit": final_limit,
                 "final_eval_skipped": True,
+                "final_shard": _final_shard_from_env(),
+                "policy_selection_used": policy_selection is not None,
                 "datasets": {},
                 "aggregates": {},
             },
         )
         return
-    if bool(frozen.get("final_evaluation_forbidden")):
+    if policy_selection is None and bool(frozen.get("final_evaluation_forbidden")):
         raise RuntimeError("Frozen policy is diagnostic only; final evaluation is forbidden")
     bundle = load_model_bundle(cfg["model"])
-    stage_budget = frozen["stage_budget"]
-    shuffled_budget = method(
-        "shuffled_stage_budget",
-        "shuffled_stage",
-        stage_budget["stage_ratios"],
-        structured_prompt(cfg),
-    )
-    methods = [
-        method("ordinary_dense", "trajectory_global", uniform_ratios(0.0), ordinary_prompt(cfg)),
-        method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg)),
-        frozen["best_trajectory_global"],
-        method(
-            "stage_specific_matched_global",
-            "stage_specific",
-            frozen["best_trajectory_global"]["stage_ratios"],
+    if policy_methods is not None:
+        methods = policy_methods
+    else:
+        stage_budget = frozen["stage_budget"]
+        shuffled_budget = method(
+            "shuffled_stage_budget",
+            "shuffled_stage",
+            stage_budget["stage_ratios"],
             structured_prompt(cfg),
-        ),
-        stage_budget,
-        shuffled_budget,
-    ]
+        )
+        methods = [
+            method("ordinary_dense", "trajectory_global", uniform_ratios(0.0), ordinary_prompt(cfg)),
+            method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg)),
+            frozen["best_trajectory_global"],
+            method(
+                "stage_specific_matched_global",
+                "stage_specific",
+                frozen["best_trajectory_global"]["stage_ratios"],
+                structured_prompt(cfg),
+            ),
+            stage_budget,
+            shuffled_budget,
+        ]
     methods = _limit_final_methods_for_smoke(cfg, methods)
+    final_shard = _final_shard_from_env()
     output = {}
+    dataset_output_dirs = {}
     seeds = [int(value) for value in profile(cfg).get("final_seeds", [cfg["seed"]])]
     for dataset_cfg in (
         {"dataset": "gsm8k", "split": "test"},
@@ -1321,6 +1358,23 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         name = dataset_cfg["dataset"]
         if final_limit is not None:
             tasks = tasks[:final_limit]
+        full_task_count = len(tasks)
+        tasks = annotate_final_eval_indices(tasks)
+        if final_shard is not None:
+            tasks = shard_tasks(
+                tasks,
+                shard_index=final_shard["index"],
+                shard_count=final_shard["count"],
+            )
+            output_dir = shard_dataset_dir(
+                p["final_dir"],
+                name,
+                shard_index=final_shard["index"],
+                shard_count=final_shard["count"],
+            )
+        else:
+            output_dir = p["final_dir"] / name
+        dataset_output_dirs[name] = output_dir
         output[name] = []
         for seed in seeds:
             output[name].extend(
@@ -1331,65 +1385,72 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
                     bank,
                     bundle,
                     methods,
-                    p["final_dir"] / name,
+                    output_dir,
                     seed=seed,
                 )
             )
-    aggregates = {}
-    rng = random.Random(int(cfg["seed"]))
-    for dataset, summaries in output.items():
-        by_method: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for summary in summaries:
-            by_method[summary["method"]["name"]].append(summary)
-        aggregates[dataset] = {}
-        for name, values in by_method.items():
-            accuracies = [float(value["accuracy"]) for value in values]
-            mean = sum(accuracies) / len(accuracies)
-            std = math.sqrt(sum((value - mean) ** 2 for value in accuracies) / max(1, len(accuracies) - 1))
-            aggregates[dataset][name] = {
-                "seeds": [value["seed"] for value in values],
-                "accuracy_mean": mean,
-                "accuracy_std": std,
-                "theoretical_average_mlp_pruning_ratio_mean": (
-                    sum(float(value["theoretical_average_mlp_pruning_ratio"]) for value in values)
-                    / len(values)
-                ),
-            }
-        dense_files = sorted((p["final_dir"] / dataset).glob("structured_dense_seed*.jsonl"))
-        for name in by_method:
-            if name == "structured_dense":
-                continue
-            method_files = sorted((p["final_dir"] / dataset).glob(f"{name}_seed*.jsonl"))
-            paired_deltas = []
-            for dense_file, method_file in zip(dense_files, method_files):
-                dense_rows = read_jsonl(dense_file)
-                method_rows = read_jsonl(method_file)
-                paired_deltas.extend(
-                    int(candidate["correct"]) - int(dense["correct"])
-                    for dense, candidate in zip(dense_rows, method_rows)
-                )
-            if paired_deltas:
-                bootstrap = []
-                for _ in range(1000):
-                    sample = [paired_deltas[rng.randrange(len(paired_deltas))] for _ in paired_deltas]
-                    bootstrap.append(sum(sample) / len(sample))
-                bootstrap.sort()
-                aggregates[dataset][name]["paired_accuracy_delta_vs_structured_dense"] = (
-                    sum(paired_deltas) / len(paired_deltas)
-                )
-                aggregates[dataset][name]["paired_bootstrap_95ci"] = [
-                    bootstrap[int(0.025 * (len(bootstrap) - 1))],
-                    bootstrap[int(0.975 * (len(bootstrap) - 1))],
-                ]
+        if final_shard is not None:
+            for summary in output[name]:
+                summary["final_shard"] = {
+                    **final_shard,
+                    "full_task_count": full_task_count,
+                    "shard_task_count": len(tasks),
+                }
+    aggregates = aggregate_final_summaries(
+        final_dir=p["final_dir"],
+        datasets=output,
+        bootstrap_seed=int(cfg["seed"]),
+        dataset_row_dirs=dataset_output_dirs,
+    )
     write_json(
-        p["final_summary"],
+        _effective_final_summary_path(p),
         {
             "schema": "stage_calibrated_final_eval_v1",
-            **metadata(cfg, frozen_policy_hash=stable_hash(frozen)),
+            **metadata(cfg, **metadata_extra),
             "final_eval_limit": final_limit,
+            "final_shard": final_shard,
+            "policy_selection_used": policy_selection is not None,
+            "policy_selection": (
+                {
+                    "schema": policy_selection.get("schema"),
+                    "input_manifest_hash": policy_selection.get("input_manifest_hash"),
+                    "selected_policy_roles": sorted(policy_selection.get("selected_policies", {})),
+                }
+                if policy_selection is not None
+                else None
+            ),
+            "evaluated_methods": [row["name"] for row in methods],
             "datasets": output,
             "aggregates": aggregates,
         },
+    )
+
+
+def command_merge_final_shards(cfg: dict[str, Any], p: dict[str, Path]) -> None:
+    policy_selection_path = _policy_selection_path(cfg)
+    policy_selection = None
+    if policy_selection_path is not None:
+        _, policy_selection = load_downstream_methods_from_selection(policy_selection_path)
+    frozen = read_json(p["frozen"]) if p["frozen"].exists() else {}
+    metadata_extra = {"frozen_policy_hash": stable_hash(frozen)}
+    if policy_selection is not None:
+        metadata_extra.update(
+            {
+                "policy_selection_path": str(policy_selection_path),
+                "policy_selection_hash": stable_hash(policy_selection),
+                "policy_selection_input_manifest_hash": policy_selection.get("input_manifest_hash"),
+            }
+        )
+    shard_count_env = os.environ.get("STAGE_FINAL_SHARD_COUNT")
+    shard_count = int(shard_count_env) if shard_count_env else infer_shard_count(p["final_dir"])
+    merge_final_shards(
+        final_dir=p["final_dir"],
+        shard_count=shard_count,
+        output_summary_path=p["final_summary"],
+        metadata=metadata(cfg, **metadata_extra),
+        final_eval_limit=_final_eval_limit(cfg),
+        bootstrap_seed=int(cfg["seed"]),
+        policy_selection=policy_selection,
     )
 
 
@@ -1403,6 +1464,38 @@ def _final_eval_limit(cfg: dict[str, Any]) -> int | None:
         value = int(pcfg["final_eval_limit"])
         return value if value >= 0 else None
     return None
+
+
+def _policy_selection_path(cfg: dict[str, Any]) -> Path | None:
+    env_path = os.environ.get("STAGE_POLICY_SELECTION")
+    if env_path:
+        return Path(env_path)
+    pcfg = profile(cfg)
+    value = pcfg.get("policy_selection_path") or cfg.get("evaluation", {}).get("policy_selection_path")
+    return Path(value) if value else None
+
+
+def _final_shard_from_env() -> dict[str, int] | None:
+    count = os.environ.get("STAGE_FINAL_SHARD_COUNT")
+    index = os.environ.get("STAGE_FINAL_SHARD_INDEX")
+    if count is None and index is None:
+        return None
+    if count is None or index is None:
+        raise RuntimeError("Set both STAGE_FINAL_SHARD_INDEX and STAGE_FINAL_SHARD_COUNT for sharded final eval")
+    shard = {"index": int(index), "count": int(count)}
+    validate_shard(shard_index=shard["index"], shard_count=shard["count"])
+    return shard
+
+
+def _effective_final_summary_path(p: dict[str, Path]) -> Path:
+    shard = _final_shard_from_env()
+    if shard is None:
+        return p["final_summary"]
+    return shard_summary_path(
+        p["final_dir"],
+        shard_index=shard["index"],
+        shard_count=shard["count"],
+    )
 
 
 def _limit_final_methods_for_smoke(cfg: dict[str, Any], methods: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1482,6 +1575,7 @@ COMMANDS = {
     "validate_masks": command_validate_masks,
     "evaluate_dev": command_evaluate_dev,
     "evaluate_final": command_evaluate_final,
+    "merge_final_shards": command_merge_final_shards,
     "summarize": command_summarize,
 }
 
@@ -1495,7 +1589,8 @@ def completion_artifacts(p: dict[str, Path], stage: str) -> tuple[Path, ...]:
         "calibrate_masks": (p["bank_summary"], p["bank"]),
         "validate_masks": (p["bank_validation"],),
         "evaluate_dev": (p["dev_summary"], p["frozen"]),
-        "evaluate_final": (p["final_summary"],),
+        "evaluate_final": (_effective_final_summary_path(p),),
+        "merge_final_shards": (p["final_summary"],),
         "summarize": (p["workflow_summary"], p["workflow_gate"]),
     }[stage]
 
