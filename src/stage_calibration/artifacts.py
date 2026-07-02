@@ -24,11 +24,16 @@ def manifest_hash(rows: Iterable[dict[str, Any]], fields: tuple[str, ...] = ("id
     return stable_hash(payload)
 
 
-def assert_metadata_matches(actual: dict[str, Any], expected: dict[str, Any]) -> None:
+def assert_metadata_matches(
+    actual: dict[str, Any],
+    expected: dict[str, Any],
+    ignored_keys: Iterable[str] = (),
+) -> None:
+    ignored = set(ignored_keys)
     mismatches = {
         key: {"expected": value, "actual": actual.get(key)}
         for key, value in expected.items()
-        if actual.get(key) != value
+        if key not in ignored and actual.get(key) != value
     }
     if mismatches:
         raise ValueError(f"Artifact metadata mismatch: {mismatches}")

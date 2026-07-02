@@ -154,7 +154,11 @@ def save_mask_bank(path: str | Path, bank: dict[str, Any]) -> None:
     torch.save(bank, path)
 
 
-def load_mask_bank(path: str | Path, expected_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+def load_mask_bank(
+    path: str | Path,
+    expected_metadata: dict[str, Any] | None = None,
+    ignored_metadata_keys: tuple[str, ...] = (),
+) -> dict[str, Any]:
     try:
         bank = torch.load(Path(path), map_location="cpu", weights_only=False)
     except TypeError:
@@ -162,7 +166,11 @@ def load_mask_bank(path: str | Path, expected_metadata: dict[str, Any] | None = 
     if bank.get("schema") != "stage_calibrated_mask_bank_v1":
         raise ValueError("Unsupported stage-calibrated mask bank schema")
     if expected_metadata:
-        assert_metadata_matches(bank.get("metadata", {}), expected_metadata)
+        assert_metadata_matches(
+            bank.get("metadata", {}),
+            expected_metadata,
+            ignored_keys=ignored_metadata_keys,
+        )
     validate_mask_bank(bank)
     return bank
 

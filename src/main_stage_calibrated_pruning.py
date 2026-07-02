@@ -1270,7 +1270,13 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
 
 
 def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
-    bank = load_mask_bank(p["bank"], expected_bank_metadata(cfg, p))
+    expected_metadata = expected_bank_metadata(cfg, p)
+    bank = load_mask_bank(
+        p["bank"],
+        expected_metadata,
+        ignored_metadata_keys=("config_hash",),
+    )
+    bank_metadata = dict(bank.get("metadata", {}))
     dev_summary = read_json(p["dev_summary"])
     policy_selection_path = _policy_selection_path(cfg)
     policy_methods = None
@@ -1289,6 +1295,16 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     frozen = read_json(p["frozen"]) if p["frozen"].exists() else {}
     metadata_extra = {
         "frozen_policy_hash": stable_hash(frozen),
+        "mask_bank_metadata": {
+            "config_hash_expected": expected_metadata.get("config_hash"),
+            "config_hash_actual": bank_metadata.get("config_hash"),
+            "config_hash_mismatch_allowed_for_final": (
+                bank_metadata.get("config_hash") != expected_metadata.get("config_hash")
+            ),
+            "critical_fields_checked": [
+                key for key in sorted(expected_metadata) if key != "config_hash"
+            ],
+        },
     }
     if policy_selection is not None:
         metadata_extra.update(
