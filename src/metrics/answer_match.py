@@ -23,6 +23,7 @@ FRAC_RE = re.compile(r"\\frac\{([^{}]+)\}\{([^{}]+)\}")
 SIMPLE_FRACTION_RE = re.compile(r"[-+]?\d+(?:\.\d+)?/[-+]?\d+(?:\.\d+)?")
 ANSWER_STOP_MARKERS = ("Human:", "User:", "Assistant:", "Problem:")
 SYMBOLIC_HINT_RE = re.compile(r"[A-Za-zπ]|\\pi|[()=]")
+MULTIPLE_CHOICE_RE = re.compile(r"[A-Z]")
 
 
 def extract_answer(text: str) -> str:
@@ -133,6 +134,25 @@ def extract_last_boxed(text: str) -> str | None:
     return boxed[-1] if boxed else None
 
 
+def normalize_choice_label(value: str) -> str:
+    cleaned = clean_answer(str(value)).strip().upper()
+    match = re.fullmatch(r"\(?\s*([A-Z])\s*\)?", cleaned)
+    return match.group(1) if match else cleaned
+
+
+def extract_multiple_choice_answer(text: str) -> str:
+    boxed = extract_last_boxed(text or "")
+    if boxed is None:
+        return ""
+    return normalize_choice_label(boxed)
+
+
+def multiple_choice_answer_match(prediction: str, gold: str) -> bool:
+    pred = extract_multiple_choice_answer(prediction)
+    gold_label = normalize_choice_label(gold)
+    return bool(pred) and bool(gold_label) and bool(MULTIPLE_CHOICE_RE.fullmatch(pred)) and pred == gold_label
+
+
 def _as_decimal(value: str) -> Decimal | None:
     if not is_numeric_like(value):
         return None
@@ -171,7 +191,14 @@ def _math_verify_match(prediction: str, gold: str) -> bool:
         return False
 
 
-def answer_match(prediction: str, gold: str, use_math_verify: bool = True) -> bool:
+def answer_match(
+    prediction: str,
+    gold: str,
+    use_math_verify: bool = True,
+    answer_type: str | None = None,
+) -> bool:
+    if str(answer_type or "").lower() == "multiple_choice":
+        return multiple_choice_answer_match(prediction, gold)
     pred = extract_answer(prediction)
     gold_answer = extract_answer(gold)
     pred_num = _as_decimal(pred)

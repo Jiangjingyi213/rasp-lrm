@@ -62,7 +62,11 @@ def evaluate_method(
                 "prompt": prompt,
                 **result,
                 "prediction": extract_answer(result["completion"]),
-                "correct": answer_match(result["completion"], str(task.get("gold", ""))),
+                "correct": answer_match(
+                    result["completion"],
+                    str(task.get("gold", "")),
+                    answer_type=task.get("answer_type"),
+                ),
             }
         )
     correct = sum(int(row["correct"]) for row in rows)

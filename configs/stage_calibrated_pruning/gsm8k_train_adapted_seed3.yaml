@@ -1,0 +1,165 @@
+seed: 3
+
+workflow:
+  profile: pilot
+  root: runs/08_stage_calibrated_pruning/main_{profile}_gsm8k_train_adapted_seed3
+
+stages: [setup, reasoning, verify, final]
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float32
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  ordinary:
+    use_chat_template: true
+    enable_thinking: true
+    answer_format: boxed
+  structured:
+    use_chat_template: true
+    enable_thinking: true
+    explicit_stage_protocol: true
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
+
+generation:
+  max_input_tokens: 4096
+  max_new_tokens: 16384
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+
+calibration_pool:
+  # Optional target-adapted protocol: GSM8K train is allowed here, while
+  # GSM8K test and MATH-500 are still protected by decontamination.
+  allowed_sources: ["*"]
+  excluded_sources: [MATH, Omni-MATH, amc_aime, cn_k12]
+  near_duplicate_threshold: 0.80
+  reservoir_multiplier: 3
+  stop_after_reservoir_target: false
+  sources:
+    - name: gsm8k_train
+      name_or_path: gsm8k
+      dataset_config: main
+      split: train
+      adapter: gsm8k_train
+      quota: 1.00
+      max_scan: 10000
+      default_source: gsm8k_train
+      default_domain: grade_school_math
+
+selection:
+  difficulty_filter: any_correct
+
+calibration:
+  forward_chunk_tokens: 1024
+
+masks:
+  metric: WIFV
+  structure: UL-UM
+  ratios: [0.00, 0.10, 0.15, 0.20]
+  c4_samples: 0
+  bias_compensation: true
+
+evaluation:
+  math500_name_or_path: HuggingFaceH4/MATH-500
+  max_dev_accuracy_drop: 0.05
+  minimum_stage_protocol_rate: 0.90
+  maximum_structured_prompt_accuracy_drop: 0.05
+  maximum_truncation_rate: 0.05
+
+profiles:
+  smoke:
+    candidate_problems: 60
+    generations_per_problem: 1
+    calibration_problems: 16
+    dev_problems: 16
+    min_stage_tokens: 128
+    min_stage_tokens_by_stage:
+      setup: 128
+      reasoning: 256
+      verify: 128
+      final: 16
+    stage_token_balanced_selection: true
+    expansion_problems: 0
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: 0
+    final_seeds: [3]
+    dev_uniform_ratios: [0.10, 0.15, 0.20]
+    dev_global_policies: [trajectory_global]
+    run_stage_specific_uniform: true
+    run_shuffled_uniform: false
+    budget_search_ratios: [0.00, 0.10, 0.15, 0.20]
+    coordinate_rounds: 0
+    run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: true
+    reuse_existing_method_summaries: true
+    minimum_candidate_stage_protocol_rate: 0.90
+    maximum_candidate_fallback_rate: 0.10
+    maximum_candidate_truncation_rate: 0.05
+    final_methods: [structured_dense, dynamic_stage_main, static_matched_global]
+
+  pilot:
+    candidate_problems: 600
+    generations_per_problem: 2
+    calibration_problems: 128
+    dev_problems: 128
+    min_stage_tokens: 2048
+    min_stage_tokens_by_stage:
+      setup: 2048
+      reasoning: 4096
+      verify: 2048
+      final: 256
+    stage_token_balanced_selection: true
+    expansion_problems: 300
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: 0
+    final_seeds: [3]
+    dev_uniform_ratios: [0.10, 0.15, 0.20]
+    dev_global_policies: [trajectory_global]
+    run_stage_specific_uniform: true
+    run_shuffled_uniform: false
+    budget_search_ratios: [0.00, 0.10, 0.15, 0.20]
+    coordinate_rounds: 0
+    run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: true
+    reuse_existing_method_summaries: true
+    minimum_candidate_stage_protocol_rate: 0.90
+    maximum_candidate_fallback_rate: 0.10
+    maximum_candidate_truncation_rate: 0.05
+    final_methods: [structured_dense, dynamic_stage_main, static_matched_global]
+
+  formal:
+    candidate_problems: 900
+    generations_per_problem: 2
+    calibration_problems: 128
+    dev_problems: 128
+    min_stage_tokens: 2048
+    min_stage_tokens_by_stage:
+      setup: 2048
+      reasoning: 4096
+      verify: 2048
+      final: 256
+    stage_token_balanced_selection: true
+    expansion_problems: 300
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: -1
+    final_seeds: [3]
+    dev_uniform_ratios: [0.10, 0.15, 0.20]
+    dev_global_policies: [trajectory_global]
+    run_stage_specific_uniform: true
+    run_shuffled_uniform: false
+    budget_search_ratios: [0.00, 0.10, 0.15, 0.20]
+    coordinate_rounds: 0
+    run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: true
+    reuse_existing_method_summaries: true
+    minimum_candidate_stage_protocol_rate: 0.90
+    maximum_candidate_fallback_rate: 0.10
+    maximum_candidate_truncation_rate: 0.05
+    final_methods: [structured_dense, dynamic_stage_main, static_matched_global]

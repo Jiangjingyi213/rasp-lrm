@@ -6,6 +6,7 @@ import json
 import math
 import os
 import random
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -36,8 +37,10 @@ from src.stage_calibration.mask_bank import build_mask_bank, load_mask_bank, sav
 from src.stage_calibration.policy_selection import load_downstream_methods_from_selection
 from src.stage_calibration.prefill import tokenize_prompt_with_prefill
 from src.stage_calibration.pool import (
+    allocate_source_targets,
     decontaminate,
     normalize_big_math_row,
+    normalize_calibration_pool_row,
     source_allowed,
     source_counts,
     stratified_split,
@@ -55,6 +58,7 @@ PHASES = {
     "preflight": "00_preflight",
     "build_pool": "01_pool",
     "generate_trajectories": "02_trajectories",
+    "merge_trajectory_shards": "02_trajectories",
     "select_trajectories": "03_selected",
     "calibrate_masks": "04_masks",
     "validate_masks": "04_masks",
@@ -256,6 +260,155 @@ def command_preflight(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         raise RuntimeError(f"Preflight failed: {checks}")
 
 
+def _protected_final_tasks(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        *load_tasks({"dataset": "gsm8k", "split": "test"}),
+        *load_tasks(
+            {
+                "dataset": "math500",
+                "name_or_path": cfg["evaluation"]["math500_name_or_path"],
+                "split": "test",
+            }
+        ),
+    ]
+
+
+def _source_name_from_cfg(source_cfg: dict[str, Any]) -> str:
+    return str(
+        source_cfg.get("source")
+        or source_cfg.get("default_source")
+        or source_cfg.get("name")
+        or source_cfg.get("name_or_path")
+        or "unknown_source"
+    )
+
+
+def _merged_source_pool_cfg(pool_cfg: dict[str, Any], source_cfg: dict[str, Any]) -> dict[str, Any]:
+    inherited_keys = {
+        "allowed_sources",
+        "excluded_sources",
+        "near_duplicate_threshold",
+        "reservoir_multiplier",
+        "stop_after_reservoir_target",
+        "token",
+        "use_auth_token",
+        "file_format",
+    }
+    merged = {key: pool_cfg[key] for key in inherited_keys if key in pool_cfg}
+    merged.update(source_cfg)
+    return merged
+
+
+def _collect_source_reservoir(
+    *,
+    source_cfg: dict[str, Any],
+    target: int,
+    pcfg: dict[str, Any],
+    rng: random.Random,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    dataset = _load_calibration_pool_dataset(source_cfg)
+    source_name = _source_name_from_cfg(source_cfg)
+    max_scan = int(source_cfg.get("max_scan", pcfg.get("pool_max_scan", 100000)))
+    reservoir_multiplier = int(source_cfg.get("reservoir_multiplier", pcfg.get("pool_reservoir_multiplier", 4)))
+    reservoir_target = max(target * reservoir_multiplier, target)
+    stop_after_reservoir = bool(
+        source_cfg.get(
+            "stop_after_reservoir_target",
+            pcfg.get("pool_stop_after_reservoir_target", False),
+        )
+    )
+    reservoir: list[dict[str, Any]] = []
+    seen_allowed = 0
+    invalid = 0
+    scanned_rows = 0
+    for index, raw in enumerate(dataset):
+        scanned_rows = index + 1
+        if index >= max_scan:
+            break
+        try:
+            row = normalize_calibration_pool_row(dict(raw), index, source_cfg)
+        except ValueError:
+            invalid += 1
+            continue
+        if not source_allowed(
+            row["source"],
+            source_cfg.get("allowed_sources", ("*",)),
+            source_cfg.get("excluded_sources", ()),
+        ):
+            continue
+        seen_allowed += 1
+        if len(reservoir) < reservoir_target:
+            reservoir.append(row)
+        else:
+            replacement = rng.randint(0, seen_allowed - 1)
+            if replacement < reservoir_target:
+                reservoir[replacement] = row
+        if stop_after_reservoir and len(reservoir) >= reservoir_target:
+            break
+    return reservoir, {
+        "source": source_name,
+        "target": target,
+        "reservoir_rows": len(reservoir),
+        "reservoir_target": reservoir_target,
+        "scanned_rows": scanned_rows,
+        "seen_allowed_rows": seen_allowed,
+        "invalid_rows": invalid,
+        "stop_after_reservoir_target": stop_after_reservoir,
+    }
+
+
+def _build_multi_source_pool(
+    *,
+    cfg: dict[str, Any],
+    pcfg: dict[str, Any],
+    pool_cfg: dict[str, Any],
+    candidate_target: int,
+    protected: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    sources = list(pool_cfg.get("sources") or [])
+    targets = allocate_source_targets(candidate_target, sources)
+    rng = random.Random(int(cfg["seed"]))
+    reservoir: list[dict[str, Any]] = []
+    source_summaries = []
+    source_targets = {}
+    for source_cfg, target in zip(sources, targets):
+        merged = _merged_source_pool_cfg(pool_cfg, source_cfg)
+        rows, summary = _collect_source_reservoir(
+            source_cfg=merged,
+            target=target,
+            pcfg=pcfg,
+            rng=rng,
+        )
+        reservoir.extend(rows)
+        source_summaries.append(summary)
+        source_targets[summary["source"]] = target
+    kept, excluded = decontaminate(
+        reservoir,
+        protected,
+        threshold=float(pool_cfg.get("near_duplicate_threshold", 0.80)),
+    )
+    by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in kept:
+        by_source[str(row["source"])].append(row)
+    selected = []
+    for source, target in source_targets.items():
+        rows = by_source.get(source, [])
+        if len(rows) < target:
+            raise RuntimeError(
+                f"Insufficient decontaminated candidates for source `{source}`: {len(rows)}<{target}; "
+                "increase max_scan or reservoir_multiplier"
+            )
+        rng.shuffle(rows)
+        selected.extend(rows[:target])
+    rng.shuffle(selected)
+    return selected, excluded, {
+        "multi_source": True,
+        "source_targets": source_targets,
+        "source_summaries": source_summaries,
+        "reservoir_rows": len(reservoir),
+    }
+
+
 def command_build_pool(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     pcfg = profile(cfg)
     pool_cfg = cfg["calibration_pool"]
@@ -267,16 +420,35 @@ def command_build_pool(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     candidate_target = int(pcfg["candidate_problems"]) + (
         expansion_round * int(pcfg.get("expansion_problems", 0))
     )
-    protected = [
-        *load_tasks({"dataset": "gsm8k", "split": "test"}),
-        *load_tasks(
+    protected = _protected_final_tasks(cfg)
+    if pool_cfg.get("sources"):
+        kept, excluded, extra_summary = _build_multi_source_pool(
+            cfg=cfg,
+            pcfg=pcfg,
+            pool_cfg=pool_cfg,
+            candidate_target=candidate_target,
+            protected=protected,
+        )
+        if len(kept) < candidate_target:
+            raise RuntimeError("Insufficient decontaminated mixed calibration candidates; increase max_scan")
+        write_jsonl(p["pool"], kept)
+        write_jsonl(p["excluded"], excluded)
+        write_json(
+            p["pool_summary"],
             {
-                "dataset": "math500",
-                "name_or_path": cfg["evaluation"]["math500_name_or_path"],
-                "split": "test",
-            }
-        ),
-    ]
+                "schema": "stage_calibration_pool_v1",
+                **metadata(cfg, pool_manifest_hash=manifest_hash(kept)),
+                "candidate_rows": len(kept),
+                "candidate_target": candidate_target,
+                "expansion_round": expansion_round,
+                "excluded_rows": len(excluded),
+                "source_counts": source_counts(kept),
+                "answer_type_counts": dict(Counter(str(row.get("answer_type", "math")) for row in kept)),
+                "protected_rows": len(protected),
+                **extra_summary,
+            },
+        )
+        return
     dataset = _load_calibration_pool_dataset(pool_cfg)
     rng = random.Random(int(cfg["seed"]))
     reservoir: list[dict[str, Any]] = []
@@ -353,11 +525,18 @@ def command_build_pool(cfg: dict[str, Any], p: dict[str, Path]) -> None:
 
 @torch.no_grad()
 def command_generate_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> None:
-    rows = read_jsonl(p["pool"])
+    all_rows = read_jsonl(p["pool"])
+    generation_shard = _trajectory_shard_from_env()
+    indexed_rows = [
+        (problem_index, row)
+        for problem_index, row in enumerate(all_rows)
+        if generation_shard is None or problem_index % generation_shard["count"] == generation_shard["index"]
+    ]
+    rows = [row for _, row in indexed_rows]
     pcfg = profile(cfg)
     repeats = int(pcfg["generations_per_problem"])
     bundle = load_model_bundle(cfg["model"])
-    output = p["candidates"]
+    output = _trajectory_candidate_path(p, generation_shard)
     existing_rows = read_jsonl(output) if output.exists() else []
     existing_keys = {
         (str(row["id"]), int(row["sample_index"])) for row in existing_rows
@@ -366,7 +545,10 @@ def command_generate_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> No
     prompt_cfg = cfg["prompt"]["structured"]
     eos = bundle.tokenizer.eos_token_id
     eos_ids = {int(eos)} if isinstance(eos, int) else {int(value) for value in (eos or [])}
-    for problem_index, row in enumerate(tqdm(rows, desc="generate-stage-calibration-trajectories")):
+    desc = "generate-stage-calibration-trajectories"
+    if generation_shard is not None:
+        desc += f"-shard-{generation_shard['index']}-of-{generation_shard['count']}"
+    for problem_index, row in tqdm(indexed_rows, desc=desc):
         prompt = build_prompt(row["question"], bundle.tokenizer, prompt_cfg)
         prefill = forced_assistant_prefix(prompt_cfg)
         inputs, prompt_ids, prefill_ids = tokenize_prompt_with_prefill(
@@ -406,14 +588,16 @@ def command_generate_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> No
                 output,
                 {
                     **row,
+                    "problem_index": problem_index,
                     "sample_index": sample_index,
                     "sample_seed": sample_seed,
+                    "generation_shard": generation_shard,
                     "prompt": prompt,
                     "prompt_token_ids": prompt_ids,
                     "generated_token_ids": generated,
                     "completion": completion,
                     "prediction": extract_answer(completion),
-                    "correct": answer_match(completion, row["gold"]),
+                    "correct": answer_match(completion, row["gold"], answer_type=row.get("answer_type")),
                     "ended_with_eos": ended_with_eos,
                     "stopped_after_complete_stage_answer": stopping_criteria.triggered,
                     "truncated": not ended_with_eos and len(generated) >= int(generation["max_new_tokens"]),
@@ -422,16 +606,81 @@ def command_generate_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> No
             )
     current_ids = {str(row["id"]) for row in rows}
     generated_rows = [row for row in read_jsonl(output) if str(row["id"]) in current_ids]
+    summary_path = _trajectory_summary_path(p, generation_shard)
+    write_json(
+        summary_path,
+        {
+            "schema": "stage_calibration_candidate_trajectories_v1",
+            **metadata(cfg, pool_manifest_hash=manifest_hash(all_rows)),
+            "rows": len(generated_rows),
+            "problems": len(rows),
+            "full_problems": len(all_rows),
+            "generation_shard": generation_shard,
+            "correct_rate": _safe_rate(sum(int(row["correct"]) for row in generated_rows), len(generated_rows)),
+            "valid_stage_rate": _safe_rate(
+                sum(int(row["stage_protocol"]["valid"]) for row in generated_rows),
+                len(generated_rows),
+            ),
+            "truncation_rate": _safe_rate(sum(int(row["truncated"]) for row in generated_rows), len(generated_rows)),
+        },
+    )
+
+
+def command_merge_trajectory_shards(cfg: dict[str, Any], p: dict[str, Path]) -> None:
+    pool_rows = read_jsonl(p["pool"])
+    pcfg = profile(cfg)
+    repeats = int(pcfg["generations_per_problem"])
+    shard_count = _trajectory_shard_count_from_env_or_files(p)
+    id_to_problem_index = {str(row["id"]): index for index, row in enumerate(pool_rows)}
+    merged: list[dict[str, Any]] = []
+    shard_summaries = []
+    for shard_index in range(shard_count):
+        shard = {"index": shard_index, "count": shard_count}
+        candidate_path = _trajectory_candidate_path(p, shard)
+        summary_path = _trajectory_summary_path(p, shard)
+        if not candidate_path.exists() or not summary_path.exists():
+            raise FileNotFoundError(f"Missing trajectory shard {shard_index}/{shard_count}: {candidate_path}")
+        shard_rows = [
+            row
+            for row in read_jsonl(candidate_path)
+            if str(row.get("id")) in id_to_problem_index
+            and id_to_problem_index[str(row["id"])] % shard_count == shard_index
+        ]
+        expected_rows = sum(1 for index in range(len(pool_rows)) if index % shard_count == shard_index) * repeats
+        if len(shard_rows) != expected_rows:
+            raise RuntimeError(
+                f"Trajectory shard {shard_index}/{shard_count} has {len(shard_rows)} rows; "
+                f"expected {expected_rows}. Check shard log before merging."
+            )
+        merged.extend(shard_rows)
+        shard_summaries.append(read_json(summary_path))
+    seen_keys = set()
+    duplicates = []
+    for row in merged:
+        key = (str(row.get("id")), int(row.get("sample_index", -1)))
+        if key in seen_keys:
+            duplicates.append(key)
+        seen_keys.add(key)
+    if duplicates:
+        raise RuntimeError(f"Duplicate trajectory rows found while merging shards: {duplicates[:5]}")
+    merged.sort(key=lambda row: (id_to_problem_index[str(row["id"])], int(row.get("sample_index", 0))))
+    expected_total = len(pool_rows) * repeats
+    if len(merged) != expected_total:
+        raise RuntimeError(f"Merged trajectory rows {len(merged)} != expected {expected_total}")
+    write_jsonl(p["candidates"], merged)
     write_json(
         p["trajectory_summary"],
         {
             "schema": "stage_calibration_candidate_trajectories_v1",
-            **metadata(cfg, pool_manifest_hash=manifest_hash(rows)),
-            "rows": len(generated_rows),
-            "problems": len(rows),
-            "correct_rate": sum(int(row["correct"]) for row in generated_rows) / len(generated_rows),
-            "valid_stage_rate": sum(int(row["stage_protocol"]["valid"]) for row in generated_rows) / len(generated_rows),
-            "truncation_rate": sum(int(row["truncated"]) for row in generated_rows) / len(generated_rows),
+            **metadata(cfg, pool_manifest_hash=manifest_hash(pool_rows)),
+            "rows": len(merged),
+            "problems": len(pool_rows),
+            "correct_rate": _safe_rate(sum(int(row["correct"]) for row in merged), len(merged)),
+            "valid_stage_rate": _safe_rate(sum(int(row["stage_protocol"]["valid"]) for row in merged), len(merged)),
+            "truncation_rate": _safe_rate(sum(int(row["truncated"]) for row in merged), len(merged)),
+            "trajectory_sharded": True,
+            "trajectory_shard_count": shard_count,
+            "trajectory_shard_summaries": shard_summaries,
         },
     )
 
@@ -679,7 +928,7 @@ def _refresh_candidate_metadata(cfg: dict[str, Any], rows: list[dict[str, Any]])
         completion = str(row.get("completion", ""))
         gold = str(row.get("gold", ""))
         row["prediction"] = extract_answer(completion)
-        row["correct"] = answer_match(completion, gold)
+        row["correct"] = answer_match(completion, gold, answer_type=row.get("answer_type"))
         refreshed.append(row)
     return refreshed
 
@@ -759,6 +1008,60 @@ def _request_expansion_or_fail(
     )
     print(f"{reason}; formal workflow requested another {expansion} candidate problems")
     raise SystemExit(42)
+
+
+def _safe_rate(numerator: int | float, denominator: int) -> float | None:
+    return float(numerator) / denominator if denominator else None
+
+
+def _trajectory_shard_from_env() -> dict[str, int] | None:
+    count = os.environ.get("STAGE_GENERATE_SHARD_COUNT")
+    index = os.environ.get("STAGE_GENERATE_SHARD_INDEX")
+    if count is None and index is None:
+        return None
+    if count is None or index is None:
+        raise RuntimeError("Set both STAGE_GENERATE_SHARD_INDEX and STAGE_GENERATE_SHARD_COUNT")
+    shard = {"index": int(index), "count": int(count)}
+    validate_shard(shard_index=shard["index"], shard_count=shard["count"])
+    return shard
+
+
+def _trajectory_shards_dir(p: dict[str, Path]) -> Path:
+    return p["root"] / "02_trajectories" / "shards"
+
+
+def _trajectory_candidate_path(p: dict[str, Path], shard: dict[str, int] | None) -> Path:
+    if shard is None:
+        return p["candidates"]
+    return (
+        _trajectory_shards_dir(p)
+        / f"candidate_trajectories_shard_{shard['index']:05d}_of_{shard['count']:05d}.jsonl"
+    )
+
+
+def _trajectory_summary_path(p: dict[str, Path], shard: dict[str, int] | None) -> Path:
+    if shard is None:
+        return p["trajectory_summary"]
+    return (
+        _trajectory_shards_dir(p)
+        / f"summary_shard_{shard['index']:05d}_of_{shard['count']:05d}.json"
+    )
+
+
+def _trajectory_shard_count_from_env_or_files(p: dict[str, Path]) -> int:
+    env_count = os.environ.get("STAGE_GENERATE_SHARD_COUNT")
+    if env_count is not None:
+        return int(env_count)
+    counts = set()
+    for path in _trajectory_shards_dir(p).glob("summary_shard_*_of_*.json"):
+        match = re.match(r"summary_shard_\d+_of_(\d+)\.json$", path.name)
+        if match:
+            counts.add(int(match.group(1)))
+    if not counts:
+        raise FileNotFoundError(f"No trajectory shard summaries found in {_trajectory_shards_dir(p)}")
+    if len(counts) != 1:
+        raise ValueError(f"Conflicting trajectory shard counts found: {sorted(counts)}")
+    return counts.pop()
 
 
 def command_calibrate_masks(cfg: dict[str, Any], p: dict[str, Path]) -> None:
@@ -1586,6 +1889,7 @@ COMMANDS = {
     "preflight": command_preflight,
     "build_pool": command_build_pool,
     "generate_trajectories": command_generate_trajectories,
+    "merge_trajectory_shards": command_merge_trajectory_shards,
     "select_trajectories": command_select_trajectories,
     "calibrate_masks": command_calibrate_masks,
     "validate_masks": command_validate_masks,
@@ -1597,15 +1901,19 @@ COMMANDS = {
 
 
 def completion_artifacts(p: dict[str, Path], stage: str) -> tuple[Path, ...]:
+    if stage == "evaluate_final":
+        return (_effective_final_summary_path(p),)
+    if stage == "generate_trajectories":
+        shard = _trajectory_shard_from_env()
+        return (_trajectory_summary_path(p, shard), _trajectory_candidate_path(p, shard))
     return {
         "preflight": (p["preflight"],),
         "build_pool": (p["pool_summary"], p["pool"]),
-        "generate_trajectories": (p["trajectory_summary"], p["candidates"]),
+        "merge_trajectory_shards": (p["trajectory_summary"], p["candidates"]),
         "select_trajectories": (p["selection_summary"], p["calibration"], p["dev"]),
         "calibrate_masks": (p["bank_summary"], p["bank"]),
         "validate_masks": (p["bank_validation"],),
         "evaluate_dev": (p["dev_summary"], p["frozen"]),
-        "evaluate_final": (_effective_final_summary_path(p),),
         "merge_final_shards": (p["final_summary"],),
         "summarize": (p["workflow_summary"], p["workflow_gate"]),
     }[stage]

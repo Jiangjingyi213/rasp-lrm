@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from src.metrics.answer_match import answer_match, extract_answer
+from src.metrics.answer_match import answer_match, extract_answer, extract_multiple_choice_answer
 
 
 class AnswerMatchTest(unittest.TestCase):
@@ -56,6 +56,14 @@ class AnswerMatchTest(unittest.TestCase):
                 )
             )
         self.assertNotIn("Reasoning mentions 4\\sqrt{2}. Therefore \\boxed{2}.", calls)
+
+    def test_multiple_choice_requires_single_boxed_letter(self) -> None:
+        self.assertTrue(answer_match(r"Therefore \boxed{A}.", "A", answer_type="multiple_choice"))
+        self.assertTrue(answer_match(r"Therefore \boxed{a}.", "A", answer_type="multiple_choice"))
+        self.assertFalse(answer_match(r"Therefore \boxed{AB}.", "A", answer_type="multiple_choice"))
+        self.assertFalse(answer_match("Final answer: A", "A", answer_type="multiple_choice"))
+        self.assertFalse(answer_match(r"Therefore \boxed{B}.", "A", answer_type="multiple_choice"))
+        self.assertEqual(extract_multiple_choice_answer(r"Check \boxed{C}."), "C")
 
 
 if __name__ == "__main__":

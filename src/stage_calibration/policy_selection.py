@@ -24,6 +24,7 @@ DEFAULT_THRESHOLDS = {
     "main_dynamic_min_pruning": 0.15,
     "main_dynamic_max_pruning": 0.25,
     "aggressive_selection_min_pruning": 0.30,
+    "main_only_max_drop": 0.05,
 }
 
 STAGE_BUDGET_PRESETS = {
@@ -119,6 +120,127 @@ def build_policy_selection(
         "selected_policies": selected["selected_policies"],
         "downstream_methods": selected["downstream_methods"],
     }
+
+
+def build_main_only_policy_selection(
+    seed_runs: list[dict[str, Any]],
+    *,
+    thresholds: dict[str, float] | None = None,
+    candidate_ratios: tuple[float, ...] = (0.10, 0.15, 0.20),
+) -> dict[str, Any]:
+    thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
+    aggregates = aggregate_methods(seed_runs, thresholds)
+    structured = _aggregate_by_name(aggregates, "structured_dense")
+    if structured is None:
+        raise ValueError("Missing structured_dense summary for main-only policy selection")
+    dynamic = _pick_main_only_dynamic(aggregates, thresholds, candidate_ratios)
+    if dynamic is None:
+        raise ValueError("No stage_specific candidate passed main-only ratio gates")
+    dynamic_method = _method_with_selection_metadata(
+        {
+            **dynamic["method"],
+            "name": "dynamic_stage_main",
+        },
+        role="dynamic_stage_main",
+        policy_id=f"main_only_dynamic:{dynamic['method_name']}:{stable_hash(dynamic['method'])[:12]}",
+        tier=dynamic["selection_tier"],
+        source="single_seed_dev_main_only",
+        diagnostic_only=False,
+    )
+    dynamic_method["original_method_name"] = dynamic["method_name"]
+    static_ratio = _average_ratio(dynamic_method["stage_ratios"])
+    structured_prompt = dict(structured["method"].get("prompt", {}))
+    static_method = _method_with_selection_metadata(
+        {
+            "name": "static_matched_global",
+            "policy": "trajectory_global",
+            "stage_ratios": {stage: static_ratio for stage in STAGES},
+            "prompt": structured_prompt,
+            "bias_compensation": True,
+        },
+        role="static_matched_global",
+        policy_id=f"main_only_static:trajectory_global_{static_ratio:.4f}:{stable_hash(dynamic_method)[:12]}",
+        tier="matched_baseline",
+        source="matched_to_dynamic_stage_main",
+        diagnostic_only=False,
+    )
+    structured_method = _method_with_selection_metadata(
+        structured["method"],
+        role="structured_dense",
+        policy_id=f"main_only_structured:{stable_hash(structured['method'])[:12]}",
+        tier="baseline",
+        source="single_seed_dev_main_only",
+        diagnostic_only=False,
+    )
+    manifest = _seed_run_manifest(seed_runs)
+    return {
+        "schema": "stage_policy_selection_v1",
+        "selection_mode": "main_only",
+        "input_manifest_hash": stable_hash(manifest),
+        "seed_runs": manifest,
+        "thresholds": thresholds,
+        "candidate_ratios": [float(value) for value in candidate_ratios],
+        "test_sets_consulted": False,
+        "selection_policy": {
+            "dense_reference": "structured_dense",
+            "dynamic_policy": "stage_specific",
+            "dynamic_ratio_rule": "highest_candidate_ratio_passing_dev_gates",
+            "static_baseline": "trajectory_global at arithmetic mean of dynamic stage ratios",
+            "downstream_results_must_not_change_selection": True,
+        },
+        "method_aggregates": aggregates,
+        "selected_policies": {
+            "structured_dense": {
+                "role": "structured_dense",
+                "policy_id": structured_method["selection_policy_id"],
+                "selection_tier": "baseline",
+                "selection_source": "single_seed_dev_main_only",
+                "reason": "Explicit-stage dense reference for full evaluation.",
+                "aggregate": structured,
+                "method": structured_method,
+                "diagnostic_only": False,
+            },
+            "dynamic_stage_main": {
+                "role": "dynamic_stage_main",
+                "policy_id": dynamic_method["selection_policy_id"],
+                "selection_tier": dynamic["selection_tier"],
+                "selection_source": "single_seed_dev_main_only",
+                "reason": "Highest stage-specific candidate ratio passing main-only dev gates.",
+                "aggregate": dynamic,
+                "method": dynamic_method,
+                "diagnostic_only": False,
+            },
+            "static_matched_global": {
+                "role": "static_matched_global",
+                "policy_id": static_method["selection_policy_id"],
+                "selection_tier": "matched_baseline",
+                "selection_source": "matched_to_dynamic_stage_main",
+                "reason": "Static trajectory-global baseline at the dynamic policy average ratio.",
+                "matched_dynamic_method": dynamic["method_name"],
+                "matched_average_ratio": static_ratio,
+                "method": static_method,
+                "diagnostic_only": False,
+            },
+        },
+        "downstream_methods": [structured_method, dynamic_method, static_method],
+    }
+
+
+def _seed_run_manifest(seed_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "root": run["root"],
+            "seed": run["seed"],
+            "summary_path": run["summary_path"],
+            "summary_sha256": run["summary_sha256"],
+            "frozen_policy_path": run["frozen_policy_path"],
+            "frozen_policy_sha256": run["frozen_policy_sha256"],
+            "ordinary_dense_accuracy": run["ordinary_dense_accuracy"],
+            "structured_dense_accuracy": run["structured_dense_accuracy"],
+            "prompt_gate_passed": run["prompt_gate_passed"],
+        }
+        for run in seed_runs
+    ]
 
 
 def aggregate_methods(
@@ -366,6 +488,11 @@ def load_downstream_methods_from_selection(path: str | Path) -> tuple[list[dict[
     methods = selection.get("downstream_methods")
     if not isinstance(methods, list) or not methods:
         raise ValueError("Policy selection does not contain downstream_methods")
+    if selection.get("selection_mode") == "main_only":
+        names = [str(method.get("name")) for method in methods]
+        expected = ["structured_dense", "dynamic_stage_main", "static_matched_global"]
+        if names != expected:
+            raise ValueError(f"Main-only policy selection must contain exactly {expected}, got {names}")
     return methods, selection
 
 
@@ -556,6 +683,39 @@ def _pick_shuffled_control(aggregates: list[dict[str, Any]], thresholds: dict[st
     return _selection_entry("shuffled_control", best, "control only; never selected as the main method")
 
 
+def _pick_main_only_dynamic(
+    aggregates: list[dict[str, Any]],
+    thresholds: dict[str, float],
+    candidate_ratios: tuple[float, ...],
+) -> dict[str, Any] | None:
+    allowed = {round(float(value), 8) for value in candidate_ratios}
+    candidates = []
+    for row in aggregates:
+        if row.get("policy") != "stage_specific":
+            continue
+        ratios = {stage: float(row.get("stage_ratios", {}).get(stage, 0.0)) for stage in STAGES}
+        if len({round(value, 8) for value in ratios.values()}) != 1:
+            continue
+        ratio = round(next(iter(ratios.values())), 8)
+        if ratio not in allowed:
+            continue
+        if not row.get("quality_passed"):
+            continue
+        if _float(row.get("mean_accuracy_drop_vs_structured_dense")) > thresholds["main_only_max_drop"]:
+            continue
+        candidates.append(row)
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda row: (
+            _average_ratio(row.get("stage_ratios", {})),
+            -_float(row.get("mean_accuracy_drop_vs_structured_dense")),
+            -_float(row.get("worst_accuracy_drop_vs_structured_dense")),
+        ),
+    )
+
+
 def _selectable_method(row: dict[str, Any]) -> bool:
     name = str(row["method_name"])
     policy = str(row.get("policy"))
@@ -568,6 +728,10 @@ def _selectable_method(row: dict[str, Any]) -> bool:
     if name.endswith("_no_bias_compensation"):
         return False
     return policy in {"trajectory_global", "stage_balanced_global", "stage_specific"}
+
+
+def _average_ratio(stage_ratios: dict[str, Any]) -> float:
+    return sum(float(stage_ratios.get(stage, 0.0)) for stage in STAGES) / len(STAGES)
 
 
 def _selection_entry(role: str, aggregate: dict[str, Any] | None, reason: str) -> dict[str, Any] | None:
@@ -659,17 +823,29 @@ def main() -> None:
     parser.add_argument("--roots", nargs="+", required=True, help="Run roots or 05_dev/summary.json files.")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--no-stage-budget-presets", action="store_true")
+    parser.add_argument("--main-only", action="store_true")
+    parser.add_argument("--main-only-candidate-ratios", nargs="+", type=float, default=[0.10, 0.15, 0.20])
+    parser.add_argument("--main-only-max-drop", type=float, default=DEFAULT_THRESHOLDS["main_only_max_drop"])
     args = parser.parse_args()
 
     seed_runs = [load_seed_run(path) for path in args.roots]
-    selection = build_policy_selection(
-        seed_runs,
-        include_stage_budget_presets=not args.no_stage_budget_presets,
-    )
+    if args.main_only:
+        selection = build_main_only_policy_selection(
+            seed_runs,
+            thresholds={"main_only_max_drop": args.main_only_max_drop},
+            candidate_ratios=tuple(args.main_only_candidate_ratios),
+        )
+    else:
+        selection = build_policy_selection(
+            seed_runs,
+            include_stage_budget_presets=not args.no_stage_budget_presets,
+        )
     output_dir = ensure_dir(args.output_dir)
-    write_json(output_dir / "policy_selection.json", selection)
-    write_policy_selection_markdown(selection, output_dir / "policy_selection.md")
-    print(output_dir / "policy_selection.json")
+    json_name = "policy_selection_main_only.json" if args.main_only else "policy_selection.json"
+    md_name = "policy_selection_main_only.md" if args.main_only else "policy_selection.md"
+    write_json(output_dir / json_name, selection)
+    write_policy_selection_markdown(selection, output_dir / md_name)
+    print(output_dir / json_name)
 
 
 if __name__ == "__main__":

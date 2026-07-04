@@ -6,6 +6,7 @@ from pathlib import Path
 
 from src.stage_calibration.policy_selection import (
     aggregate_methods,
+    build_main_only_policy_selection,
     build_policy_selection,
     load_downstream_methods_from_selection,
 )
@@ -118,6 +119,28 @@ def seed_run(seed: int, structured_accuracy: float, candidate_accuracies: dict[s
             pruning=0.06,
         ),
     ]
+    if "stage_specific_0p10" in candidate_accuracies:
+        methods.append(
+            method_summary(
+                "stage_specific_0p10",
+                "stage_specific",
+                ratios(0.10),
+                seed=seed,
+                accuracy=candidate_accuracies["stage_specific_0p10"],
+                pruning=0.10,
+            )
+        )
+    if "stage_specific_0p15" in candidate_accuracies:
+        methods.append(
+            method_summary(
+                "stage_specific_0p15",
+                "stage_specific",
+                ratios(0.15),
+                seed=seed,
+                accuracy=candidate_accuracies["stage_specific_0p15"],
+                pruning=0.15,
+            )
+        )
     return {
         "root": f"run_seed{seed}",
         "seed": seed,
@@ -204,6 +227,65 @@ class StagePolicySelectionTest(unittest.TestCase):
             path = Path(tmpdir) / "policy_selection.json"
             write_json(path, selection)
             with self.assertRaisesRegex(ValueError, "final test sets"):
+                load_downstream_methods_from_selection(path)
+
+    def test_main_only_selection_chooses_highest_passing_dynamic_ratio(self) -> None:
+        runs = [
+            seed_run(
+                3,
+                0.90,
+                {
+                    "trajectory_global_0p10": 0.88,
+                    "stage_specific_0p10": 0.88,
+                    "stage_specific_0p15": 0.86,
+                    "stage_specific_0p20": 0.83,
+                    "shuffled_stage_0p10": 0.89,
+                    "stage_specific_0p30": 0.80,
+                },
+            )
+        ]
+        selection = build_main_only_policy_selection(runs)
+        methods = [row["name"] for row in selection["downstream_methods"]]
+        self.assertEqual(methods, ["structured_dense", "dynamic_stage_main", "static_matched_global"])
+        dynamic = selection["selected_policies"]["dynamic_stage_main"]["method"]
+        static = selection["selected_policies"]["static_matched_global"]["method"]
+        self.assertEqual(dynamic["original_method_name"], "stage_specific_0p15")
+        self.assertEqual(dynamic["stage_ratios"], ratios(0.15))
+        self.assertEqual(static["policy"], "trajectory_global")
+        self.assertEqual(static["stage_ratios"], ratios(0.15))
+        self.assertFalse(selection["test_sets_consulted"])
+
+    def test_main_only_loader_rejects_extra_methods(self) -> None:
+        selection = build_main_only_policy_selection(
+            [
+                seed_run(
+                    3,
+                    0.90,
+                    {
+                        "trajectory_global_0p10": 0.88,
+                        "stage_specific_0p10": 0.88,
+                        "stage_specific_0p15": 0.86,
+                        "stage_specific_0p20": 0.83,
+                        "shuffled_stage_0p10": 0.89,
+                        "stage_specific_0p30": 0.80,
+                    },
+                )
+            ]
+        )
+        selection["downstream_methods"].append(
+            method_summary(
+                "shuffled_stage_0p10",
+                "shuffled_stage",
+                ratios(0.10),
+                seed=1,
+                accuracy=0.9,
+                pruning=0.1,
+            )["method"]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "policy_selection_main_only.json"
+            write_json(path, selection)
+            with self.assertRaisesRegex(ValueError, "exactly"):
                 load_downstream_methods_from_selection(path)
 
 
