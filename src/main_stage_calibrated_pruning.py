@@ -1246,6 +1246,27 @@ def _method_quality_passed(cfg: dict[str, Any], summary: dict[str, Any]) -> bool
     )
 
 
+def _build_calibration_gate(
+    cfg: dict[str, Any],
+    calibration_comparisons: list[dict[str, Any]],
+) -> dict[str, Any]:
+    default_required = bool(calibration_comparisons)
+    reference_gate_required = bool(
+        _evaluation_threshold(cfg, "require_calibration_reference_gate", default_required)
+    )
+    trajectory_promising = any(row["trajectory_strictly_best"] for row in calibration_comparisons)
+    return {
+        "comparisons": calibration_comparisons,
+        "required": reference_gate_required,
+        "skipped_reason": (
+            None
+            if reference_gate_required
+            else "no calibration reference comparison configured; ratio selection is handled by policy_selection"
+        ),
+        "trajectory_calibration_promising": trajectory_promising if reference_gate_required else True,
+    }
+
+
 def _run_methods(cfg, p, tasks, bank, bundle, methods, output_dir, seed: int | None = None) -> list[dict[str, Any]]:
     summaries = []
     ensure_dir(output_dir)
@@ -1406,12 +1427,7 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
                     ),
                 }
             )
-    calibration_gate = {
-        "comparisons": calibration_comparisons,
-        "trajectory_calibration_promising": any(
-            row["trajectory_strictly_best"] for row in calibration_comparisons
-        ),
-    }
+    calibration_gate = _build_calibration_gate(cfg, calibration_comparisons)
     prompt_gate_passed = bool(prompt_gate["passed"])
     calibration_gate_passed = bool(calibration_gate["trajectory_calibration_promising"])
     gate_failure_reasons = []

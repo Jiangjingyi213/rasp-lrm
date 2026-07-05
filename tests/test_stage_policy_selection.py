@@ -13,6 +13,14 @@ from src.stage_calibration.policy_selection import (
 from src.stage_calibration.protocol import STAGES
 from src.utils.io import write_json
 
+try:
+    from src.main_stage_calibrated_pruning import _build_calibration_gate
+
+    MAIN_WORKFLOW_AVAILABLE = True
+except ModuleNotFoundError:
+    _build_calibration_gate = None
+    MAIN_WORKFLOW_AVAILABLE = False
+
 
 STRUCTURED_PROMPT = {
     "use_chat_template": True,
@@ -287,6 +295,19 @@ class StagePolicySelectionTest(unittest.TestCase):
             write_json(path, selection)
             with self.assertRaisesRegex(ValueError, "exactly"):
                 load_downstream_methods_from_selection(path)
+
+    @unittest.skipUnless(MAIN_WORKFLOW_AVAILABLE, "main workflow dependencies are required")
+    def test_main_only_workflow_can_disable_reference_calibration_gate(self) -> None:
+        cfg = {
+            "workflow": {"profile": "pilot"},
+            "profiles": {"pilot": {}},
+            "evaluation": {"require_calibration_reference_gate": False},
+        }
+        assert _build_calibration_gate is not None
+        gate = _build_calibration_gate(cfg, [])
+        self.assertFalse(gate["required"])
+        self.assertTrue(gate["trajectory_calibration_promising"])
+        self.assertIn("no calibration reference comparison", gate["skipped_reason"])
 
 
 if __name__ == "__main__":
