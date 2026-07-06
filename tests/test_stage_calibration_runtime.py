@@ -9,7 +9,14 @@ try:
     from torch import nn
 
     from src.stage_calibration.mask_bank import build_mask_bank
-    from src.stage_calibration.runtime import FixedStageMaskedQwen3MLP, StageMaskRuntime
+    from src.rasp.activation_ranker import rank_intermediate_neurons
+    from src.stage_calibration.runtime import (
+        AdaptiveStageGriffinQwen3MLP,
+        AdaptiveStageGriffinRuntime,
+        FixedStageMaskedQwen3MLP,
+        StageMaskRuntime,
+        griffin_activation_score,
+    )
 
     TORCH_AVAILABLE = True
 except ModuleNotFoundError:
@@ -67,6 +74,68 @@ class StageCalibrationRuntimeTest(unittest.TestCase):
         runtime.fallback_dense(reason)
         self.assertEqual(runtime.summary()["fallback_reason"], reason)
         self.assertEqual(runtime.active_ratio(), 0.0)
+
+    def test_griffin_score_matches_existing_activation_ranker(self) -> None:
+        values = torch.tensor(
+            [[[1.0, 0.0, 2.0, 0.5], [0.0, 3.0, 1.0, 0.5]]],
+            dtype=torch.float32,
+        )
+        expected = rank_intermediate_neurons(values)
+        actual = torch.argsort(griffin_activation_score(values), descending=True)
+        self.assertTrue(torch.equal(actual, expected))
+
+    def test_adaptive_runtime_warmup_then_masks(self) -> None:
+        original = TinyMlp()
+        runtime = AdaptiveStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={"setup": 0.5, "reasoning": 0.5, "verify": 0.5, "final": 0.0},
+            warmup_tokens={"setup": 0, "reasoning": 2, "verify": 0, "final": 0},
+            alpha=0.7,
+        )
+        wrapped = AdaptiveStageGriffinQwen3MLP(original, 0, runtime)
+        prompt = torch.randn(1, 3, 2)
+        wrapped(prompt)
+        runtime.set_stage("reasoning")
+        token = torch.randn(1, 1, 2)
+        wrapped(token)
+        wrapped(token)
+        self.assertEqual(runtime.summary()["dense_observation_tokens_by_stage"]["reasoning"], 2)
+        wrapped(token)
+        summary = runtime.summary()
+        self.assertEqual(summary["masked_tokens_by_stage"]["reasoning"], 1)
+        self.assertEqual(summary["mask_refresh_count_by_stage"]["reasoning"], 1)
+
+    def test_adaptive_final_ratio_zero_is_dense_equivalent(self) -> None:
+        original = TinyMlp()
+        runtime = AdaptiveStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={"setup": 0.5, "reasoning": 0.5, "verify": 0.5, "final": 0.0},
+            warmup_tokens={"setup": 0, "reasoning": 0, "verify": 0, "final": 0},
+        )
+        wrapped = AdaptiveStageGriffinQwen3MLP(original, 0, runtime)
+        runtime.set_stage("final")
+        value = torch.randn(1, 1, 2)
+        expected = original.down_proj(original.act_fn(original.gate_proj(value)) * original.up_proj(value))
+        self.assertTrue(torch.allclose(wrapped(value), expected))
+        summary = runtime.summary()
+        self.assertNotIn("final", summary.get("masked_tokens_by_stage", {}))
+
+    def test_adaptive_fallback_keeps_following_tokens_dense(self) -> None:
+        original = TinyMlp()
+        runtime = AdaptiveStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={stage: 0.5 for stage in STAGES},
+            warmup_tokens={stage: 0 for stage in STAGES},
+        )
+        wrapped = AdaptiveStageGriffinQwen3MLP(original, 0, runtime)
+        wrapped(torch.randn(1, 3, 2))
+        runtime.set_stage("setup")
+        runtime.fallback_dense("invalid")
+        wrapped(torch.randn(1, 1, 2))
+        summary = runtime.summary()
+        self.assertEqual(summary["fallback_reason"], "invalid")
+        self.assertEqual(summary["dense_observation_tokens_by_stage"]["dense"], 1)
+        self.assertNotIn("setup", summary.get("masked_tokens_by_stage", {}))
 
 
 if __name__ == "__main__":

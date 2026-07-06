@@ -296,6 +296,54 @@ class StagePolicySelectionTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly"):
                 load_downstream_methods_from_selection(path)
 
+    def test_adaptive_griffin_loader_accepts_only_main_methods(self) -> None:
+        selection = {
+            "schema": "stage_policy_selection_v1",
+            "selection_mode": "adaptive_griffin_main_only",
+            "test_sets_consulted": False,
+            "downstream_methods": [
+                {
+                    "name": "structured_dense",
+                    "policy": "trajectory_global",
+                    "stage_ratios": ratios(0.0),
+                    "prompt": STRUCTURED_PROMPT,
+                },
+                {
+                    "name": "calibrated_stage_adaptive_griffin_main",
+                    "policy": "calibrated_stage_adaptive_griffin",
+                    "stage_ratios": {"setup": 0.2, "reasoning": 0.1, "verify": 0.2, "final": 0.0},
+                    "prompt": STRUCTURED_PROMPT,
+                    "alpha": 0.7,
+                    "warmup_tokens": {"setup": 0, "reasoning": 16, "verify": 16, "final": 0},
+                },
+                {
+                    "name": "static_matched_global",
+                    "policy": "trajectory_global",
+                    "stage_ratios": ratios(0.15),
+                    "prompt": STRUCTURED_PROMPT,
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "adaptive_griffin_policy_selection.json"
+            write_json(path, selection)
+            methods, _ = load_downstream_methods_from_selection(path)
+            self.assertEqual(
+                [method["name"] for method in methods],
+                ["structured_dense", "calibrated_stage_adaptive_griffin_main", "static_matched_global"],
+            )
+            selection["downstream_methods"].append(
+                {
+                    "name": "stage_specific_0p20",
+                    "policy": "stage_specific",
+                    "stage_ratios": ratios(0.20),
+                    "prompt": STRUCTURED_PROMPT,
+                }
+            )
+            write_json(path, selection)
+            with self.assertRaisesRegex(ValueError, "Adaptive GRIFFIN"):
+                load_downstream_methods_from_selection(path)
+
     @unittest.skipUnless(MAIN_WORKFLOW_AVAILABLE, "main workflow dependencies are required")
     def test_main_only_workflow_can_disable_reference_calibration_gate(self) -> None:
         cfg = {

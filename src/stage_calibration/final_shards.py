@@ -89,15 +89,27 @@ def completed_shard_indices(final_dir: str | Path, *, shard_count: int) -> set[i
 def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: int) -> dict[str, Any]:
     correct = sum(int(row.get("correct", False)) for row in rows)
     stage_tokens = Counter()
+    dense_observation_tokens = Counter()
+    masked_tokens = Counter()
+    mask_refresh_counts = Counter()
     fallback = Counter()
     theoretical = []
+    runtime_backend = None
+    runtime_alpha = None
+    runtime_warmup_tokens = None
     for row in rows:
         runtime = row.get("runtime_stage_mask", {})
+        runtime_backend = runtime_backend or runtime.get("backend")
+        runtime_alpha = runtime_alpha if runtime_alpha is not None else runtime.get("alpha")
+        runtime_warmup_tokens = runtime_warmup_tokens or runtime.get("warmup_tokens")
         stage_tokens.update(runtime.get("tokens_by_stage", {}))
+        dense_observation_tokens.update(runtime.get("dense_observation_tokens_by_stage", {}))
+        masked_tokens.update(runtime.get("masked_tokens_by_stage", {}))
+        mask_refresh_counts.update(runtime.get("mask_refresh_count_by_stage", {}))
         if runtime.get("fallback_reason"):
             fallback[str(runtime["fallback_reason"])] += 1
         theoretical.append(float(runtime.get("theoretical_average_mlp_pruning_ratio", 0.0)))
-    return {
+    summary = {
         "method": method,
         "seed": int(seed),
         "problems": len(rows),
@@ -121,6 +133,19 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
             sum(theoretical) / len(theoretical) if theoretical else 0.0
         ),
     }
+    if runtime_backend:
+        summary["runtime_backend"] = runtime_backend
+    if dense_observation_tokens:
+        summary["dense_observation_tokens_by_stage"] = dict(dense_observation_tokens)
+    if masked_tokens:
+        summary["masked_tokens_by_stage"] = dict(masked_tokens)
+    if mask_refresh_counts:
+        summary["mask_refresh_count_by_stage"] = dict(mask_refresh_counts)
+    if runtime_alpha is not None:
+        summary["adaptive_alpha"] = runtime_alpha
+    if runtime_warmup_tokens is not None:
+        summary["adaptive_warmup_tokens"] = runtime_warmup_tokens
+    return summary
 
 
 def merge_final_shards(
