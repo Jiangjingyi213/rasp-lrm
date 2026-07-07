@@ -344,6 +344,21 @@ class StagePolicySelectionTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Adaptive GRIFFIN"):
                 load_downstream_methods_from_selection(path)
 
+            selection["downstream_methods"] = selection["downstream_methods"][:3]
+            selection["downstream_methods"][1] = {
+                "name": "calibrated_stage_safe_dynamic_griffin_main",
+                "policy": "calibrated_stage_safe_dynamic_griffin",
+                "stage_ratios": {"setup": 0.15, "reasoning": 0.2, "verify": 0.15, "final": 0.0},
+                "prompt": STRUCTURED_PROMPT,
+                "runtime_weight": 0.4,
+                "prior_weight": 0.6,
+                "protected_core_ratios": {"setup": 0.5, "reasoning": 0.4, "verify": 0.6, "final": 1.0},
+                "refresh_intervals": {"setup": 128, "reasoning": 64, "verify": 32, "final": 0},
+            }
+            write_json(path, selection)
+            methods, _ = load_downstream_methods_from_selection(path)
+            self.assertEqual(methods[1]["name"], "calibrated_stage_safe_dynamic_griffin_main")
+
     @unittest.skipUnless(MAIN_WORKFLOW_AVAILABLE, "main workflow dependencies are required")
     def test_main_only_workflow_can_disable_reference_calibration_gate(self) -> None:
         cfg = {

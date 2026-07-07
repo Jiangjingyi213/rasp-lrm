@@ -14,6 +14,7 @@ try:
         AdaptiveStageGriffinQwen3MLP,
         AdaptiveStageGriffinRuntime,
         FixedStageMaskedQwen3MLP,
+        SafeDynamicStageGriffinRuntime,
         StageMaskRuntime,
         griffin_activation_score,
     )
@@ -136,6 +137,58 @@ class StageCalibrationRuntimeTest(unittest.TestCase):
         self.assertEqual(summary["fallback_reason"], "invalid")
         self.assertEqual(summary["dense_observation_tokens_by_stage"]["dense"], 1)
         self.assertNotIn("setup", summary.get("masked_tokens_by_stage", {}))
+
+    def test_safe_dynamic_protected_core_keeps_high_wifv_channels(self) -> None:
+        runtime = SafeDynamicStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={"setup": 0.5, "reasoning": 0.5, "verify": 0.5, "final": 0.0},
+            protected_core_ratios={"setup": 0.5, "reasoning": 0.0, "verify": 0.0, "final": 1.0},
+            refresh_intervals={"setup": 2, "reasoning": 0, "verify": 0, "final": 0},
+            window_tokens={"setup": 2, "reasoning": 1, "verify": 1, "final": 1},
+            runtime_weight=1.0,
+            prior_weight=0.0,
+        )
+        runtime.set_stage("setup")
+        wrapped = AdaptiveStageGriffinQwen3MLP(TinyMlp(), 0, runtime)
+        wrapped(torch.randn(1, 1, 2))
+        mask = runtime.keep_mask("setup", 0)
+        self.assertTrue(bool(mask[2]))
+        self.assertTrue(bool(mask[3]))
+
+    def test_safe_dynamic_refreshes_masks_inside_stage(self) -> None:
+        runtime = SafeDynamicStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={"setup": 0.5, "reasoning": 0.5, "verify": 0.5, "final": 0.0},
+            protected_core_ratios={stage: 0.0 for stage in STAGES},
+            refresh_intervals={"setup": 2, "reasoning": 0, "verify": 0, "final": 0},
+            window_tokens={"setup": 2, "reasoning": 1, "verify": 1, "final": 1},
+            runtime_weight=0.4,
+            prior_weight=0.6,
+        )
+        runtime.set_stage("setup")
+        wrapped = AdaptiveStageGriffinQwen3MLP(TinyMlp(), 0, runtime)
+        token = torch.randn(1, 1, 2)
+        wrapped(token)
+        wrapped(token)
+        wrapped(token)
+        summary = runtime.summary()
+        self.assertEqual(summary["masked_tokens_by_stage"]["setup"], 3)
+        self.assertGreaterEqual(summary["mask_refresh_count_by_stage"]["setup"], 2)
+        self.assertEqual(summary["refresh_intervals"]["setup"], 2)
+
+    def test_safe_dynamic_final_ratio_zero_is_dense_equivalent(self) -> None:
+        original = TinyMlp()
+        runtime = SafeDynamicStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={"setup": 0.5, "reasoning": 0.5, "verify": 0.5, "final": 0.0},
+            protected_core_ratios={stage: 0.0 for stage in STAGES},
+        )
+        wrapped = AdaptiveStageGriffinQwen3MLP(original, 0, runtime)
+        runtime.set_stage("final")
+        value = torch.randn(1, 1, 2)
+        expected = original.down_proj(original.act_fn(original.gate_proj(value)) * original.up_proj(value))
+        self.assertTrue(torch.allclose(wrapped(value), expected))
+        self.assertNotIn("final", runtime.summary().get("masked_tokens_by_stage", {}))
 
 
 if __name__ == "__main__":

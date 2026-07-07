@@ -1203,17 +1203,33 @@ def _adaptive_warmup_tokens(cfg: dict[str, Any]) -> dict[str, int]:
     return {stage: int(acfg.get("warmup_tokens", {}).get(stage, 0)) for stage in STAGES}
 
 
+def _adaptive_stage_int_map(cfg: dict[str, Any], name: str, default: int = 0) -> dict[str, int]:
+    acfg = _adaptive_griffin_cfg(cfg)
+    return {stage: int(acfg.get(name, {}).get(stage, default)) for stage in STAGES}
+
+
+def _adaptive_stage_float_map(cfg: dict[str, Any], name: str, default: float = 0.0) -> dict[str, float]:
+    acfg = _adaptive_griffin_cfg(cfg)
+    return {stage: float(acfg.get(name, {}).get(stage, default)) for stage in STAGES}
+
+
 def adaptive_griffin_method(cfg: dict[str, Any]) -> dict[str, Any]:
     acfg = _adaptive_griffin_cfg(cfg)
     return method(
         str(acfg.get("method_name", "calibrated_stage_adaptive_griffin_main")),
-        "calibrated_stage_adaptive_griffin",
+        str(acfg.get("policy", "calibrated_stage_adaptive_griffin")),
         _adaptive_stage_ratios(cfg),
         structured_prompt(cfg),
         bias=bool(acfg.get("bias_compensation", True)),
         alpha=float(acfg.get("alpha", 0.7)),
+        runtime_weight=float(acfg.get("runtime_weight", 0.4)),
+        prior_weight=float(acfg.get("prior_weight", 0.6)),
         warmup_tokens=_adaptive_warmup_tokens(cfg),
+        protected_core_ratios=_adaptive_stage_float_map(cfg, "protected_core_ratios"),
+        refresh_intervals=_adaptive_stage_int_map(cfg, "refresh_intervals"),
+        window_tokens=_adaptive_stage_int_map(cfg, "window_tokens", 1),
         prior_policy=str(acfg.get("prior_policy", "stage_specific")),
+        score_mode=str(acfg.get("score_mode", "activation_keep")),
         adaptive_backend=str(acfg.get("backend", "logical_mask")),
     )
 
@@ -1508,7 +1524,8 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             )
     calibration_gate = _build_calibration_gate(cfg, calibration_comparisons)
     if _adaptive_griffin_enabled(cfg):
-        adaptive_name = adaptive_griffin_method(cfg)["name"]
+        adaptive_method_cfg = adaptive_griffin_method(cfg)
+        adaptive_name = adaptive_method_cfg["name"]
         adaptive_summary = next(row for row in summaries if row["method"]["name"] == adaptive_name)
         static_summary = next(row for row in summaries if row["method"]["name"] == "static_matched_global")
         adaptive_final_masked_tokens = int(
@@ -1563,7 +1580,7 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             "test_sets_consulted": False,
             "selection_policy": {
                 "dense_reference": "structured_dense",
-                "adaptive_policy": "calibrated_stage_adaptive_griffin",
+                "adaptive_policy": str(adaptive_summary["method"]["policy"]),
                 "static_baseline": "trajectory_global at configured static_matched_ratio",
                 "downstream_results_must_not_change_selection": True,
             },
@@ -1573,10 +1590,10 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
                     "method": structured_method,
                     "reason": "Explicit-stage dense reference.",
                 },
-                "calibrated_stage_adaptive_griffin_main": {
-                    "role": "calibrated_stage_adaptive_griffin_main",
+                adaptive_name: {
+                    "role": adaptive_name,
                     "method": adaptive_summary["method"],
-                    "reason": "Fixed V1 stage budget with per-sample adaptive channel selection.",
+                    "reason": "Stage-conditioned calibration prior with per-sample dynamic channel selection.",
                     "dev_summary": {
                         "accuracy": adaptive_summary["accuracy"],
                         "theoretical_average_mlp_pruning_ratio": adaptive_summary[
@@ -1614,7 +1631,7 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
                     "| role | method | dev accuracy | pruning |",
                     "|---|---|---:|---:|",
                     f"| structured_dense | `structured_dense` | {float(dense['accuracy']):.4f} | 0.0000 |",
-                    "| calibrated_stage_adaptive_griffin_main | "
+                    f"| {adaptive_name} | "
                     f"`{adaptive_summary['method']['name']}` | "
                     f"{float(adaptive_summary['accuracy']):.4f} | "
                     f"{float(adaptive_summary['theoretical_average_mlp_pruning_ratio']):.4f} |",

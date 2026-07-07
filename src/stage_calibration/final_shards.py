@@ -97,11 +97,33 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
     runtime_backend = None
     runtime_alpha = None
     runtime_warmup_tokens = None
+    runtime_score_mode = None
+    runtime_runtime_weight = None
+    runtime_prior_weight = None
+    runtime_protected_core_ratios = None
+    runtime_refresh_intervals = None
+    runtime_window_tokens = None
     for row in rows:
         runtime = row.get("runtime_stage_mask", {})
         runtime_backend = runtime_backend or runtime.get("backend")
         runtime_alpha = runtime_alpha if runtime_alpha is not None else runtime.get("alpha")
         runtime_warmup_tokens = runtime_warmup_tokens or runtime.get("warmup_tokens")
+        runtime_score_mode = runtime_score_mode or runtime.get("score_mode")
+        runtime_runtime_weight = (
+            runtime_runtime_weight
+            if runtime_runtime_weight is not None
+            else runtime.get("runtime_weight")
+        )
+        runtime_prior_weight = (
+            runtime_prior_weight
+            if runtime_prior_weight is not None
+            else runtime.get("prior_weight")
+        )
+        runtime_protected_core_ratios = (
+            runtime_protected_core_ratios or runtime.get("protected_core_ratios")
+        )
+        runtime_refresh_intervals = runtime_refresh_intervals or runtime.get("refresh_intervals")
+        runtime_window_tokens = runtime_window_tokens or runtime.get("window_tokens")
         stage_tokens.update(runtime.get("tokens_by_stage", {}))
         dense_observation_tokens.update(runtime.get("dense_observation_tokens_by_stage", {}))
         masked_tokens.update(runtime.get("masked_tokens_by_stage", {}))
@@ -145,6 +167,18 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         summary["adaptive_alpha"] = runtime_alpha
     if runtime_warmup_tokens is not None:
         summary["adaptive_warmup_tokens"] = runtime_warmup_tokens
+    if runtime_score_mode is not None:
+        summary["adaptive_score_mode"] = runtime_score_mode
+    if runtime_runtime_weight is not None:
+        summary["adaptive_runtime_weight"] = runtime_runtime_weight
+    if runtime_prior_weight is not None:
+        summary["adaptive_prior_weight"] = runtime_prior_weight
+    if runtime_protected_core_ratios is not None:
+        summary["adaptive_protected_core_ratios"] = runtime_protected_core_ratios
+    if runtime_refresh_intervals is not None:
+        summary["adaptive_refresh_intervals"] = runtime_refresh_intervals
+    if runtime_window_tokens is not None:
+        summary["adaptive_window_tokens"] = runtime_window_tokens
     return summary
 
 

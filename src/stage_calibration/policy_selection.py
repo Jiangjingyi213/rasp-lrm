@@ -495,9 +495,21 @@ def load_downstream_methods_from_selection(path: str | Path) -> tuple[list[dict[
             raise ValueError(f"Main-only policy selection must contain exactly {expected}, got {names}")
     if selection.get("selection_mode") == "adaptive_griffin_main_only":
         names = [str(method.get("name")) for method in methods]
-        expected = ["structured_dense", "calibrated_stage_adaptive_griffin_main", "static_matched_global"]
-        if names != expected:
-            raise ValueError(f"Adaptive GRIFFIN policy selection must contain exactly {expected}, got {names}")
+        allowed_adaptive = {
+            "calibrated_stage_adaptive_griffin_main",
+            "calibrated_stage_safe_dynamic_griffin_main",
+        }
+        if (
+            len(names) != 3
+            or names[0] != "structured_dense"
+            or names[1] not in allowed_adaptive
+            or names[2] != "static_matched_global"
+        ):
+            raise ValueError(
+                "Adaptive GRIFFIN policy selection must contain exactly "
+                "structured_dense, one approved adaptive method, and static_matched_global; "
+                f"got {names}"
+            )
     return methods, selection
 
 

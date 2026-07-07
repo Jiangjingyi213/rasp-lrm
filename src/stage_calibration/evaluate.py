@@ -14,6 +14,7 @@ from .decode import decode_with_stage_masks
 from .protocol import STAGES
 from .runtime import (
     AdaptiveStageGriffinRuntime,
+    SafeDynamicStageGriffinRuntime,
     StageMaskRuntime,
     apply_adaptive_stage_griffin_qwen3,
     apply_fixed_stage_masking_qwen3,
@@ -33,6 +34,33 @@ def _runtime_for_method(model, bank: dict[str, Any], method: dict[str, Any]):
             alpha=float(method.get("alpha", 0.7)),
             warmup_tokens={
                 stage: int(method.get("warmup_tokens", {}).get(stage, 0))
+                for stage in STAGES
+            },
+            bias_compensation=bool(method.get("bias_compensation", True)),
+            prior_policy=str(method.get("prior_policy", "stage_specific")),
+        )
+        apply_adaptive_stage_griffin_qwen3(model, runtime)
+        return runtime
+    if method["policy"] == "calibrated_stage_safe_dynamic_griffin":
+        runtime = SafeDynamicStageGriffinRuntime(
+            bank,
+            stage_ratios=stage_ratios,
+            runtime_weight=float(method.get("runtime_weight", 0.4)),
+            prior_weight=float(method.get("prior_weight", 0.6)),
+            warmup_tokens={
+                stage: int(method.get("warmup_tokens", {}).get(stage, 0))
+                for stage in STAGES
+            },
+            protected_core_ratios={
+                stage: float(method.get("protected_core_ratios", {}).get(stage, 0.0))
+                for stage in STAGES
+            },
+            refresh_intervals={
+                stage: int(method.get("refresh_intervals", {}).get(stage, 0))
+                for stage in STAGES
+            },
+            window_tokens={
+                stage: int(method.get("window_tokens", {}).get(stage, 1))
                 for stage in STAGES
             },
             bias_compensation=bool(method.get("bias_compensation", True)),
@@ -104,11 +132,35 @@ def evaluate_method(
     runtime_backend = None
     runtime_alpha = None
     runtime_warmup_tokens = None
+    runtime_score_mode = None
+    runtime_runtime_weight = None
+    runtime_prior_weight = None
+    runtime_protected_core_ratios = None
+    runtime_refresh_intervals = None
+    runtime_window_tokens = None
     for row in rows:
         runtime_summary = row["runtime_stage_mask"]
         runtime_backend = runtime_backend or runtime_summary.get("backend")
         runtime_alpha = runtime_alpha if runtime_alpha is not None else runtime_summary.get("alpha")
         runtime_warmup_tokens = runtime_warmup_tokens or runtime_summary.get("warmup_tokens")
+        runtime_score_mode = runtime_score_mode or runtime_summary.get("score_mode")
+        runtime_runtime_weight = (
+            runtime_runtime_weight
+            if runtime_runtime_weight is not None
+            else runtime_summary.get("runtime_weight")
+        )
+        runtime_prior_weight = (
+            runtime_prior_weight
+            if runtime_prior_weight is not None
+            else runtime_summary.get("prior_weight")
+        )
+        runtime_protected_core_ratios = (
+            runtime_protected_core_ratios or runtime_summary.get("protected_core_ratios")
+        )
+        runtime_refresh_intervals = (
+            runtime_refresh_intervals or runtime_summary.get("refresh_intervals")
+        )
+        runtime_window_tokens = runtime_window_tokens or runtime_summary.get("window_tokens")
         stage_tokens.update(runtime_summary["tokens_by_stage"])
         dense_observation_tokens.update(runtime_summary.get("dense_observation_tokens_by_stage", {}))
         masked_tokens.update(runtime_summary.get("masked_tokens_by_stage", {}))
@@ -144,4 +196,16 @@ def evaluate_method(
         summary["adaptive_alpha"] = runtime_alpha
     if runtime_warmup_tokens is not None:
         summary["adaptive_warmup_tokens"] = runtime_warmup_tokens
+    if runtime_score_mode is not None:
+        summary["adaptive_score_mode"] = runtime_score_mode
+    if runtime_runtime_weight is not None:
+        summary["adaptive_runtime_weight"] = runtime_runtime_weight
+    if runtime_prior_weight is not None:
+        summary["adaptive_prior_weight"] = runtime_prior_weight
+    if runtime_protected_core_ratios is not None:
+        summary["adaptive_protected_core_ratios"] = runtime_protected_core_ratios
+    if runtime_refresh_intervals is not None:
+        summary["adaptive_refresh_intervals"] = runtime_refresh_intervals
+    if runtime_window_tokens is not None:
+        summary["adaptive_window_tokens"] = runtime_window_tokens
     return rows, summary

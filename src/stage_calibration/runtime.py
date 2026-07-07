@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
 from typing import Any
 
 import torch
@@ -40,6 +40,45 @@ def _keep_mask_from_scores(scores: torch.Tensor, ratio: float) -> torch.Tensor:
     indices = torch.topk(scores.float(), k=keep, largest=True).indices
     mask = torch.zeros(channels, dtype=torch.bool, device=scores.device)
     mask[indices] = True
+    return mask
+
+
+def _prune_mask_from_scores(
+    prune_scores: torch.Tensor,
+    ratio: float,
+    *,
+    protected_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    if not 0.0 <= float(ratio) < 1.0:
+        raise ValueError(f"Pruning ratio must be in [0, 1), got {ratio}")
+    scores = prune_scores.float()
+    channels = int(scores.numel())
+    prune = min(channels - 1, max(0, int(round(channels * float(ratio)))))
+    mask = torch.ones(channels, dtype=torch.bool, device=scores.device)
+    if prune == 0:
+        return mask
+    candidates = torch.ones(channels, dtype=torch.bool, device=scores.device)
+    if protected_mask is not None:
+        candidates &= ~protected_mask.to(device=scores.device, dtype=torch.bool)
+    candidate_indices = torch.nonzero(candidates, as_tuple=False).flatten()
+    if candidate_indices.numel() == 0:
+        return mask
+    prune = min(prune, int(candidate_indices.numel()))
+    local_scores = scores[candidate_indices]
+    prune_indices = candidate_indices[torch.topk(local_scores, k=prune, largest=True).indices]
+    mask[prune_indices] = False
+    return mask
+
+
+def _topk_mask(scores: torch.Tensor, fraction: float) -> torch.Tensor:
+    fraction = float(fraction)
+    if not 0.0 <= fraction <= 1.0:
+        raise ValueError(f"Protected core fraction must be in [0, 1], got {fraction}")
+    channels = int(scores.numel())
+    keep = min(channels, max(0, int(round(channels * fraction))))
+    mask = torch.zeros(channels, dtype=torch.bool, device=scores.device)
+    if keep:
+        mask[torch.topk(scores.float(), k=keep, largest=True).indices] = True
     return mask
 
 
@@ -314,6 +353,240 @@ class AdaptiveStageGriffinRuntime:
             "alpha": self.alpha,
             "warmup_tokens": self.warmup_tokens,
             "stage_ratios": self.stage_ratios,
+            "tokens_by_stage": dict(self.tokens_by_stage),
+            "dense_observation_tokens_by_stage": dict(self.dense_observation_tokens_by_stage),
+            "masked_tokens_by_stage": dict(self.masked_tokens_by_stage),
+            "mask_refresh_count_by_stage": dict(self.mask_refresh_count_by_stage),
+            "active_stage": self.active_stage,
+            "fallback_reason": self.fallback_reason,
+            "theoretical_average_mlp_pruning_ratio": weighted / total if total else 0.0,
+        }
+
+
+class SafeDynamicStageGriffinRuntime:
+    def __init__(
+        self,
+        bank: dict[str, Any],
+        *,
+        stage_ratios: dict[str, float],
+        runtime_weight: float = 0.4,
+        prior_weight: float = 0.6,
+        warmup_tokens: dict[str, int] | None = None,
+        protected_core_ratios: dict[str, float] | None = None,
+        refresh_intervals: dict[str, int] | None = None,
+        window_tokens: dict[str, int] | None = None,
+        bias_compensation: bool = True,
+        prior_policy: str = "stage_specific",
+    ) -> None:
+        validate_mask_bank(bank)
+        if prior_policy not in bank["policies"]:
+            raise ValueError(f"Unknown calibration prior policy: {prior_policy}")
+        self.bank = bank
+        self.prior_policy = prior_policy
+        self.stage_ratios = {stage: float(stage_ratios.get(stage, 0.0)) for stage in STAGES}
+        allowed = {float(value) for value in bank["ratios"]}
+        if any(value not in allowed for value in self.stage_ratios.values()):
+            raise ValueError("Safe-dynamic stage ratio is not present in mask bank")
+        self.runtime_weight = float(runtime_weight)
+        self.prior_weight = float(prior_weight)
+        if self.runtime_weight < 0.0 or self.prior_weight < 0.0:
+            raise ValueError("runtime_weight and prior_weight must be non-negative")
+        if self.runtime_weight + self.prior_weight <= 0.0:
+            raise ValueError("At least one safe-dynamic score weight must be positive")
+        warmup_tokens = warmup_tokens or {}
+        protected_core_ratios = protected_core_ratios or {}
+        refresh_intervals = refresh_intervals or {}
+        window_tokens = window_tokens or {}
+        self.warmup_tokens = {stage: int(warmup_tokens.get(stage, 0)) for stage in STAGES}
+        self.protected_core_ratios = {
+            stage: float(protected_core_ratios.get(stage, 0.0)) for stage in STAGES
+        }
+        self.refresh_intervals = {
+            stage: int(refresh_intervals.get(stage, 0)) for stage in STAGES
+        }
+        self.window_tokens = {
+            stage: max(1, int(window_tokens.get(stage, self.refresh_intervals[stage] or 1)))
+            for stage in STAGES
+        }
+        for stage, value in self.protected_core_ratios.items():
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"Invalid protected core ratio for {stage}: {value}")
+        self.bias_compensation = bool(bias_compensation)
+        self.active_stage: str | None = None
+        self.fallback_reason: str | None = None
+        self.tokens_by_stage: Counter[str] = Counter()
+        self.dense_observation_tokens_by_stage: Counter[str] = Counter()
+        self.masked_tokens_by_stage: Counter[str] = Counter()
+        self.mask_refresh_count_by_stage: Counter[str] = Counter()
+        self._prompt_scores: dict[int, torch.Tensor] = {}
+        self._recent_scores: dict[str, dict[int, deque[torch.Tensor]]] = {stage: {} for stage in STAGES}
+        self._recent_sums: dict[str, dict[int, torch.Tensor]] = {stage: {} for stage in STAGES}
+        self._stage_observed_tokens: Counter[str] = Counter()
+        self._stage_tokens_since_refresh: Counter[str] = Counter()
+        self._mask_cache: dict[tuple[str, int], torch.Tensor] = {}
+        self._current_single_stage: str | None = None
+        self._current_single_observe = False
+
+    @property
+    def alpha(self) -> float:
+        total = self.runtime_weight + self.prior_weight
+        return self.runtime_weight / total
+
+    def reset(self) -> None:
+        self.active_stage = None
+        self.fallback_reason = None
+        self.tokens_by_stage.clear()
+        self.dense_observation_tokens_by_stage.clear()
+        self.masked_tokens_by_stage.clear()
+        self.mask_refresh_count_by_stage.clear()
+        self._prompt_scores.clear()
+        self._recent_scores = {stage: {} for stage in STAGES}
+        self._recent_sums = {stage: {} for stage in STAGES}
+        self._stage_observed_tokens.clear()
+        self._stage_tokens_since_refresh.clear()
+        self._mask_cache.clear()
+        self._current_single_stage = None
+        self._current_single_observe = False
+
+    def set_stage(self, stage: str) -> None:
+        if stage not in STAGES:
+            self.fallback_dense(f"unknown_stage:{stage}")
+            return
+        if self.fallback_reason is None:
+            self.active_stage = stage
+            self._current_single_stage = None
+            self._current_single_observe = False
+
+    def fallback_dense(self, reason: str) -> None:
+        if self.fallback_reason is None:
+            self.fallback_reason = str(reason)
+        self.active_stage = None
+        self._current_single_stage = None
+        self._current_single_observe = False
+
+    def record_token(self) -> None:
+        self.tokens_by_stage[self.active_stage or "dense"] += 1
+
+    def _accumulate_prompt(self, layer_id: int, intermediate: torch.Tensor) -> None:
+        score_sq = griffin_activation_score(intermediate).square()
+        previous = self._prompt_scores.get(layer_id)
+        self._prompt_scores[layer_id] = score_sq if previous is None else previous.to(score_sq.device) + score_sq
+
+    def _append_recent(self, stage: str, layer_id: int, intermediate: torch.Tensor) -> None:
+        score_sq = griffin_activation_score(intermediate).square()
+        by_layer = self._recent_scores[stage]
+        queue = by_layer.get(layer_id)
+        if queue is None:
+            queue = deque()
+            by_layer[layer_id] = queue
+        maxlen = self.window_tokens[stage]
+        current_sum = self._recent_sums[stage].get(layer_id)
+        if current_sum is None:
+            current_sum = torch.zeros_like(score_sq)
+        else:
+            current_sum = current_sum.to(score_sq.device)
+        while len(queue) >= maxlen:
+            current_sum = current_sum - queue.popleft().to(score_sq.device)
+        queue.append(score_sq.detach().cpu())
+        self._recent_sums[stage][layer_id] = current_sum + score_sq
+
+    def observe_prompt(self, layer_id: int, intermediate: torch.Tensor) -> None:
+        self._accumulate_prompt(layer_id, intermediate)
+
+    def _clear_stage_cache(self, stage: str) -> None:
+        self._mask_cache = {key: value for key, value in self._mask_cache.items() if key[0] != stage}
+
+    def _single_token_mode(self, layer_id: int, token_count: int) -> tuple[str | None, bool]:
+        if layer_id == 0:
+            stage = self.active_stage
+            observe = False
+            if stage in STAGES and self.stage_ratios[stage] > 0.0:
+                observe = self._stage_observed_tokens[stage] < self.warmup_tokens[stage]
+                if observe:
+                    self._stage_observed_tokens[stage] += int(token_count)
+                else:
+                    interval = self.refresh_intervals[stage]
+                    if interval > 0 and self._stage_tokens_since_refresh[stage] >= interval:
+                        self._clear_stage_cache(stage)
+                        self._stage_tokens_since_refresh[stage] = 0
+            self._current_single_stage = stage
+            self._current_single_observe = observe
+        return self._current_single_stage, self._current_single_observe
+
+    def observe_or_mask(self, layer_id: int, intermediate: torch.Tensor) -> torch.Tensor | None:
+        token_count = int(intermediate.shape[1])
+        if token_count > 1:
+            self.observe_prompt(layer_id, intermediate)
+            return None
+        stage, observe = self._single_token_mode(layer_id, token_count)
+        if self.fallback_reason is not None or stage not in STAGES:
+            if layer_id == 0:
+                self.dense_observation_tokens_by_stage["dense"] += token_count
+            return None
+        ratio = self.stage_ratios[stage]
+        if ratio <= 0.0:
+            if layer_id == 0:
+                self.dense_observation_tokens_by_stage[stage] += token_count
+            return None
+        self._append_recent(stage, layer_id, intermediate)
+        if observe:
+            if layer_id == 0:
+                self.dense_observation_tokens_by_stage[stage] += token_count
+            return None
+        if layer_id == 0:
+            self.masked_tokens_by_stage[stage] += token_count
+            self._stage_tokens_since_refresh[stage] += token_count
+        return self.keep_mask(stage, layer_id)
+
+    def keep_mask(self, stage: str, layer_id: int) -> torch.Tensor:
+        key = (stage, layer_id)
+        cached = self._mask_cache.get(key)
+        if cached is not None:
+            return cached
+        entry = self.bank["policies"][self.prior_policy][stage][layer_id]
+        prior = entry["metric"].float()
+        runtime_score = self._recent_sums[stage].get(layer_id)
+        if runtime_score is None:
+            runtime_score = self._prompt_scores.get(layer_id)
+        if runtime_score is None:
+            runtime_score = torch.ones_like(prior)
+        runtime_score = runtime_score.to(device=prior.device, dtype=torch.float32).sqrt()
+        protected = _topk_mask(prior, self.protected_core_ratios[stage])
+        prune_score = self.prior_weight * _zscore(-prior) + self.runtime_weight * _zscore(-runtime_score)
+        mask = _prune_mask_from_scores(
+            prune_score,
+            self.stage_ratios[stage],
+            protected_mask=protected,
+        )
+        self._mask_cache[key] = mask
+        if layer_id == 0:
+            self.mask_refresh_count_by_stage[stage] += 1
+        return mask
+
+    def entry(self, stage: str, layer_id: int) -> dict[str, Any]:
+        return self.bank["policies"][self.prior_policy][stage][layer_id]
+
+    def summary(self) -> dict[str, Any]:
+        total = sum(self.dense_observation_tokens_by_stage.values()) + sum(
+            self.masked_tokens_by_stage.values()
+        )
+        weighted = sum(
+            self.stage_ratios.get(stage, 0.0) * count
+            for stage, count in self.masked_tokens_by_stage.items()
+        )
+        return {
+            "backend": "calibrated_stage_safe_dynamic_griffin_logical_v2",
+            "real_speedup_claimed": False,
+            "policy": "calibrated_stage_safe_dynamic_griffin",
+            "score_mode": "protected_core_safe_prune",
+            "alpha": self.alpha,
+            "runtime_weight": self.runtime_weight,
+            "prior_weight": self.prior_weight,
+            "warmup_tokens": self.warmup_tokens,
+            "stage_ratios": self.stage_ratios,
+            "protected_core_ratios": self.protected_core_ratios,
+            "refresh_intervals": self.refresh_intervals,
+            "window_tokens": self.window_tokens,
             "tokens_by_stage": dict(self.tokens_by_stage),
             "dense_observation_tokens_by_stage": dict(self.dense_observation_tokens_by_stage),
             "masked_tokens_by_stage": dict(self.masked_tokens_by_stage),
