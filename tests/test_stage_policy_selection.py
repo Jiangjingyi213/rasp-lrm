@@ -14,11 +14,12 @@ from src.stage_calibration.protocol import STAGES
 from src.utils.io import write_json
 
 try:
-    from src.main_stage_calibrated_pruning import _build_calibration_gate
+    from src.main_stage_calibrated_pruning import _build_calibration_gate, adaptive_griffin_methods
 
     MAIN_WORKFLOW_AVAILABLE = True
 except ModuleNotFoundError:
     _build_calibration_gate = None
+    adaptive_griffin_methods = None
     MAIN_WORKFLOW_AVAILABLE = False
 
 
@@ -359,6 +360,67 @@ class StagePolicySelectionTest(unittest.TestCase):
             methods, _ = load_downstream_methods_from_selection(path)
             self.assertEqual(methods[1]["name"], "calibrated_stage_safe_dynamic_griffin_main")
 
+    def test_adaptive_griffin_sweep_loader_accepts_multiple_adaptive_methods(self) -> None:
+        selection = {
+            "schema": "stage_policy_selection_v1",
+            "selection_mode": "adaptive_griffin_sweep",
+            "test_sets_consulted": False,
+            "downstream_methods": [
+                {
+                    "name": "structured_dense",
+                    "policy": "trajectory_global",
+                    "stage_ratios": ratios(0.0),
+                    "prompt": STRUCTURED_PROMPT,
+                },
+                {
+                    "name": "safe_dynamic_v2_current",
+                    "policy": "calibrated_stage_safe_dynamic_griffin",
+                    "stage_ratios": {"setup": 0.15, "reasoning": 0.2, "verify": 0.15, "final": 0.0},
+                    "prompt": STRUCTURED_PROMPT,
+                },
+                {
+                    "name": "math_safe_balanced",
+                    "policy": "calibrated_stage_safe_dynamic_griffin",
+                    "stage_ratios": {"setup": 0.2, "reasoning": 0.15, "verify": 0.1, "final": 0.0},
+                    "prompt": STRUCTURED_PROMPT,
+                },
+                {
+                    "name": "static_matched_global",
+                    "policy": "trajectory_global",
+                    "stage_ratios": ratios(0.15),
+                    "prompt": STRUCTURED_PROMPT,
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "adaptive_griffin_sweep_selection.json"
+            write_json(path, selection)
+            methods, _ = load_downstream_methods_from_selection(path)
+            self.assertEqual(
+                [method["name"] for method in methods],
+                [
+                    "structured_dense",
+                    "safe_dynamic_v2_current",
+                    "math_safe_balanced",
+                    "static_matched_global",
+                ],
+            )
+
+            selection["downstream_methods"][2] = {
+                "name": "stage_specific_0p20",
+                "policy": "stage_specific",
+                "stage_ratios": ratios(0.20),
+                "prompt": STRUCTURED_PROMPT,
+            }
+            write_json(path, selection)
+            with self.assertRaisesRegex(ValueError, "middle methods"):
+                load_downstream_methods_from_selection(path)
+
+            selection["downstream_methods"][2] = selection["downstream_methods"][1]
+            write_json(path, selection)
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                load_downstream_methods_from_selection(path)
+
     @unittest.skipUnless(MAIN_WORKFLOW_AVAILABLE, "main workflow dependencies are required")
     def test_main_only_workflow_can_disable_reference_calibration_gate(self) -> None:
         cfg = {
@@ -371,6 +433,43 @@ class StagePolicySelectionTest(unittest.TestCase):
         self.assertFalse(gate["required"])
         self.assertTrue(gate["trajectory_calibration_promising"])
         self.assertIn("no calibration reference comparison", gate["skipped_reason"])
+
+    @unittest.skipUnless(MAIN_WORKFLOW_AVAILABLE, "main workflow dependencies are required")
+    def test_adaptive_griffin_methods_expand_variants(self) -> None:
+        cfg = {
+            "prompt": {"structured": STRUCTURED_PROMPT},
+            "adaptive_griffin": {
+                "enabled": True,
+                "policy": "calibrated_stage_safe_dynamic_griffin",
+                "stage_ratios": {"setup": 0.15, "reasoning": 0.2, "verify": 0.15, "final": 0.0},
+                "protected_core_ratios": {"setup": 0.5, "reasoning": 0.4, "verify": 0.6, "final": 1.0},
+                "refresh_intervals": {"setup": 128, "reasoning": 64, "verify": 32, "final": 0},
+                "window_tokens": {"setup": 128, "reasoning": 64, "verify": 32, "final": 1},
+                "runtime_weight": 0.4,
+                "prior_weight": 0.6,
+                "variants": [
+                    {"method_name": "safe_dynamic_v2_current"},
+                    {
+                        "method_name": "math_safe_balanced",
+                        "runtime_weight": 0.3,
+                        "prior_weight": 0.7,
+                        "stage_ratios": {"reasoning": 0.15, "verify": 0.10},
+                        "refresh_intervals": {"reasoning": 128, "verify": 64},
+                    },
+                ],
+            },
+        }
+        assert adaptive_griffin_methods is not None
+        methods = adaptive_griffin_methods(cfg)
+        self.assertEqual([method["name"] for method in methods], ["safe_dynamic_v2_current", "math_safe_balanced"])
+        self.assertEqual(methods[0]["stage_ratios"]["reasoning"], 0.20)
+        self.assertEqual(methods[1]["stage_ratios"]["setup"], 0.15)
+        self.assertEqual(methods[1]["stage_ratios"]["reasoning"], 0.15)
+        self.assertEqual(methods[1]["stage_ratios"]["verify"], 0.10)
+        self.assertEqual(methods[1]["refresh_intervals"]["setup"], 128)
+        self.assertEqual(methods[1]["refresh_intervals"]["reasoning"], 128)
+        self.assertEqual(methods[1]["runtime_weight"], 0.3)
+        self.assertEqual(methods[1]["prior_weight"], 0.7)
 
 
 if __name__ == "__main__":

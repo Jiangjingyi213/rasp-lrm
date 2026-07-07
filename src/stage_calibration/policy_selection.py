@@ -510,6 +510,33 @@ def load_downstream_methods_from_selection(path: str | Path) -> tuple[list[dict[
                 "structured_dense, one approved adaptive method, and static_matched_global; "
                 f"got {names}"
             )
+    if selection.get("selection_mode") == "adaptive_griffin_sweep":
+        names = [str(method.get("name")) for method in methods]
+        if len(names) != len(set(names)):
+            raise ValueError(f"Adaptive GRIFFIN sweep contains duplicate method names: {names}")
+        if len(names) < 4 or names[0] != "structured_dense" or names[-1] != "static_matched_global":
+            raise ValueError(
+                "Adaptive GRIFFIN sweep must contain structured_dense, one or more adaptive "
+                f"methods, and static_matched_global; got {names}"
+            )
+        allowed_policies = {
+            "calibrated_stage_adaptive_griffin",
+            "calibrated_stage_safe_dynamic_griffin",
+        }
+        invalid = [
+            method
+            for method in methods[1:-1]
+            if str(method.get("policy")) not in allowed_policies
+        ]
+        if invalid:
+            raise ValueError(
+                "Adaptive GRIFFIN sweep middle methods must all be adaptive policies; "
+                f"got {[method.get('name') for method in invalid]}"
+            )
+        if str(methods[0].get("policy")) != "trajectory_global":
+            raise ValueError("Adaptive GRIFFIN sweep structured_dense must use trajectory_global policy")
+        if str(methods[-1].get("policy")) != "trajectory_global":
+            raise ValueError("Adaptive GRIFFIN sweep static_matched_global must use trajectory_global policy")
     return methods, selection
 
 

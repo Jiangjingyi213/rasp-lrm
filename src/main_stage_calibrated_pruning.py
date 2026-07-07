@@ -8,6 +8,7 @@ import os
 import random
 import re
 from collections import Counter, defaultdict
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -1186,52 +1187,105 @@ def method(
 
 
 def _adaptive_griffin_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
-    return dict(cfg.get("adaptive_griffin", {}))
+    return deepcopy(cfg.get("adaptive_griffin", {}))
 
 
 def _adaptive_griffin_enabled(cfg: dict[str, Any]) -> bool:
     return bool(_adaptive_griffin_cfg(cfg).get("enabled", False))
 
 
+def _adaptive_stage_float_map_from_cfg(
+    acfg: dict[str, Any],
+    name: str,
+    default: float = 0.0,
+) -> dict[str, float]:
+    return {stage: float(acfg.get(name, {}).get(stage, default)) for stage in STAGES}
+
+
+def _adaptive_stage_int_map_from_cfg(
+    acfg: dict[str, Any],
+    name: str,
+    default: int = 0,
+) -> dict[str, int]:
+    return {stage: int(acfg.get(name, {}).get(stage, default)) for stage in STAGES}
+
+
 def _adaptive_stage_ratios(cfg: dict[str, Any]) -> dict[str, float]:
     acfg = _adaptive_griffin_cfg(cfg)
-    return {stage: float(acfg.get("stage_ratios", {}).get(stage, 0.0)) for stage in STAGES}
+    return _adaptive_stage_float_map_from_cfg(acfg, "stage_ratios")
 
 
 def _adaptive_warmup_tokens(cfg: dict[str, Any]) -> dict[str, int]:
     acfg = _adaptive_griffin_cfg(cfg)
-    return {stage: int(acfg.get("warmup_tokens", {}).get(stage, 0)) for stage in STAGES}
-
-
-def _adaptive_stage_int_map(cfg: dict[str, Any], name: str, default: int = 0) -> dict[str, int]:
-    acfg = _adaptive_griffin_cfg(cfg)
-    return {stage: int(acfg.get(name, {}).get(stage, default)) for stage in STAGES}
+    return _adaptive_stage_int_map_from_cfg(acfg, "warmup_tokens")
 
 
 def _adaptive_stage_float_map(cfg: dict[str, Any], name: str, default: float = 0.0) -> dict[str, float]:
     acfg = _adaptive_griffin_cfg(cfg)
-    return {stage: float(acfg.get(name, {}).get(stage, default)) for stage in STAGES}
+    return _adaptive_stage_float_map_from_cfg(acfg, name, default)
 
 
-def adaptive_griffin_method(cfg: dict[str, Any]) -> dict[str, Any]:
-    acfg = _adaptive_griffin_cfg(cfg)
+def _merge_adaptive_variant(base: dict[str, Any], variant: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(base)
+    merged.pop("variants", None)
+    for key, value in variant.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            nested = dict(merged[key])
+            nested.update(deepcopy(value))
+            merged[key] = nested
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _adaptive_griffin_method_from_cfg(acfg: dict[str, Any], prompt: dict[str, Any]) -> dict[str, Any]:
     return method(
         str(acfg.get("method_name", "calibrated_stage_adaptive_griffin_main")),
         str(acfg.get("policy", "calibrated_stage_adaptive_griffin")),
-        _adaptive_stage_ratios(cfg),
-        structured_prompt(cfg),
+        _adaptive_stage_float_map_from_cfg(acfg, "stage_ratios"),
+        prompt,
         bias=bool(acfg.get("bias_compensation", True)),
         alpha=float(acfg.get("alpha", 0.7)),
         runtime_weight=float(acfg.get("runtime_weight", 0.4)),
         prior_weight=float(acfg.get("prior_weight", 0.6)),
-        warmup_tokens=_adaptive_warmup_tokens(cfg),
-        protected_core_ratios=_adaptive_stage_float_map(cfg, "protected_core_ratios"),
-        refresh_intervals=_adaptive_stage_int_map(cfg, "refresh_intervals"),
-        window_tokens=_adaptive_stage_int_map(cfg, "window_tokens", 1),
+        warmup_tokens=_adaptive_stage_int_map_from_cfg(acfg, "warmup_tokens"),
+        protected_core_ratios=_adaptive_stage_float_map_from_cfg(acfg, "protected_core_ratios"),
+        refresh_intervals=_adaptive_stage_int_map_from_cfg(acfg, "refresh_intervals"),
+        window_tokens=_adaptive_stage_int_map_from_cfg(acfg, "window_tokens", 1),
         prior_policy=str(acfg.get("prior_policy", "stage_specific")),
         score_mode=str(acfg.get("score_mode", "activation_keep")),
         adaptive_backend=str(acfg.get("backend", "logical_mask")),
+        variant_role=str(acfg.get("variant_role", acfg.get("method_name", "adaptive"))),
+        selection_note=str(acfg.get("selection_note", "")),
     )
+
+
+def adaptive_griffin_method(cfg: dict[str, Any]) -> dict[str, Any]:
+    return adaptive_griffin_methods(cfg)[0]
+
+
+def adaptive_griffin_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    acfg = _adaptive_griffin_cfg(cfg)
+    variants = acfg.get("variants")
+    if variants is None:
+        return [_adaptive_griffin_method_from_cfg(acfg, structured_prompt(cfg))]
+    if not isinstance(variants, list) or not variants:
+        raise ValueError("adaptive_griffin.variants must be a non-empty list when provided")
+    methods = []
+    for index, variant in enumerate(variants):
+        if not isinstance(variant, dict):
+            raise ValueError(f"adaptive_griffin.variants[{index}] must be a mapping")
+        methods.append(
+            _adaptive_griffin_method_from_cfg(
+                _merge_adaptive_variant(acfg, variant),
+                structured_prompt(cfg),
+            )
+        )
+    names = [row["name"] for row in methods]
+    if len(names) != len(set(names)):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"Adaptive GRIFFIN method names must be unique: {duplicates}")
+    return methods
 
 
 def _nearest_ratio(value: float, ratios: list[float]) -> float:
@@ -1242,15 +1296,18 @@ def static_matched_global_method(cfg: dict[str, Any], ratios: list[float]) -> di
     acfg = _adaptive_griffin_cfg(cfg)
     configured = acfg.get("static_matched_ratio")
     if configured is None:
-        configured = sum(_adaptive_stage_ratios(cfg).values()) / len(STAGES)
+        configured = sum(adaptive_griffin_method(cfg)["stage_ratios"].values()) / len(STAGES)
     static_ratio = _nearest_ratio(float(configured), ratios)
+    matched_to = acfg.get("static_matched_to")
+    if matched_to is None:
+        matched_to = ",".join(row["name"] for row in adaptive_griffin_methods(cfg))
     return method(
         "static_matched_global",
         "trajectory_global",
         uniform_ratios(static_ratio),
         structured_prompt(cfg),
         bias=True,
-        matched_to=str(acfg.get("method_name", "calibrated_stage_adaptive_griffin_main")),
+        matched_to=str(matched_to),
         requested_matched_ratio=float(configured),
     )
 
@@ -1408,12 +1465,8 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg)),
     ]
     if _adaptive_griffin_enabled(cfg):
-        methods.extend(
-            [
-                adaptive_griffin_method(cfg),
-                static_matched_global_method(cfg, ratios),
-            ]
-        )
+        methods.extend(adaptive_griffin_methods(cfg))
+        methods.append(static_matched_global_method(cfg, ratios))
     for ratio in uniform_ratio_grid:
         if ratio <= 0:
             continue
@@ -1524,25 +1577,58 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             )
     calibration_gate = _build_calibration_gate(cfg, calibration_comparisons)
     if _adaptive_griffin_enabled(cfg):
-        adaptive_method_cfg = adaptive_griffin_method(cfg)
-        adaptive_name = adaptive_method_cfg["name"]
-        adaptive_summary = next(row for row in summaries if row["method"]["name"] == adaptive_name)
+        adaptive_method_cfgs = adaptive_griffin_methods(cfg)
+        adaptive_names = [row["name"] for row in adaptive_method_cfgs]
+        adaptive_summaries = [
+            next(row for row in summaries if row["method"]["name"] == name)
+            for name in adaptive_names
+        ]
         static_summary = next(row for row in summaries if row["method"]["name"] == "static_matched_global")
-        adaptive_final_masked_tokens = int(
-            adaptive_summary.get("masked_tokens_by_stage", {}).get("final", 0)
-        )
-        adaptive_beats_static = float(adaptive_summary["accuracy"]) >= float(static_summary["accuracy"])
-        adaptive_griffin_gate = {
-            "passed": bool(
-                prompt_gate["passed"]
-                and _method_quality_passed(cfg, adaptive_summary)
-                and adaptive_beats_static
-                and adaptive_final_masked_tokens == 0
+        method_gates = []
+        for row in adaptive_summaries:
+            final_masked_tokens = int(row.get("masked_tokens_by_stage", {}).get("final", 0))
+            beats_static = float(row["accuracy"]) >= float(static_summary["accuracy"])
+            quality_passed = _method_quality_passed(cfg, row)
+            method_gates.append(
+                {
+                    "method_name": row["method"]["name"],
+                    "passed": bool(
+                        prompt_gate["passed"]
+                        and quality_passed
+                        and beats_static
+                        and final_masked_tokens == 0
+                    ),
+                    "prompt_gate_passed": bool(prompt_gate["passed"]),
+                    "adaptive_quality_passed": quality_passed,
+                    "adaptive_beats_static_on_dev": beats_static,
+                    "adaptive_final_masked_tokens": final_masked_tokens,
+                    "accuracy": row["accuracy"],
+                    "static_matched_accuracy": static_summary["accuracy"],
+                    "theoretical_average_mlp_pruning_ratio": row[
+                        "theoretical_average_mlp_pruning_ratio"
+                    ],
+                    "valid_stage_protocol_rate": row["valid_stage_protocol_rate"],
+                    "fallback_rate": row["fallback_rate"],
+                    "truncation_rate": row["truncation_rate"],
+                }
+            )
+        gate_by_name = {row["method_name"]: row for row in method_gates}
+        primary_adaptive_summary = max(
+            adaptive_summaries,
+            key=lambda row: (
+                int(gate_by_name[row["method"]["name"]]["passed"]),
+                int(gate_by_name[row["method"]["name"]]["adaptive_beats_static_on_dev"]),
+                float(row["accuracy"]),
+                float(row["theoretical_average_mlp_pruning_ratio"]),
             ),
+        )
+        primary_adaptive_name = primary_adaptive_summary["method"]["name"]
+        adaptive_griffin_gate = {
+            "passed": any(row["passed"] for row in method_gates),
+            "diagnostic_sweep": len(adaptive_summaries) > 1,
+            "primary_method_name": primary_adaptive_name,
+            "method_gates": method_gates,
             "prompt_gate_passed": bool(prompt_gate["passed"]),
-            "adaptive_quality_passed": _method_quality_passed(cfg, adaptive_summary),
-            "adaptive_beats_static_on_dev": adaptive_beats_static,
-            "adaptive_final_masked_tokens": adaptive_final_masked_tokens,
             "minimum_stage_protocol_rate": float(
                 _evaluation_threshold(cfg, "minimum_candidate_stage_protocol_rate", 0.90)
             ),
@@ -1554,13 +1640,34 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             ),
         }
         frozen = {
-            "schema": "stage_calibrated_adaptive_griffin_policy_v1",
-            "method": adaptive_summary["method"],
+            "schema": (
+                "stage_calibrated_adaptive_griffin_sweep_policy_v1"
+                if len(adaptive_summaries) > 1
+                else "stage_calibrated_adaptive_griffin_policy_v1"
+            ),
+            "method": primary_adaptive_summary["method"],
+            "adaptive_methods": [row["method"] for row in adaptive_summaries],
             "static_matched_global": static_summary["method"],
             "structured_dense_accuracy": dense["accuracy"],
-            "adaptive_accuracy": adaptive_summary["accuracy"],
+            "adaptive_accuracy": primary_adaptive_summary["accuracy"],
+            "adaptive_dev_summaries": {
+                row["method"]["name"]: {
+                    "accuracy": row["accuracy"],
+                    "theoretical_average_mlp_pruning_ratio": row[
+                        "theoretical_average_mlp_pruning_ratio"
+                    ],
+                    "valid_stage_protocol_rate": row["valid_stage_protocol_rate"],
+                    "fallback_rate": row["fallback_rate"],
+                    "truncation_rate": row["truncation_rate"],
+                    "masked_tokens_by_stage": row.get("masked_tokens_by_stage", {}),
+                    "mask_refresh_count_by_stage": row.get("mask_refresh_count_by_stage", {}),
+                }
+                for row in adaptive_summaries
+            },
             "static_matched_accuracy": static_summary["accuracy"],
-            "adaptive_beats_static_on_dev": adaptive_beats_static,
+            "adaptive_beats_static_on_dev": gate_by_name[primary_adaptive_name][
+                "adaptive_beats_static_on_dev"
+            ],
             "adaptive_griffin_gate": adaptive_griffin_gate,
             "test_sets_consulted": False,
             "prompt_gate_passed": bool(prompt_gate["passed"]),
@@ -1573,51 +1680,92 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             uniform_ratios(0.0),
             structured_prompt(cfg),
         )
+        selected_policies = {
+            "structured_dense": {
+                "role": "structured_dense",
+                "method": structured_method,
+                "reason": "Explicit-stage dense reference.",
+            },
+            "static_matched_global": {
+                "role": "static_matched_global",
+                "method": static_summary["method"],
+                "reason": "Trajectory-global WIFV static baseline matched to the configured adaptive budget.",
+                "dev_summary": {
+                    "accuracy": static_summary["accuracy"],
+                    "theoretical_average_mlp_pruning_ratio": static_summary[
+                        "theoretical_average_mlp_pruning_ratio"
+                    ],
+                },
+            },
+        }
+        for row in adaptive_summaries:
+            name = row["method"]["name"]
+            selected_policies[name] = {
+                "role": name,
+                "method": row["method"],
+                "reason": "Stage-conditioned WIFV prior with per-sample dynamic channel selection.",
+                "dev_summary": {
+                    "accuracy": row["accuracy"],
+                    "theoretical_average_mlp_pruning_ratio": row[
+                        "theoretical_average_mlp_pruning_ratio"
+                    ],
+                    "valid_stage_protocol_rate": row["valid_stage_protocol_rate"],
+                    "fallback_rate": row["fallback_rate"],
+                    "truncation_rate": row["truncation_rate"],
+                },
+                "gate": gate_by_name[name],
+            }
+        downstream_methods = (
+            [structured_method]
+            + [row["method"] for row in adaptive_summaries]
+            + [static_summary["method"]]
+        )
         policy_selection = {
             "schema": "stage_policy_selection_v1",
-            "selection_mode": "adaptive_griffin_main_only",
+            "selection_mode": (
+                "adaptive_griffin_sweep"
+                if len(adaptive_summaries) > 1
+                else "adaptive_griffin_main_only"
+            ),
             "input_manifest_hash": manifest_hash(tasks),
             "test_sets_consulted": False,
             "selection_policy": {
                 "dense_reference": "structured_dense",
-                "adaptive_policy": str(adaptive_summary["method"]["policy"]),
+                "adaptive_policy": "calibrated_stage_safe_dynamic_griffin_sweep",
                 "static_baseline": "trajectory_global at configured static_matched_ratio",
                 "downstream_results_must_not_change_selection": True,
+                "primary_method_name": primary_adaptive_name,
             },
-            "selected_policies": {
-                "structured_dense": {
-                    "role": "structured_dense",
-                    "method": structured_method,
-                    "reason": "Explicit-stage dense reference.",
-                },
-                adaptive_name: {
-                    "role": adaptive_name,
-                    "method": adaptive_summary["method"],
-                    "reason": "Stage-conditioned calibration prior with per-sample dynamic channel selection.",
-                    "dev_summary": {
-                        "accuracy": adaptive_summary["accuracy"],
-                        "theoretical_average_mlp_pruning_ratio": adaptive_summary[
-                            "theoretical_average_mlp_pruning_ratio"
-                        ],
-                    },
-                },
-                "static_matched_global": {
-                    "role": "static_matched_global",
-                    "method": static_summary["method"],
-                    "reason": "Trajectory-global WIFV static baseline matched to adaptive V1 budget.",
-                    "dev_summary": {
-                        "accuracy": static_summary["accuracy"],
-                        "theoretical_average_mlp_pruning_ratio": static_summary[
-                            "theoretical_average_mlp_pruning_ratio"
-                        ],
-                    },
-                },
-            },
-            "downstream_methods": [structured_method, adaptive_summary["method"], static_summary["method"]],
+            "selected_policies": selected_policies,
+            "downstream_methods": downstream_methods,
         }
         policy_selection["policy_selection_hash"] = stable_hash(policy_selection)
         policy_selection_path = p["dev_dir"] / "adaptive_griffin_policy_selection.json"
         write_json(policy_selection_path, policy_selection)
+        method_table_rows = [
+            f"| structured_dense | `structured_dense` | {float(dense['accuracy']):.4f} | "
+            "0.0000 | 1.0000 | 0.0000 | 0.0000 | baseline |"
+        ]
+        for row in adaptive_summaries:
+            gate = gate_by_name[row["method"]["name"]]
+            method_table_rows.append(
+                f"| {row['method']['name']} | `{row['method']['name']}` | "
+                f"{float(row['accuracy']):.4f} | "
+                f"{float(row['theoretical_average_mlp_pruning_ratio']):.4f} | "
+                f"{float(row['valid_stage_protocol_rate']):.4f} | "
+                f"{float(row['fallback_rate']):.4f} | "
+                f"{float(row['truncation_rate']):.4f} | "
+                f"{'pass' if gate['passed'] else 'diagnostic'} |"
+            )
+        method_table_rows.append(
+            "| static_matched_global | "
+            f"`{static_summary['method']['name']}` | "
+            f"{float(static_summary['accuracy']):.4f} | "
+            f"{float(static_summary['theoretical_average_mlp_pruning_ratio']):.4f} | "
+            f"{float(static_summary['valid_stage_protocol_rate']):.4f} | "
+            f"{float(static_summary['fallback_rate']):.4f} | "
+            f"{float(static_summary['truncation_rate']):.4f} | baseline |"
+        )
         (p["dev_dir"] / "adaptive_griffin_policy_selection.md").write_text(
             "\n".join(
                 [
@@ -1627,18 +1775,11 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
                     f"- selection_mode: `{policy_selection['selection_mode']}`",
                     f"- input_manifest_hash: `{policy_selection['input_manifest_hash']}`",
                     f"- test_sets_consulted: `{policy_selection['test_sets_consulted']}`",
+                    f"- primary_method_name: `{primary_adaptive_name}`",
                     "",
-                    "| role | method | dev accuracy | pruning |",
-                    "|---|---|---:|---:|",
-                    f"| structured_dense | `structured_dense` | {float(dense['accuracy']):.4f} | 0.0000 |",
-                    f"| {adaptive_name} | "
-                    f"`{adaptive_summary['method']['name']}` | "
-                    f"{float(adaptive_summary['accuracy']):.4f} | "
-                    f"{float(adaptive_summary['theoretical_average_mlp_pruning_ratio']):.4f} |",
-                    "| static_matched_global | "
-                    f"`{static_summary['method']['name']}` | "
-                    f"{float(static_summary['accuracy']):.4f} | "
-                    f"{float(static_summary['theoretical_average_mlp_pruning_ratio']):.4f} |",
+                    "| role | method | dev accuracy | pruning | valid protocol | fallback | truncation | gate |",
+                    "|---|---|---:|---:|---:|---:|---:|---|",
+                    *method_table_rows,
                     "",
                 ]
             )
@@ -1657,6 +1798,8 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
                 "adaptive_griffin_evaluated": True,
                 "adaptive_griffin_policy_frozen": True,
                 "adaptive_griffin_policy_selection_path": str(policy_selection_path),
+                "adaptive_griffin_method_names": adaptive_names,
+                "adaptive_griffin_sweep": len(adaptive_names) > 1,
                 "adaptive_griffin_gate": adaptive_griffin_gate,
                 "prompt_gate": prompt_gate,
                 "calibration_gate": calibration_gate,
@@ -1895,11 +2038,11 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     if policy_methods is not None:
         methods = policy_methods
     elif _adaptive_griffin_enabled(cfg):
-        methods = [
-            method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg)),
-            adaptive_griffin_method(cfg),
-            static_matched_global_method(cfg, [float(value) for value in cfg["masks"]["ratios"]]),
-        ]
+        methods = (
+            [method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg))]
+            + adaptive_griffin_methods(cfg)
+            + [static_matched_global_method(cfg, [float(value) for value in cfg["masks"]["ratios"]])]
+        )
     else:
         stage_budget = frozen["stage_budget"]
         shuffled_budget = method(
