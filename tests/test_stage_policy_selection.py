@@ -379,8 +379,8 @@ class StagePolicySelectionTest(unittest.TestCase):
                     "prompt": STRUCTURED_PROMPT,
                 },
                 {
-                    "name": "math_safe_balanced",
-                    "policy": "calibrated_stage_safe_dynamic_griffin",
+                    "name": "static_core_residual_stage_dynamic",
+                    "policy": "calibrated_stage_static_core_residual_griffin",
                     "stage_ratios": {"setup": 0.2, "reasoning": 0.15, "verify": 0.1, "final": 0.0},
                     "prompt": STRUCTURED_PROMPT,
                 },
@@ -401,7 +401,7 @@ class StagePolicySelectionTest(unittest.TestCase):
                 [
                     "structured_dense",
                     "safe_dynamic_v2_current",
-                    "math_safe_balanced",
+                    "static_core_residual_stage_dynamic",
                     "static_matched_global",
                 ],
             )

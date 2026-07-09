@@ -16,6 +16,7 @@ try:
         FixedStageMaskedQwen3MLP,
         SafeDynamicStageGriffinRuntime,
         StageMaskRuntime,
+        StaticCoreResidualStageRuntime,
         griffin_activation_score,
     )
 
@@ -189,6 +190,80 @@ class StageCalibrationRuntimeTest(unittest.TestCase):
         expected = original.down_proj(original.act_fn(original.gate_proj(value)) * original.up_proj(value))
         self.assertTrue(torch.allclose(wrapped(value), expected))
         self.assertNotIn("final", runtime.summary().get("masked_tokens_by_stage", {}))
+
+    def test_static_core_residual_swaps_without_changing_keep_count(self) -> None:
+        runtime = StaticCoreResidualStageRuntime(
+            tiny_bank(),
+            stage_ratios={"setup": 0.5, "reasoning": 0.5, "verify": 0.5, "final": 0.0},
+            static_core_ratios={"setup": 0.5, "reasoning": 1.0, "verify": 1.0, "final": 1.0},
+            swap_ratios={"setup": 0.25, "reasoning": 0.0, "verify": 0.0, "final": 0.0},
+            runtime_weight=0.0,
+            prior_weight=1.0,
+        )
+        runtime.set_stage("setup")
+        wrapped = AdaptiveStageGriffinQwen3MLP(TinyMlp(), 0, runtime)
+        wrapped(torch.randn(1, 1, 2))
+        mask = runtime.keep_mask("setup", 0)
+        self.assertEqual(int(mask.sum().item()), 2)
+        self.assertTrue(bool(mask[3]))
+        self.assertTrue(bool(mask[1]))
+        self.assertFalse(bool(mask[2]))
+        summary = runtime.summary()
+        self.assertEqual(
+            summary["actual_swapped_channels_by_stage_layer"]["setup"]["0"],
+            1,
+        )
+
+    def test_static_core_residual_full_core_prevents_swaps(self) -> None:
+        runtime = StaticCoreResidualStageRuntime(
+            tiny_bank(),
+            stage_ratios={"setup": 0.5, "reasoning": 0.5, "verify": 0.5, "final": 0.0},
+            static_core_ratios={stage: 1.0 for stage in STAGES},
+            swap_ratios={"setup": 0.25, "reasoning": 0.0, "verify": 0.0, "final": 0.0},
+            runtime_weight=0.0,
+            prior_weight=1.0,
+        )
+        runtime.set_stage("setup")
+        wrapped = AdaptiveStageGriffinQwen3MLP(TinyMlp(), 0, runtime)
+        wrapped(torch.randn(1, 1, 2))
+        mask = runtime.keep_mask("setup", 0)
+        expected_base = tiny_bank()["policies"]["trajectory_global"]["setup"][0]["masks"]["0.5000"]
+        self.assertTrue(torch.equal(mask.cpu(), expected_base.cpu()))
+        self.assertEqual(
+            runtime.summary()["actual_swapped_channels_by_stage_layer"]["setup"]["0"],
+            0,
+        )
+
+    def test_static_core_residual_final_ratio_zero_is_dense_equivalent(self) -> None:
+        original = TinyMlp()
+        runtime = StaticCoreResidualStageRuntime(
+            tiny_bank(),
+            stage_ratios={"setup": 0.5, "reasoning": 0.5, "verify": 0.5, "final": 0.0},
+            static_core_ratios={stage: 0.0 for stage in STAGES},
+            swap_ratios={stage: 0.25 for stage in STAGES},
+        )
+        wrapped = AdaptiveStageGriffinQwen3MLP(original, 0, runtime)
+        runtime.set_stage("final")
+        value = torch.randn(1, 1, 2)
+        expected = original.down_proj(original.act_fn(original.gate_proj(value)) * original.up_proj(value))
+        self.assertTrue(torch.allclose(wrapped(value), expected))
+        self.assertNotIn("final", runtime.summary().get("masked_tokens_by_stage", {}))
+
+    def test_static_core_residual_fallback_keeps_following_tokens_dense(self) -> None:
+        runtime = StaticCoreResidualStageRuntime(
+            tiny_bank(),
+            stage_ratios={stage: 0.5 for stage in STAGES},
+            static_core_ratios={stage: 0.0 for stage in STAGES},
+            swap_ratios={stage: 0.25 for stage in STAGES},
+        )
+        wrapped = AdaptiveStageGriffinQwen3MLP(TinyMlp(), 0, runtime)
+        runtime.set_stage("setup")
+        runtime.fallback_dense("invalid")
+        wrapped(torch.randn(1, 1, 2))
+        summary = runtime.summary()
+        self.assertEqual(summary["fallback_reason"], "invalid")
+        self.assertEqual(summary["dense_observation_tokens_by_stage"]["dense"], 1)
+        self.assertNotIn("setup", summary.get("masked_tokens_by_stage", {}))
 
 
 if __name__ == "__main__":

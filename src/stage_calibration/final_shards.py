@@ -103,6 +103,11 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
     runtime_protected_core_ratios = None
     runtime_refresh_intervals = None
     runtime_window_tokens = None
+    runtime_base_policy = None
+    runtime_stage_prior_policy = None
+    runtime_static_core_ratios = None
+    runtime_swap_ratios = None
+    runtime_actual_swapped_channels = None
     for row in rows:
         runtime = row.get("runtime_stage_mask", {})
         runtime_backend = runtime_backend or runtime.get("backend")
@@ -124,6 +129,14 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         )
         runtime_refresh_intervals = runtime_refresh_intervals or runtime.get("refresh_intervals")
         runtime_window_tokens = runtime_window_tokens or runtime.get("window_tokens")
+        runtime_base_policy = runtime_base_policy or runtime.get("base_policy")
+        runtime_stage_prior_policy = runtime_stage_prior_policy or runtime.get("stage_prior_policy")
+        runtime_static_core_ratios = runtime_static_core_ratios or runtime.get("static_core_ratios")
+        runtime_swap_ratios = runtime_swap_ratios or runtime.get("swap_ratios")
+        runtime_actual_swapped_channels = (
+            runtime_actual_swapped_channels
+            or runtime.get("actual_swapped_channels_by_stage_layer")
+        )
         stage_tokens.update(runtime.get("tokens_by_stage", {}))
         dense_observation_tokens.update(runtime.get("dense_observation_tokens_by_stage", {}))
         masked_tokens.update(runtime.get("masked_tokens_by_stage", {}))
@@ -179,6 +192,16 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         summary["adaptive_refresh_intervals"] = runtime_refresh_intervals
     if runtime_window_tokens is not None:
         summary["adaptive_window_tokens"] = runtime_window_tokens
+    if runtime_base_policy is not None:
+        summary["adaptive_base_policy"] = runtime_base_policy
+    if runtime_stage_prior_policy is not None:
+        summary["adaptive_stage_prior_policy"] = runtime_stage_prior_policy
+    if runtime_static_core_ratios is not None:
+        summary["adaptive_static_core_ratios"] = runtime_static_core_ratios
+    if runtime_swap_ratios is not None:
+        summary["adaptive_swap_ratios"] = runtime_swap_ratios
+    if runtime_actual_swapped_channels is not None:
+        summary["adaptive_actual_swapped_channels_by_stage_layer"] = runtime_actual_swapped_channels
     return summary
 
 

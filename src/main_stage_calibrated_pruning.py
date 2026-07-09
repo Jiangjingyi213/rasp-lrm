@@ -1253,8 +1253,12 @@ def _adaptive_griffin_method_from_cfg(acfg: dict[str, Any], prompt: dict[str, An
         refresh_intervals=_adaptive_stage_int_map_from_cfg(acfg, "refresh_intervals"),
         window_tokens=_adaptive_stage_int_map_from_cfg(acfg, "window_tokens", 1),
         prior_policy=str(acfg.get("prior_policy", "stage_specific")),
+        base_policy=str(acfg.get("base_policy", "trajectory_global")),
+        stage_prior_policy=str(acfg.get("stage_prior_policy", "stage_specific")),
         score_mode=str(acfg.get("score_mode", "activation_keep")),
         adaptive_backend=str(acfg.get("backend", "logical_mask")),
+        static_core_ratios=_adaptive_stage_float_map_from_cfg(acfg, "static_core_ratios", 1.0),
+        swap_ratios=_adaptive_stage_float_map_from_cfg(acfg, "swap_ratios", 0.0),
         variant_role=str(acfg.get("variant_role", acfg.get("method_name", "adaptive"))),
         selection_note=str(acfg.get("selection_note", "")),
     )
@@ -1731,7 +1735,7 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             "test_sets_consulted": False,
             "selection_policy": {
                 "dense_reference": "structured_dense",
-                "adaptive_policy": "calibrated_stage_safe_dynamic_griffin_sweep",
+                "adaptive_policy": "adaptive_griffin_sweep",
                 "static_baseline": "trajectory_global at configured static_matched_ratio",
                 "downstream_results_must_not_change_selection": True,
                 "primary_method_name": primary_adaptive_name,

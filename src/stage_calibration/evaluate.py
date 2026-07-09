@@ -16,6 +16,7 @@ from .runtime import (
     AdaptiveStageGriffinRuntime,
     SafeDynamicStageGriffinRuntime,
     StageMaskRuntime,
+    StaticCoreResidualStageRuntime,
     apply_adaptive_stage_griffin_qwen3,
     apply_fixed_stage_masking_qwen3,
 )
@@ -65,6 +66,38 @@ def _runtime_for_method(model, bank: dict[str, Any], method: dict[str, Any]):
             },
             bias_compensation=bool(method.get("bias_compensation", True)),
             prior_policy=str(method.get("prior_policy", "stage_specific")),
+        )
+        apply_adaptive_stage_griffin_qwen3(model, runtime)
+        return runtime
+    if method["policy"] == "calibrated_stage_static_core_residual_griffin":
+        runtime = StaticCoreResidualStageRuntime(
+            bank,
+            stage_ratios=stage_ratios,
+            base_policy=str(method.get("base_policy", "trajectory_global")),
+            stage_prior_policy=str(method.get("stage_prior_policy", "stage_specific")),
+            runtime_weight=float(method.get("runtime_weight", 0.3)),
+            prior_weight=float(method.get("prior_weight", 0.7)),
+            warmup_tokens={
+                stage: int(method.get("warmup_tokens", {}).get(stage, 0))
+                for stage in STAGES
+            },
+            static_core_ratios={
+                stage: float(method.get("static_core_ratios", {}).get(stage, 1.0))
+                for stage in STAGES
+            },
+            swap_ratios={
+                stage: float(method.get("swap_ratios", {}).get(stage, 0.0))
+                for stage in STAGES
+            },
+            refresh_intervals={
+                stage: int(method.get("refresh_intervals", {}).get(stage, 0))
+                for stage in STAGES
+            },
+            window_tokens={
+                stage: int(method.get("window_tokens", {}).get(stage, 1))
+                for stage in STAGES
+            },
+            bias_compensation=bool(method.get("bias_compensation", True)),
         )
         apply_adaptive_stage_griffin_qwen3(model, runtime)
         return runtime
@@ -138,6 +171,11 @@ def evaluate_method(
     runtime_protected_core_ratios = None
     runtime_refresh_intervals = None
     runtime_window_tokens = None
+    runtime_base_policy = None
+    runtime_stage_prior_policy = None
+    runtime_static_core_ratios = None
+    runtime_swap_ratios = None
+    runtime_actual_swapped_channels = None
     for row in rows:
         runtime_summary = row["runtime_stage_mask"]
         runtime_backend = runtime_backend or runtime_summary.get("backend")
@@ -161,6 +199,14 @@ def evaluate_method(
             runtime_refresh_intervals or runtime_summary.get("refresh_intervals")
         )
         runtime_window_tokens = runtime_window_tokens or runtime_summary.get("window_tokens")
+        runtime_base_policy = runtime_base_policy or runtime_summary.get("base_policy")
+        runtime_stage_prior_policy = runtime_stage_prior_policy or runtime_summary.get("stage_prior_policy")
+        runtime_static_core_ratios = runtime_static_core_ratios or runtime_summary.get("static_core_ratios")
+        runtime_swap_ratios = runtime_swap_ratios or runtime_summary.get("swap_ratios")
+        runtime_actual_swapped_channels = (
+            runtime_actual_swapped_channels
+            or runtime_summary.get("actual_swapped_channels_by_stage_layer")
+        )
         stage_tokens.update(runtime_summary["tokens_by_stage"])
         dense_observation_tokens.update(runtime_summary.get("dense_observation_tokens_by_stage", {}))
         masked_tokens.update(runtime_summary.get("masked_tokens_by_stage", {}))
@@ -208,4 +254,14 @@ def evaluate_method(
         summary["adaptive_refresh_intervals"] = runtime_refresh_intervals
     if runtime_window_tokens is not None:
         summary["adaptive_window_tokens"] = runtime_window_tokens
+    if runtime_base_policy is not None:
+        summary["adaptive_base_policy"] = runtime_base_policy
+    if runtime_stage_prior_policy is not None:
+        summary["adaptive_stage_prior_policy"] = runtime_stage_prior_policy
+    if runtime_static_core_ratios is not None:
+        summary["adaptive_static_core_ratios"] = runtime_static_core_ratios
+    if runtime_swap_ratios is not None:
+        summary["adaptive_swap_ratios"] = runtime_swap_ratios
+    if runtime_actual_swapped_channels is not None:
+        summary["adaptive_actual_swapped_channels_by_stage_layer"] = runtime_actual_swapped_channels
     return rows, summary

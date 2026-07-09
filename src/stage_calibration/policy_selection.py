@@ -522,6 +522,7 @@ def load_downstream_methods_from_selection(path: str | Path) -> tuple[list[dict[
         allowed_policies = {
             "calibrated_stage_adaptive_griffin",
             "calibrated_stage_safe_dynamic_griffin",
+            "calibrated_stage_static_core_residual_griffin",
         }
         invalid = [
             method
