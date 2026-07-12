@@ -360,6 +360,21 @@ class StagePolicySelectionTest(unittest.TestCase):
             methods, _ = load_downstream_methods_from_selection(path)
             self.assertEqual(methods[1]["name"], "calibrated_stage_safe_dynamic_griffin_main")
 
+            selection["downstream_methods"] = selection["downstream_methods"][:3]
+            selection["downstream_methods"][1] = {
+                "name": "static_core_residual_v4_3_final_light",
+                "policy": "calibrated_stage_static_core_residual_griffin",
+                "stage_ratios": {"setup": 0.2, "reasoning": 0.2, "verify": 0.1, "final": 0.1},
+                "prompt": STRUCTURED_PROMPT,
+                "runtime_weight": 0.3,
+                "prior_weight": 0.7,
+                "static_core_ratios": {"setup": 0.9, "reasoning": 0.92, "verify": 0.97, "final": 0.995},
+                "swap_ratios": {"setup": 0.03, "reasoning": 0.025, "verify": 0.005, "final": 0.002},
+            }
+            write_json(path, selection)
+            methods, _ = load_downstream_methods_from_selection(path)
+            self.assertEqual(methods[1]["name"], "static_core_residual_v4_3_final_light")
+
     def test_adaptive_griffin_sweep_loader_accepts_multiple_adaptive_methods(self) -> None:
         selection = {
             "schema": "stage_policy_selection_v1",

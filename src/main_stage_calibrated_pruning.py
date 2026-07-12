@@ -261,17 +261,31 @@ def command_preflight(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         raise RuntimeError(f"Preflight failed: {checks}")
 
 
-def _protected_final_tasks(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+def _final_dataset_configs(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    configured = cfg.get("evaluation", {}).get("final_datasets")
+    if configured:
+        return [dict(row) for row in configured]
     return [
-        *load_tasks({"dataset": "gsm8k", "split": "test"}),
-        *load_tasks(
-            {
-                "dataset": "math500",
-                "name_or_path": cfg["evaluation"]["math500_name_or_path"],
-                "split": "test",
-            }
-        ),
+        {"dataset": "gsm8k", "split": "test"},
+        {
+            "dataset": "math500",
+            "name_or_path": cfg["evaluation"]["math500_name_or_path"],
+            "split": "test",
+        },
     ]
+
+
+def _final_dataset_name(dataset_cfg: dict[str, Any]) -> str:
+    raw = str(dataset_cfg.get("dataset_label") or dataset_cfg.get("dataset"))
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("_")
+    return name or "dataset"
+
+
+def _protected_final_tasks(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    tasks: list[dict[str, Any]] = []
+    for dataset_cfg in _final_dataset_configs(cfg):
+        tasks.extend(load_tasks(dataset_cfg))
+    return tasks
 
 
 def _source_name_from_cfg(source_cfg: dict[str, Any]) -> str:
@@ -1980,7 +1994,21 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         ignored_metadata_keys=("config_hash",),
     )
     bank_metadata = dict(bank.get("metadata", {}))
-    dev_summary = read_json(p["dev_summary"])
+    allow_final_without_dev = bool(_evaluation_threshold(cfg, "allow_final_without_dev", False))
+    final_without_dev_allowed = allow_final_without_dev and _adaptive_griffin_enabled(cfg)
+    if p["dev_summary"].exists():
+        dev_summary = read_json(p["dev_summary"])
+    elif final_without_dev_allowed:
+        dev_summary = {
+            "dev_summary_missing": True,
+            "final_without_dev_allowed": True,
+            "adaptive_griffin_policy_frozen": True,
+        }
+    else:
+        raise RuntimeError(
+            "Development summary is missing. Run evaluate_dev first, or set "
+            "evaluation.allow_final_without_dev=true for an adaptive diagnostic run."
+        )
     policy_selection_path = _policy_selection_path(cfg)
     policy_methods = None
     policy_selection = None
@@ -1994,12 +2022,15 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         policy_selection_path is None
         and not smoke_relaxed
         and not adaptive_policy_frozen
+        and not final_without_dev_allowed
         and (not dev_summary.get("stage_budget_search_performed") or not dev_summary.get("frozen_policy"))
     ):
         raise RuntimeError("Development gates did not pass; final evaluation is forbidden")
     frozen = read_json(p["frozen"]) if p["frozen"].exists() else {}
     metadata_extra = {
         "frozen_policy_hash": stable_hash(frozen),
+        "dev_summary_missing_for_final": bool(dev_summary.get("dev_summary_missing")),
+        "final_without_dev_allowed": final_without_dev_allowed,
         "mask_bank_metadata": {
             "config_hash_expected": expected_metadata.get("config_hash"),
             "config_hash_actual": bank_metadata.get("config_hash"),
@@ -2073,16 +2104,9 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     output = {}
     dataset_output_dirs = {}
     seeds = [int(value) for value in profile(cfg).get("final_seeds", [cfg["seed"]])]
-    for dataset_cfg in (
-        {"dataset": "gsm8k", "split": "test"},
-        {
-            "dataset": "math500",
-            "name_or_path": cfg["evaluation"]["math500_name_or_path"],
-            "split": "test",
-        },
-    ):
+    for dataset_cfg in _final_dataset_configs(cfg):
         tasks = load_tasks(dataset_cfg)
-        name = dataset_cfg["dataset"]
+        name = _final_dataset_name(dataset_cfg)
         if final_limit is not None:
             tasks = tasks[:final_limit]
         full_task_count = len(tasks)

@@ -495,14 +495,15 @@ def load_downstream_methods_from_selection(path: str | Path) -> tuple[list[dict[
             raise ValueError(f"Main-only policy selection must contain exactly {expected}, got {names}")
     if selection.get("selection_mode") == "adaptive_griffin_main_only":
         names = [str(method.get("name")) for method in methods]
-        allowed_adaptive = {
-            "calibrated_stage_adaptive_griffin_main",
-            "calibrated_stage_safe_dynamic_griffin_main",
+        allowed_policies = {
+            "calibrated_stage_adaptive_griffin",
+            "calibrated_stage_safe_dynamic_griffin",
+            "calibrated_stage_static_core_residual_griffin",
         }
         if (
             len(names) != 3
             or names[0] != "structured_dense"
-            or names[1] not in allowed_adaptive
+            or str(methods[1].get("policy")) not in allowed_policies
             or names[2] != "static_matched_global"
         ):
             raise ValueError(
@@ -510,6 +511,10 @@ def load_downstream_methods_from_selection(path: str | Path) -> tuple[list[dict[
                 "structured_dense, one approved adaptive method, and static_matched_global; "
                 f"got {names}"
             )
+        if str(methods[0].get("policy")) != "trajectory_global":
+            raise ValueError("Adaptive GRIFFIN main-only structured_dense must use trajectory_global policy")
+        if str(methods[2].get("policy")) != "trajectory_global":
+            raise ValueError("Adaptive GRIFFIN main-only static_matched_global must use trajectory_global policy")
     if selection.get("selection_mode") == "adaptive_griffin_sweep":
         names = [str(method.get("name")) for method in methods]
         if len(names) != len(set(names)):
