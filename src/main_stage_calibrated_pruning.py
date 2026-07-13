@@ -1315,7 +1315,7 @@ def static_matched_global_method(cfg: dict[str, Any], ratios: list[float]) -> di
     configured = acfg.get("static_matched_ratio")
     if configured is None:
         configured = sum(adaptive_griffin_method(cfg)["stage_ratios"].values()) / len(STAGES)
-    static_ratio = _nearest_ratio(float(configured), ratios)
+    static_ratio = float(configured)
     matched_to = acfg.get("static_matched_to")
     if matched_to is None:
         matched_to = ",".join(row["name"] for row in adaptive_griffin_methods(cfg))
@@ -1328,6 +1328,32 @@ def static_matched_global_method(cfg: dict[str, Any], ratios: list[float]) -> di
         matched_to=str(matched_to),
         requested_matched_ratio=float(configured),
     )
+
+
+def additional_static_matched_global_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    acfg = _adaptive_griffin_cfg(cfg)
+    configured = acfg.get("additional_static_matched_globals", [])
+    if not configured:
+        return []
+    methods = []
+    for index, row in enumerate(configured):
+        if not isinstance(row, dict):
+            raise ValueError(f"additional_static_matched_globals[{index}] must be a mapping")
+        ratio = float(row["ratio"])
+        name = str(row.get("name") or f"static_matched_global_{ratio:.4f}".replace(".", "p"))
+        methods.append(
+            method(
+                name,
+                str(row.get("policy", "trajectory_global")),
+                uniform_ratios(ratio),
+                structured_prompt(cfg),
+                bias=bool(row.get("bias_compensation", True)),
+                matched_to=str(row.get("matched_to", "")),
+                requested_matched_ratio=ratio,
+                static_matched_role=str(row.get("role", name)),
+            )
+        )
+    return methods
 
 
 def _evaluation_threshold(cfg: dict[str, Any], name: str, default: float | int | None = None) -> Any:
@@ -1485,6 +1511,7 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     if _adaptive_griffin_enabled(cfg):
         methods.extend(adaptive_griffin_methods(cfg))
         methods.append(static_matched_global_method(cfg, ratios))
+        methods.extend(additional_static_matched_global_methods(cfg))
     for ratio in uniform_ratio_grid:
         if ratio <= 0:
             continue
@@ -2077,6 +2104,7 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             [method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg))]
             + adaptive_griffin_methods(cfg)
             + [static_matched_global_method(cfg, [float(value) for value in cfg["masks"]["ratios"]])]
+            + additional_static_matched_global_methods(cfg)
         )
     else:
         stage_budget = frozen["stage_budget"]

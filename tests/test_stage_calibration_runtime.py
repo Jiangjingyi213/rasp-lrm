@@ -64,6 +64,16 @@ class StageCalibrationRuntimeTest(unittest.TestCase):
         runtime.fallback_dense("invalid")
         self.assertEqual(runtime.active_ratio(), 0.0)
 
+    def test_fixed_stage_runtime_accepts_ratio_outside_bank_grid(self) -> None:
+        original = TinyMlp()
+        runtime = StageMaskRuntime(tiny_bank(), "stage_specific", {stage: 0.25 for stage in STAGES})
+        wrapped = FixedStageMaskedQwen3MLP(original, 0, runtime)
+        runtime.set_stage("setup")
+        value = torch.randn(1, 1, 2)
+        output = wrapped(value)
+        self.assertEqual(tuple(output.shape), (1, 1, 2))
+        self.assertEqual(runtime.active_ratio(), 0.25)
+
     def test_runtime_keeps_protocol_illegal_tag_reason(self) -> None:
         runtime = StageMaskRuntime(tiny_bank(), "stage_specific", {stage: 0.5 for stage in STAGES})
         reason = illegal_stage_tag_reason("[[STAGE_SETUP]] done </STAGE_SETUP>")
@@ -155,6 +165,20 @@ class StageCalibrationRuntimeTest(unittest.TestCase):
         mask = runtime.keep_mask("setup", 0)
         self.assertTrue(bool(mask[2]))
         self.assertTrue(bool(mask[3]))
+
+    def test_safe_dynamic_accepts_ratio_outside_bank_grid(self) -> None:
+        runtime = SafeDynamicStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={stage: 0.25 for stage in STAGES},
+            protected_core_ratios={stage: 0.0 for stage in STAGES},
+            runtime_weight=0.4,
+            prior_weight=0.6,
+        )
+        runtime.set_stage("setup")
+        wrapped = AdaptiveStageGriffinQwen3MLP(TinyMlp(), 0, runtime)
+        wrapped(torch.randn(1, 1, 2))
+        mask = runtime.keep_mask("setup", 0)
+        self.assertEqual(int(mask.sum().item()), 3)
 
     def test_safe_dynamic_refreshes_masks_inside_stage(self) -> None:
         runtime = SafeDynamicStageGriffinRuntime(

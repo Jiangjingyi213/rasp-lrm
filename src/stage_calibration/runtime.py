@@ -101,9 +101,6 @@ class StageMaskRuntime:
         self.bank = bank
         self.policy = policy
         self.stage_ratios = {stage: float(stage_ratios.get(stage, 0.0)) for stage in STAGES}
-        allowed = {float(value) for value in bank["ratios"]}
-        if any(value not in allowed for value in self.stage_ratios.values()):
-            raise ValueError("Stage ratio is not present in mask bank")
         self.bias_compensation = bool(bias_compensation)
         self.active_stage: str | None = None
         self.fallback_reason: str | None = None
@@ -164,6 +161,7 @@ class FixedStageMaskedQwen3MLP(nn.Module):
         self.act_fn = original_mlp.act_fn
         self.layer_id = int(layer_id)
         self.runtime = runtime
+        self._runtime_mask_cache: dict[tuple[str, str], torch.Tensor] = {}
 
     @property
     def intermediate_size(self) -> int:
@@ -175,7 +173,19 @@ class FixedStageMaskedQwen3MLP(nn.Module):
         if entry is None:
             return self.down_proj(intermediate)
         ratio = self.runtime.active_ratio()
-        mask = entry["masks"][ratio_key(ratio)].to(device=intermediate.device, dtype=intermediate.dtype)
+        key = ratio_key(ratio)
+        if key in entry["masks"]:
+            mask_bool = entry["masks"][key].to(device=intermediate.device, dtype=torch.bool)
+        else:
+            cache_key = (key, str(intermediate.device))
+            mask_bool = self._runtime_mask_cache.get(cache_key)
+            if mask_bool is None:
+                mask_bool = _keep_mask_from_scores(
+                    entry["metric"].to(device=intermediate.device),
+                    ratio,
+                )
+                self._runtime_mask_cache[cache_key] = mask_bool
+        mask = mask_bool.to(device=intermediate.device, dtype=intermediate.dtype)
         output = self.down_proj(intermediate * mask)
         if self.runtime.bias_compensation:
             removed_mean = entry["mean"].to(
@@ -219,9 +229,6 @@ class AdaptiveStageGriffinRuntime:
         self.bank = bank
         self.prior_policy = prior_policy
         self.stage_ratios = {stage: float(stage_ratios.get(stage, 0.0)) for stage in STAGES}
-        allowed = {float(value) for value in bank["ratios"]}
-        if any(value not in allowed for value in self.stage_ratios.values()):
-            raise ValueError("Adaptive stage ratio is not present in mask bank")
         self.alpha = float(alpha)
         if not 0.0 <= self.alpha <= 1.0:
             raise ValueError(f"alpha must be in [0, 1], got {self.alpha}")
@@ -395,9 +402,6 @@ class SafeDynamicStageGriffinRuntime:
         self.bank = bank
         self.prior_policy = prior_policy
         self.stage_ratios = {stage: float(stage_ratios.get(stage, 0.0)) for stage in STAGES}
-        allowed = {float(value) for value in bank["ratios"]}
-        if any(value not in allowed for value in self.stage_ratios.values()):
-            raise ValueError("Safe-dynamic stage ratio is not present in mask bank")
         self.runtime_weight = float(runtime_weight)
         self.prior_weight = float(prior_weight)
         if self.runtime_weight < 0.0 or self.prior_weight < 0.0:
