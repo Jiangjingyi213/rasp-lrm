@@ -1356,6 +1356,39 @@ def additional_static_matched_global_methods(cfg: dict[str, Any]) -> list[dict[s
     return methods
 
 
+def additional_fixed_stage_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    acfg = _adaptive_griffin_cfg(cfg)
+    configured = acfg.get("additional_fixed_stage_methods", [])
+    if not configured:
+        return []
+    methods = []
+    for index, row in enumerate(configured):
+        if not isinstance(row, dict):
+            raise ValueError(f"additional_fixed_stage_methods[{index}] must be a mapping")
+        name = str(row["name"])
+        policy = str(row["policy"])
+        ratios = {
+            stage: float(row.get("stage_ratios", {}).get(stage, 0.0))
+            for stage in STAGES
+        }
+        methods.append(
+            method(
+                name,
+                policy,
+                ratios,
+                structured_prompt(cfg),
+                bias=bool(row.get("bias_compensation", True)),
+                ablation_role=str(row.get("ablation_role", "")),
+                selection_note=str(row.get("selection_note", "")),
+            )
+        )
+    names = [row["name"] for row in methods]
+    if len(names) != len(set(names)):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"Fixed stage ablation method names must be unique: {duplicates}")
+    return methods
+
+
 def _evaluation_threshold(cfg: dict[str, Any], name: str, default: float | int | None = None) -> Any:
     pcfg = profile(cfg)
     if name in pcfg:
@@ -1512,6 +1545,7 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         methods.extend(adaptive_griffin_methods(cfg))
         methods.append(static_matched_global_method(cfg, ratios))
         methods.extend(additional_static_matched_global_methods(cfg))
+        methods.extend(additional_fixed_stage_methods(cfg))
     for ratio in uniform_ratio_grid:
         if ratio <= 0:
             continue
@@ -2105,6 +2139,7 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             + adaptive_griffin_methods(cfg)
             + [static_matched_global_method(cfg, [float(value) for value in cfg["masks"]["ratios"]])]
             + additional_static_matched_global_methods(cfg)
+            + additional_fixed_stage_methods(cfg)
         )
     else:
         stage_budget = frozen["stage_budget"]
