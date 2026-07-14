@@ -1275,6 +1275,16 @@ def _adaptive_griffin_method_from_cfg(acfg: dict[str, Any], prompt: dict[str, An
         swap_ratios=_adaptive_stage_float_map_from_cfg(acfg, "swap_ratios", 0.0),
         variant_role=str(acfg.get("variant_role", acfg.get("method_name", "adaptive"))),
         selection_note=str(acfg.get("selection_note", "")),
+        **(
+            {"target_pruning_ratio": float(acfg["target_pruning_ratio"])}
+            if "target_pruning_ratio" in acfg
+            else {}
+        ),
+        **(
+            {"target_pruning_label": str(acfg["target_pruning_label"])}
+            if "target_pruning_label" in acfg
+            else {}
+        ),
     )
 
 
@@ -1380,6 +1390,16 @@ def additional_fixed_stage_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
                 bias=bool(row.get("bias_compensation", True)),
                 ablation_role=str(row.get("ablation_role", "")),
                 selection_note=str(row.get("selection_note", "")),
+                **(
+                    {"target_pruning_ratio": float(row["target_pruning_ratio"])}
+                    if "target_pruning_ratio" in row
+                    else {}
+                ),
+                **(
+                    {"target_pruning_label": str(row["target_pruning_label"])}
+                    if "target_pruning_label" in row
+                    else {}
+                ),
             )
         )
     names = [row["name"] for row in methods]

@@ -1,0 +1,543 @@
+seed: 3
+
+workflow:
+  profile: pilot
+  root: runs/08_stage_calibrated_pruning/main_{profile}_mixed_reasoning_seed3_safe_dynamic_v2_target_pruning_downstream
+
+stages: [setup, reasoning, verify, final]
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float32
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  ordinary:
+    use_chat_template: true
+    enable_thinking: true
+    answer_format: boxed
+  structured:
+    use_chat_template: true
+    enable_thinking: true
+    explicit_stage_protocol: true
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
+
+generation:
+  max_input_tokens: 4096
+  max_new_tokens: 16384
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+
+calibration_pool:
+  allowed_sources: ["*"]
+  excluded_sources: [GSM8k, GSM8K, MATH, Omni-MATH, amc_aime, cn_k12]
+  near_duplicate_threshold: 0.80
+  reservoir_multiplier: 3
+  stop_after_reservoir_target: true
+  sources:
+    - name: orca_math
+      name_or_path: microsoft/orca-math-word-problems-200k
+      split: train
+      adapter: math_word_problem
+      quota: 0.60
+      max_scan: 6000
+      default_source: orca_math
+      default_domain: grade_school_math
+    - name: aqua_rat
+      name_or_path: deepmind/aqua_rat
+      dataset_config: raw
+      split: train
+      adapter: multiple_choice
+      quota: 0.15
+      max_scan: 4000
+      default_source: aqua_rat
+      default_domain: quantitative_reasoning
+    - name: openbookqa
+      name_or_path: allenai/openbookqa
+      dataset_config: main
+      split: train
+      adapter: multiple_choice
+      quota: 0.15
+      max_scan: 4000
+      default_source: openbookqa
+      default_domain: science_reasoning
+    - name: commonsenseqa
+      name_or_path: tau/commonsense_qa
+      split: train
+      adapter: multiple_choice
+      quota: 0.10
+      max_scan: 4000
+      default_source: commonsenseqa
+      default_domain: commonsense_reasoning
+
+selection:
+  difficulty_filter: any_correct
+
+calibration:
+  forward_chunk_tokens: 1024
+
+masks:
+  metric: WIFV
+  structure: UL-UM
+  ratios: [0.00, 0.10, 0.15, 0.20]
+  c4_samples: 0
+  bias_compensation: true
+
+adaptive_griffin:
+  enabled: true
+  policy: calibrated_stage_safe_dynamic_griffin
+  score_mode: protected_core_safe_prune
+  runtime_weight: 0.35
+  prior_weight: 0.65
+  warmup_tokens:
+    setup: 0
+    reasoning: 16
+    verify: 16
+    final: 0
+  stage_ratios:
+    setup: 0.27
+    reasoning: 0.27
+    verify: 0.27
+    final: 0.27
+  protected_core_ratios:
+    setup: 0.45
+    reasoning: 0.50
+    verify: 0.60
+    final: 0.60
+  refresh_intervals:
+    setup: 128
+    reasoning: 128
+    verify: 128
+    final: 0
+  window_tokens:
+    setup: 128
+    reasoning: 128
+    verify: 128
+    final: 1
+  prior_policy: stage_specific
+  static_matched_ratio: 0.27
+  static_matched_to: t20_uniform
+  additional_fixed_stage_methods:
+    - name: static_t20
+      policy: trajectory_global
+      ablation_role: static_matched_target_20
+      target_pruning_ratio: 0.20
+      target_pruning_label: t20
+      stage_ratios:
+        setup: 0.27
+        reasoning: 0.27
+        verify: 0.27
+        final: 0.27
+      selection_note: "Static trajectory-global baseline for the 20% target bucket."
+    - name: static_t30
+      policy: trajectory_global
+      ablation_role: static_matched_target_30
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30
+      stage_ratios:
+        setup: 0.40
+        reasoning: 0.40
+        verify: 0.40
+        final: 0.40
+      selection_note: "Static trajectory-global baseline for the 30% target bucket."
+    - name: static_t60
+      policy: trajectory_global
+      ablation_role: static_matched_target_60
+      target_pruning_ratio: 0.60
+      target_pruning_label: t60
+      stage_ratios:
+        setup: 0.72
+        reasoning: 0.72
+        verify: 0.72
+        final: 0.72
+      selection_note: "Static trajectory-global baseline for the 60% target bucket."
+  bias_compensation: true
+  backend: logical_mask
+  variants:
+    - method_name: t20_uniform
+      variant_role: target_20_uniform
+      target_pruning_ratio: 0.20
+      target_pruning_label: t20
+      runtime_weight: 0.35
+      prior_weight: 0.65
+      stage_ratios:
+        setup: 0.27
+        reasoning: 0.27
+        verify: 0.27
+        final: 0.27
+      protected_core_ratios:
+        setup: 0.45
+        reasoning: 0.50
+        verify: 0.60
+        final: 0.60
+      refresh_intervals:
+        setup: 128
+        reasoning: 128
+        verify: 128
+        final: 0
+      window_tokens:
+        setup: 128
+        reasoning: 128
+        verify: 128
+        final: 1
+      selection_note: "Target 20%: uniform nominal 27% to offset warmup/fallback dense tokens."
+    - method_name: t20_v24_scaled
+      variant_role: target_20_v24_scaled
+      target_pruning_ratio: 0.20
+      target_pruning_label: t20
+      runtime_weight: 0.35
+      prior_weight: 0.65
+      stage_ratios:
+        setup: 0.27
+        reasoning: 0.36
+        verify: 0.18
+        final: 0.27
+      protected_core_ratios:
+        setup: 0.45
+        reasoning: 0.50
+        verify: 0.60
+        final: 0.60
+      refresh_intervals:
+        setup: 128
+        reasoning: 128
+        verify: 128
+        final: 0
+      window_tokens:
+        setup: 128
+        reasoning: 128
+        verify: 128
+        final: 1
+      selection_note: "Target 20%: scaled V2.4-style budget, pruning reasoning more and verify less."
+    - method_name: t20_math_safe
+      variant_role: target_20_math_safe
+      target_pruning_ratio: 0.20
+      target_pruning_label: t20
+      runtime_weight: 0.30
+      prior_weight: 0.70
+      stage_ratios:
+        setup: 0.28
+        reasoning: 0.26
+        verify: 0.26
+        final: 0.26
+      protected_core_ratios:
+        setup: 0.45
+        reasoning: 0.50
+        verify: 0.60
+        final: 0.60
+      refresh_intervals:
+        setup: 128
+        reasoning: 128
+        verify: 128
+        final: 0
+      window_tokens:
+        setup: 128
+        reasoning: 128
+        verify: 128
+        final: 1
+      selection_note: "Target 20%: slightly prior-heavier, near-uniform math-safe budget."
+    - method_name: t30_uniform
+      variant_role: target_30_uniform
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30
+      runtime_weight: 0.30
+      prior_weight: 0.70
+      stage_ratios:
+        setup: 0.40
+        reasoning: 0.40
+        verify: 0.40
+        final: 0.40
+      protected_core_ratios:
+        setup: 0.35
+        reasoning: 0.40
+        verify: 0.45
+        final: 0.45
+      refresh_intervals:
+        setup: 192
+        reasoning: 192
+        verify: 192
+        final: 0
+      window_tokens:
+        setup: 192
+        reasoning: 192
+        verify: 192
+        final: 1
+      selection_note: "Target 30%: uniform nominal 40%."
+    - method_name: t30_v24_scaled
+      variant_role: target_30_v24_scaled
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30
+      runtime_weight: 0.30
+      prior_weight: 0.70
+      stage_ratios:
+        setup: 0.39
+        reasoning: 0.52
+        verify: 0.26
+        final: 0.39
+      protected_core_ratios:
+        setup: 0.35
+        reasoning: 0.40
+        verify: 0.45
+        final: 0.45
+      refresh_intervals:
+        setup: 192
+        reasoning: 192
+        verify: 192
+        final: 0
+      window_tokens:
+        setup: 192
+        reasoning: 192
+        verify: 192
+        final: 1
+      selection_note: "Target 30%: scaled V2.4-style budget."
+    - method_name: t30_math_safe
+      variant_role: target_30_math_safe
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30
+      runtime_weight: 0.25
+      prior_weight: 0.75
+      stage_ratios:
+        setup: 0.42
+        reasoning: 0.38
+        verify: 0.38
+        final: 0.38
+      protected_core_ratios:
+        setup: 0.35
+        reasoning: 0.40
+        verify: 0.45
+        final: 0.45
+      refresh_intervals:
+        setup: 192
+        reasoning: 192
+        verify: 192
+        final: 0
+      window_tokens:
+        setup: 192
+        reasoning: 192
+        verify: 192
+        final: 1
+      selection_note: "Target 30%: prior-heavier near-uniform math-safe budget."
+    - method_name: t60_prior_heavy
+      variant_role: target_60_prior_heavy
+      target_pruning_ratio: 0.60
+      target_pruning_label: t60
+      runtime_weight: 0.10
+      prior_weight: 0.90
+      stage_ratios:
+        setup: 0.72
+        reasoning: 0.70
+        verify: 0.68
+        final: 0.70
+      protected_core_ratios:
+        setup: 0.15
+        reasoning: 0.18
+        verify: 0.20
+        final: 0.20
+      refresh_intervals:
+        setup: 512
+        reasoning: 512
+        verify: 512
+        final: 0
+      window_tokens:
+        setup: 512
+        reasoning: 512
+        verify: 512
+        final: 1
+      selection_note: "Target 60%: prior-heavy high-pruning boundary."
+    - method_name: t60_uniform_prior_heavy
+      variant_role: target_60_uniform_prior_heavy
+      target_pruning_ratio: 0.60
+      target_pruning_label: t60
+      runtime_weight: 0.10
+      prior_weight: 0.90
+      stage_ratios:
+        setup: 0.72
+        reasoning: 0.72
+        verify: 0.72
+        final: 0.72
+      protected_core_ratios:
+        setup: 0.15
+        reasoning: 0.18
+        verify: 0.20
+        final: 0.20
+      refresh_intervals:
+        setup: 512
+        reasoning: 512
+        verify: 512
+        final: 0
+      window_tokens:
+        setup: 512
+        reasoning: 512
+        verify: 512
+        final: 1
+      selection_note: "Target 60%: uniform prior-heavy high-pruning boundary."
+
+evaluation:
+  math500_name_or_path: HuggingFaceH4/MATH-500
+  allow_final_without_dev: true
+  max_dev_accuracy_drop: 0.05
+  minimum_stage_protocol_rate: 0.90
+  maximum_structured_prompt_accuracy_drop: 0.05
+  maximum_truncation_rate: 0.05
+  final_datasets:
+    - dataset: gsm8k
+      split: test
+      limit: 200
+    - dataset: math500
+      name_or_path: HuggingFaceH4/MATH-500
+      split: test
+      limit: 200
+    - dataset: arc_easy
+      name_or_path: ai2_arc
+      dataset_config: ARC-Easy
+      split: test
+      limit: 200
+    - dataset: arc_challenge
+      name_or_path: ai2_arc
+      dataset_config: ARC-Challenge
+      split: test
+      limit: 200
+    - dataset: bbh_selected
+      name_or_path: lukaemon/bbh
+      split: test
+      selected_tasks:
+        - boolean_expressions
+        - date_understanding
+        - disambiguation_qa
+        - logical_deduction_three_objects
+        - logical_deduction_five_objects
+        - tracking_shuffled_objects_three_objects
+      per_task_limit: 40
+      limit: 240
+
+profiles:
+  smoke:
+    candidate_problems: 60
+    generations_per_problem: 1
+    calibration_problems: 16
+    dev_problems: 16
+    min_stage_tokens: 128
+    min_stage_tokens_by_stage:
+      setup: 128
+      reasoning: 256
+      verify: 128
+      final: 16
+    stage_token_balanced_selection: true
+    expansion_problems: 0
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: -1
+    final_seeds: [3]
+    dev_uniform_ratios: []
+    dev_global_policies: []
+    run_stage_specific_uniform: false
+    run_shuffled_uniform: false
+    budget_search_ratios: []
+    coordinate_rounds: 0
+    run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: true
+    reuse_existing_method_summaries: true
+    minimum_candidate_stage_protocol_rate: 0.90
+    maximum_candidate_fallback_rate: 0.10
+    maximum_candidate_truncation_rate: 0.05
+    final_methods:
+      - structured_dense
+      - static_t20
+      - t20_uniform
+      - t20_v24_scaled
+      - t20_math_safe
+      - static_t30
+      - t30_uniform
+      - t30_v24_scaled
+      - t30_math_safe
+      - static_t60
+      - t60_prior_heavy
+      - t60_uniform_prior_heavy
+
+  pilot:
+    candidate_problems: 600
+    generations_per_problem: 2
+    calibration_problems: 128
+    dev_problems: 128
+    min_stage_tokens: 2048
+    min_stage_tokens_by_stage:
+      setup: 2048
+      reasoning: 4096
+      verify: 2048
+      final: 256
+    stage_token_balanced_selection: true
+    expansion_problems: 300
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: -1
+    final_seeds: [3]
+    dev_uniform_ratios: []
+    dev_global_policies: []
+    run_stage_specific_uniform: false
+    run_shuffled_uniform: false
+    budget_search_ratios: []
+    coordinate_rounds: 0
+    run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: true
+    reuse_existing_method_summaries: true
+    minimum_candidate_stage_protocol_rate: 0.90
+    maximum_candidate_fallback_rate: 0.10
+    maximum_candidate_truncation_rate: 0.05
+    final_methods:
+      - structured_dense
+      - static_t20
+      - t20_uniform
+      - t20_v24_scaled
+      - t20_math_safe
+      - static_t30
+      - t30_uniform
+      - t30_v24_scaled
+      - t30_math_safe
+      - static_t60
+      - t60_prior_heavy
+      - t60_uniform_prior_heavy
+
+  formal:
+    candidate_problems: 900
+    generations_per_problem: 2
+    calibration_problems: 128
+    dev_problems: 128
+    min_stage_tokens: 2048
+    min_stage_tokens_by_stage:
+      setup: 2048
+      reasoning: 4096
+      verify: 2048
+      final: 256
+    stage_token_balanced_selection: true
+    expansion_problems: 300
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: -1
+    final_seeds: [3]
+    dev_uniform_ratios: []
+    dev_global_policies: []
+    run_stage_specific_uniform: false
+    run_shuffled_uniform: false
+    budget_search_ratios: []
+    coordinate_rounds: 0
+    run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: true
+    reuse_existing_method_summaries: true
+    minimum_candidate_stage_protocol_rate: 0.90
+    maximum_candidate_fallback_rate: 0.10
+    maximum_candidate_truncation_rate: 0.05
+    final_methods:
+      - structured_dense
+      - static_t20
+      - t20_uniform
+      - t20_v24_scaled
+      - t20_math_safe
+      - static_t30
+      - t30_uniform
+      - t30_v24_scaled
+      - t30_math_safe
+      - static_t60
+      - t60_prior_heavy
+      - t60_uniform_prior_heavy

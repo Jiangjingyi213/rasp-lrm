@@ -162,6 +162,8 @@ def evaluate_method(
     mask_refresh_counts = Counter()
     fallback = Counter()
     theoretical = []
+    actual = []
+    actual_pruning_accounting = None
     runtime_backend = None
     runtime_alpha = None
     runtime_warmup_tokens = None
@@ -214,6 +216,19 @@ def evaluate_method(
         if runtime_summary["fallback_reason"]:
             fallback[runtime_summary["fallback_reason"]] += 1
         theoretical.append(runtime_summary["theoretical_average_mlp_pruning_ratio"])
+        actual.append(
+            float(
+                runtime_summary.get(
+                    "actual_average_mlp_pruning_ratio",
+                    runtime_summary["theoretical_average_mlp_pruning_ratio"],
+                )
+            )
+        )
+        actual_pruning_accounting = (
+            actual_pruning_accounting
+            or runtime_summary.get("actual_pruning_accounting")
+            or "estimated_from_stage_ratios"
+        )
     summary = {
         "method": method,
         "seed": seed,
@@ -229,7 +244,20 @@ def evaluate_method(
         "mean_generated_tokens": sum(row["generated_tokens"] for row in rows) / len(rows) if rows else None,
         "stage_tokens": dict(stage_tokens),
         "theoretical_average_mlp_pruning_ratio": sum(theoretical) / len(theoretical) if theoretical else 0.0,
+        "actual_average_mlp_pruning_ratio": sum(actual) / len(actual) if actual else 0.0,
+        "actual_pruning_accounting": actual_pruning_accounting or "estimated_from_stage_ratios",
     }
+    if "target_pruning_ratio" in method:
+        target = float(method["target_pruning_ratio"])
+        actual_value = float(summary["actual_average_mlp_pruning_ratio"])
+        summary["target_pruning_ratio"] = target
+        summary["target_pruning_reached"] = bool(actual_value >= target)
+        summary["target_pruning_gap"] = actual_value - target
+        summary["target_pruning_status"] = (
+            "passed" if actual_value >= target else "target_pruning_not_reached"
+        )
+    if "target_pruning_label" in method:
+        summary["target_pruning_label"] = method["target_pruning_label"]
     if runtime_backend:
         summary["runtime_backend"] = runtime_backend
     if dense_observation_tokens:

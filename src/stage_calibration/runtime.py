@@ -43,6 +43,13 @@ def _keep_mask_from_scores(scores: torch.Tensor, ratio: float) -> torch.Tensor:
     return mask
 
 
+def _mask_pruning_ratio(mask: torch.Tensor) -> float:
+    mask = mask.detach().bool()
+    if mask.numel() == 0:
+        return 0.0
+    return 1.0 - float(mask.float().mean().item())
+
+
 def _prune_mask_from_scores(
     prune_scores: torch.Tensor,
     ratio: float,
@@ -105,11 +112,13 @@ class StageMaskRuntime:
         self.active_stage: str | None = None
         self.fallback_reason: str | None = None
         self.tokens_by_stage: Counter[str] = Counter()
+        self._actual_stage_ratio_cache: dict[str, float] = {}
 
     def reset(self) -> None:
         self.active_stage = None
         self.fallback_reason = None
         self.tokens_by_stage.clear()
+        self._actual_stage_ratio_cache.clear()
 
     def set_stage(self, stage: str) -> None:
         if stage not in STAGES:
@@ -134,10 +143,38 @@ class StageMaskRuntime:
     def record_token(self) -> None:
         self.tokens_by_stage[self.active_stage or "dense"] += 1
 
+    def _mask_for_entry(self, entry: dict[str, Any], ratio: float) -> torch.Tensor:
+        key = ratio_key(ratio)
+        if key in entry["masks"]:
+            return entry["masks"][key].bool()
+        return _keep_mask_from_scores(entry["metric"], ratio)
+
+    def actual_stage_ratio(self, stage: str) -> float:
+        if stage not in STAGES:
+            return 0.0
+        cached = self._actual_stage_ratio_cache.get(stage)
+        if cached is not None:
+            return cached
+        ratio = self.stage_ratios.get(stage, 0.0)
+        if ratio <= 0.0:
+            self._actual_stage_ratio_cache[stage] = 0.0
+            return 0.0
+        values = []
+        for layer_id in self.bank["layers"]:
+            entry = self.bank["policies"][self.policy][stage][int(layer_id)]
+            values.append(_mask_pruning_ratio(self._mask_for_entry(entry, ratio)))
+        actual = sum(values) / len(values) if values else 0.0
+        self._actual_stage_ratio_cache[stage] = actual
+        return actual
+
     def summary(self) -> dict[str, Any]:
         total = sum(self.tokens_by_stage.values())
         weighted = sum(
             self.stage_ratios.get(stage, 0.0) * count
+            for stage, count in self.tokens_by_stage.items()
+        )
+        actual_weighted = sum(
+            self.actual_stage_ratio(stage) * count
             for stage, count in self.tokens_by_stage.items()
         )
         return {
@@ -149,6 +186,8 @@ class StageMaskRuntime:
             "fallback_reason": self.fallback_reason,
             "tokens_by_stage": dict(self.tokens_by_stage),
             "theoretical_average_mlp_pruning_ratio": weighted / total if total else 0.0,
+            "actual_average_mlp_pruning_ratio": actual_weighted / total if total else 0.0,
+            "actual_pruning_accounting": "actual_mask_sparsity_token_weighted",
         }
 
 
@@ -441,6 +480,10 @@ class SafeDynamicStageGriffinRuntime:
         self._mask_cache: dict[tuple[str, int], torch.Tensor] = {}
         self._current_single_stage: str | None = None
         self._current_single_observe = False
+        self._actual_pruning_weighted_sum = 0.0
+        self._actual_pruning_denominator = 0
+        self._actual_pruning_weighted_sum_by_stage: Counter[str] = Counter()
+        self._actual_pruning_denominator_by_stage: Counter[str] = Counter()
 
     @property
     def alpha(self) -> float:
@@ -462,6 +505,10 @@ class SafeDynamicStageGriffinRuntime:
         self._mask_cache.clear()
         self._current_single_stage = None
         self._current_single_observe = False
+        self._actual_pruning_weighted_sum = 0.0
+        self._actual_pruning_denominator = 0
+        self._actual_pruning_weighted_sum_by_stage.clear()
+        self._actual_pruning_denominator_by_stage.clear()
 
     def set_stage(self, stage: str) -> None:
         if stage not in STAGES:
@@ -528,6 +575,21 @@ class SafeDynamicStageGriffinRuntime:
             self._current_single_observe = observe
         return self._current_single_stage, self._current_single_observe
 
+    def _record_actual_pruning(
+        self,
+        stage: str,
+        layer_id: int,
+        token_count: int,
+        mask: torch.Tensor | None,
+    ) -> None:
+        ratio = 0.0 if mask is None else _mask_pruning_ratio(mask)
+        count = int(token_count)
+        self._actual_pruning_weighted_sum += ratio * count
+        self._actual_pruning_denominator += count
+        key = stage if stage in STAGES else "dense"
+        self._actual_pruning_weighted_sum_by_stage[key] += ratio * count
+        self._actual_pruning_denominator_by_stage[key] += count
+
     def observe_or_mask(self, layer_id: int, intermediate: torch.Tensor) -> torch.Tensor | None:
         token_count = int(intermediate.shape[1])
         if token_count > 1:
@@ -537,21 +599,26 @@ class SafeDynamicStageGriffinRuntime:
         if self.fallback_reason is not None or stage not in STAGES:
             if layer_id == 0:
                 self.dense_observation_tokens_by_stage["dense"] += token_count
+            self._record_actual_pruning("dense", layer_id, token_count, None)
             return None
         ratio = self.stage_ratios[stage]
         if ratio <= 0.0:
             if layer_id == 0:
                 self.dense_observation_tokens_by_stage[stage] += token_count
+            self._record_actual_pruning(stage, layer_id, token_count, None)
             return None
         self._append_recent(stage, layer_id, intermediate)
         if observe:
             if layer_id == 0:
                 self.dense_observation_tokens_by_stage[stage] += token_count
+            self._record_actual_pruning(stage, layer_id, token_count, None)
             return None
         if layer_id == 0:
             self.masked_tokens_by_stage[stage] += token_count
             self._stage_tokens_since_refresh[stage] += token_count
-        return self.keep_mask(stage, layer_id)
+        mask = self.keep_mask(stage, layer_id)
+        self._record_actual_pruning(stage, layer_id, token_count, mask)
+        return mask
 
     def keep_mask(self, stage: str, layer_id: int) -> torch.Tensor:
         key = (stage, layer_id)
@@ -589,6 +656,14 @@ class SafeDynamicStageGriffinRuntime:
             self.stage_ratios.get(stage, 0.0) * count
             for stage, count in self.masked_tokens_by_stage.items()
         )
+        actual_by_stage = {
+            stage: (
+                float(self._actual_pruning_weighted_sum_by_stage[stage])
+                / float(self._actual_pruning_denominator_by_stage[stage])
+            )
+            for stage in self._actual_pruning_denominator_by_stage
+            if self._actual_pruning_denominator_by_stage[stage]
+        }
         return {
             "backend": "calibrated_stage_safe_dynamic_griffin_logical_v2",
             "real_speedup_claimed": False,
@@ -609,6 +684,13 @@ class SafeDynamicStageGriffinRuntime:
             "active_stage": self.active_stage,
             "fallback_reason": self.fallback_reason,
             "theoretical_average_mlp_pruning_ratio": weighted / total if total else 0.0,
+            "actual_average_mlp_pruning_ratio": (
+                self._actual_pruning_weighted_sum / self._actual_pruning_denominator
+                if self._actual_pruning_denominator
+                else 0.0
+            ),
+            "actual_pruning_ratio_by_stage": actual_by_stage,
+            "actual_pruning_accounting": "actual_mask_sparsity_layer_token_weighted",
         }
 
 

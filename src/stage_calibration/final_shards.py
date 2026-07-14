@@ -94,6 +94,8 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
     mask_refresh_counts = Counter()
     fallback = Counter()
     theoretical = []
+    actual = []
+    actual_pruning_accounting = None
     runtime_backend = None
     runtime_alpha = None
     runtime_warmup_tokens = None
@@ -144,6 +146,19 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         if runtime.get("fallback_reason"):
             fallback[str(runtime["fallback_reason"])] += 1
         theoretical.append(float(runtime.get("theoretical_average_mlp_pruning_ratio", 0.0)))
+        actual.append(
+            float(
+                runtime.get(
+                    "actual_average_mlp_pruning_ratio",
+                    runtime.get("theoretical_average_mlp_pruning_ratio", 0.0),
+                )
+            )
+        )
+        actual_pruning_accounting = (
+            actual_pruning_accounting
+            or runtime.get("actual_pruning_accounting")
+            or "estimated_from_stage_ratios"
+        )
     summary = {
         "method": method,
         "seed": int(seed),
@@ -167,7 +182,20 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         "theoretical_average_mlp_pruning_ratio": (
             sum(theoretical) / len(theoretical) if theoretical else 0.0
         ),
+        "actual_average_mlp_pruning_ratio": sum(actual) / len(actual) if actual else 0.0,
+        "actual_pruning_accounting": actual_pruning_accounting or "estimated_from_stage_ratios",
     }
+    if "target_pruning_ratio" in method:
+        target = float(method["target_pruning_ratio"])
+        actual_value = float(summary["actual_average_mlp_pruning_ratio"])
+        summary["target_pruning_ratio"] = target
+        summary["target_pruning_reached"] = bool(actual_value >= target)
+        summary["target_pruning_gap"] = actual_value - target
+        summary["target_pruning_status"] = (
+            "passed" if actual_value >= target else "target_pruning_not_reached"
+        )
+    if "target_pruning_label" in method:
+        summary["target_pruning_label"] = method["target_pruning_label"]
     if runtime_backend:
         summary["runtime_backend"] = runtime_backend
     if dense_observation_tokens:
@@ -203,6 +231,48 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
     if runtime_actual_swapped_channels is not None:
         summary["adaptive_actual_swapped_channels_by_stage_layer"] = runtime_actual_swapped_channels
     return summary
+
+
+def _target_pruning_summary(datasets: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for dataset, summaries in sorted(datasets.items()):
+        static_by_target = {
+            str(summary.get("target_pruning_label")): summary
+            for summary in summaries
+            if str(summary["method"]["name"]).startswith("static_")
+            and summary.get("target_pruning_label") is not None
+        }
+        for summary in sorted(summaries, key=lambda row: str(row["method"]["name"])):
+            target = summary.get("target_pruning_label")
+            if target is None:
+                continue
+            static = static_by_target.get(str(target))
+            accuracy = summary.get("accuracy")
+            static_accuracy = static.get("accuracy") if static else None
+            rows.append(
+                {
+                    "dataset": dataset,
+                    "target": target,
+                    "method": summary["method"]["name"],
+                    "accuracy": accuracy,
+                    "actual_average_mlp_pruning_ratio": summary.get(
+                        "actual_average_mlp_pruning_ratio"
+                    ),
+                    "theoretical_average_mlp_pruning_ratio": summary.get(
+                        "theoretical_average_mlp_pruning_ratio"
+                    ),
+                    "delta_vs_static_same_target": (
+                        float(accuracy) - float(static_accuracy)
+                        if accuracy is not None and static_accuracy is not None
+                        else None
+                    ),
+                    "fallback_rate": summary.get("fallback_rate"),
+                    "truncation_rate": summary.get("truncation_rate"),
+                    "mean_generated_tokens": summary.get("mean_generated_tokens"),
+                    "target_pruning_status": summary.get("target_pruning_status"),
+                }
+            )
+    return rows
 
 
 def merge_final_shards(
@@ -286,6 +356,7 @@ def merge_final_shards(
         ),
         "datasets": datasets,
         "aggregates": aggregates,
+        "target_pruning_summary": _target_pruning_summary(datasets),
     }
     write_json(output_summary_path, final_summary)
     return final_summary
@@ -321,6 +392,20 @@ def aggregate_final_summaries(
                 "accuracy_std": std,
                 "theoretical_average_mlp_pruning_ratio_mean": (
                     sum(float(value["theoretical_average_mlp_pruning_ratio"]) for value in values)
+                    / len(values)
+                    if values
+                    else 0.0
+                ),
+                "actual_average_mlp_pruning_ratio_mean": (
+                    sum(
+                        float(
+                            value.get(
+                                "actual_average_mlp_pruning_ratio",
+                                value["theoretical_average_mlp_pruning_ratio"],
+                            )
+                        )
+                        for value in values
+                    )
                     / len(values)
                     if values
                     else 0.0
