@@ -15,6 +15,8 @@ LOG_DIR="${LOG_DIR:-logs}"
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 SEED="${STAGE_SEED:-3}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
+BARRIER_FREE="${BARRIER_FREE:-1}"
+FORCE_DATASETS="${FORCE_DATASETS:-}"
 
 read -r -a GPUS <<< "${FINAL_GPUS:-0 1 2 3 4 5 6 7}"
 SHARD_COUNT="${STAGE_FINAL_SHARD_COUNT:-${#GPUS[@]}}"
@@ -129,6 +131,223 @@ for item in dataset_summaries:
 (suite / "aggregate_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 }
+
+is_forced_dataset() {
+  local dataset="$1"
+  case " ${FORCE_DATASETS} " in
+    *" ${dataset} "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+all_dataset_shards_done() {
+  local queue_dir="$1"
+  local dataset="$2"
+  local shard_index
+  for shard_index in $(seq 0 $((SHARD_COUNT - 1))); do
+    if [[ ! -f "${queue_dir}/done_${dataset}_${shard_index}" ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+try_merge_dataset() {
+  local queue_dir="$1"
+  local dataset="$2"
+  local dataset_root="${SUITE_ROOT}/${dataset}"
+  local summary_path="${dataset_root}/06_final/summary.json"
+  local lock_dir="${queue_dir}/merge_${dataset}.lock"
+
+  all_dataset_shards_done "${queue_dir}" "${dataset}" || return 0
+  [[ ! -f "${queue_dir}/merged_${dataset}" ]] || return 0
+  if [[ -f "${summary_path}" ]] && ! is_forced_dataset "${dataset}"; then
+    touch "${queue_dir}/merged_${dataset}"
+    return 0
+  fi
+  mkdir "${lock_dir}" 2>/dev/null || return 0
+  if [[ ! -f "${queue_dir}/merged_${dataset}" ]]; then
+    echo "START merge_final_shards dataset=${dataset}"
+    HF_ENDPOINT="${HF_ENDPOINT}" \
+    STAGE_SEED="${SEED}" \
+    STAGE_WORKFLOW_ROOT="${dataset_root}" \
+    STAGE_FINAL_DATASET_NAME="${dataset}" \
+    STAGE_FINAL_EVAL_LIMIT="${FINAL_EVAL_LIMIT}" \
+    STAGE_FINAL_SHARD_COUNT="${SHARD_COUNT}" \
+    "${PYTHON_BIN}" -m src.main_stage_calibrated_pruning \
+      --config "${CONFIG_PATH}" \
+      --profile "${PROFILE}" \
+      --stage merge_final_shards \
+      --force
+    echo "DONE dataset=${dataset}; summary=${summary_path}"
+    write_suite_summaries_locked "${queue_dir}"
+    touch "${queue_dir}/merged_${dataset}"
+  fi
+  rmdir "${lock_dir}" 2>/dev/null || true
+}
+
+write_suite_summaries_locked() {
+  local queue_dir="$1"
+  local lock_dir="${queue_dir}/summary.lock"
+  while ! mkdir "${lock_dir}" 2>/dev/null; do
+    sleep 1
+  done
+  write_suite_summaries
+  rmdir "${lock_dir}" 2>/dev/null || true
+}
+
+if [[ "${BARRIER_FREE}" == "1" ]]; then
+  QUEUE_DIR="${SUITE_ROOT}/.priority_queue_seed${SEED}_shards${SHARD_COUNT}_pid$$"
+  mkdir -p "${QUEUE_DIR}"
+  active_datasets=()
+  job_count=0
+
+  for dataset in "${DATASETS[@]}"; do
+    DATASET_ROOT="${SUITE_ROOT}/${dataset}"
+    SUMMARY_PATH="${DATASET_ROOT}/06_final/summary.json"
+    if [[ "${SKIP_EXISTING}" == "1" && -f "${SUMMARY_PATH}" ]] && ! is_forced_dataset "${dataset}"; then
+      echo "SKIP dataset=${dataset}; existing summary=${SUMMARY_PATH}"
+      write_suite_summaries
+      continue
+    fi
+
+    mkdir -p "${DATASET_ROOT}"
+    echo "PREPARE dataset=${dataset} root=${DATASET_ROOT}"
+
+    HF_ENDPOINT="${HF_ENDPOINT}" \
+    HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
+    HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
+    HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}" \
+    STAGE_SEED="${SEED}" \
+    STAGE_WORKFLOW_ROOT="${DATASET_ROOT}" \
+    STAGE_FINAL_DATASET_NAME="${dataset}" \
+    "${PYTHON_BIN}" -m src.main_stage_calibrated_pruning \
+      --config "${CONFIG_PATH}" \
+      --profile "${PROFILE}" \
+      --stage preflight \
+      --force
+
+    for artifact_dir in 03_selected 04_masks; do
+      if [[ ! -d "${DATASET_ROOT}/${artifact_dir}" ]]; then
+        echo "Reusing ${SOURCE_ROOT}/${artifact_dir} -> ${DATASET_ROOT}/${artifact_dir}"
+        cp -a "${SOURCE_ROOT}/${artifact_dir}" "${DATASET_ROOT}/"
+      else
+        echo "Keeping existing ${DATASET_ROOT}/${artifact_dir}"
+      fi
+    done
+
+    active_datasets+=("${dataset}")
+    for shard_index in $(seq 0 $((SHARD_COUNT - 1))); do
+      shard_summary="$(printf "%s/06_final/summary_shard_%05d_of_%05d.json" "${DATASET_ROOT}" "${shard_index}" "${SHARD_COUNT}")"
+      if [[ "${SKIP_EXISTING}" == "1" && -f "${shard_summary}" ]] && ! is_forced_dataset "${dataset}"; then
+        echo "SKIP dataset=${dataset} shard=${shard_index}; existing ${shard_summary}"
+        touch "${QUEUE_DIR}/done_${dataset}_${shard_index}"
+        continue
+      fi
+      job_path="$(printf "%s/job_%05d_%s_%05d.env" "${QUEUE_DIR}" "${job_count}" "${dataset}" "${shard_index}")"
+      {
+        printf "DATASET=%q\n" "${dataset}"
+        printf "SHARD_INDEX=%q\n" "${shard_index}"
+      } > "${job_path}"
+      job_count=$((job_count + 1))
+    done
+    try_merge_dataset "${QUEUE_DIR}" "${dataset}"
+  done
+
+  if [[ "${job_count}" -eq 0 ]]; then
+    echo "No new priority suite shards to run."
+    write_suite_summaries
+    echo "ALL DONE: ${SUITE_ROOT}/aggregate_summary.md"
+    exit 0
+  fi
+
+  echo "START priority suite worker pool; jobs=${job_count}; workers=${#GPUS[@]}; shards=${SHARD_COUNT}; methods=${FINAL_METHODS}"
+
+  claim_next_job() {
+    local gpu="$1"
+    local candidate
+    local claimed
+    while true; do
+      for candidate in "${QUEUE_DIR}"/job_*.env; do
+        [[ -e "${candidate}" ]] || return 1
+        claimed="${candidate}.gpu${gpu}.claimed"
+        if mv "${candidate}" "${claimed}" 2>/dev/null; then
+          printf "%s\n" "${claimed}"
+          return 0
+        fi
+      done
+      sleep 1
+    done
+  }
+
+  run_worker() {
+    local worker_index="$1"
+    local gpu="$2"
+    local job_file
+    local dataset_root
+    local log_path
+    while job_file="$(claim_next_job "${gpu}")"; do
+      # shellcheck disable=SC1090
+      source "${job_file}"
+      dataset_root="${SUITE_ROOT}/${DATASET}"
+      log_path="${LOG_DIR}/priority_suite_${DATASET}_seed${SEED}_shard${SHARD_INDEX}_of${SHARD_COUNT}_gpu${gpu}.log"
+      echo "Launching dataset=${DATASET} shard ${SHARD_INDEX}/${SHARD_COUNT} on GPU ${gpu}; log=${log_path}"
+      if CUDA_VISIBLE_DEVICES="${gpu}" \
+        HF_ENDPOINT="${HF_ENDPOINT}" \
+        HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
+        HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
+        HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}" \
+        STAGE_SEED="${SEED}" \
+        STAGE_WORKFLOW_ROOT="${dataset_root}" \
+        STAGE_FINAL_DATASET_NAME="${DATASET}" \
+        STAGE_FINAL_EVAL_LIMIT="${FINAL_EVAL_LIMIT}" \
+        STAGE_FINAL_METHODS="${FINAL_METHODS}" \
+        STAGE_FINAL_SHARD_INDEX="${SHARD_INDEX}" \
+        STAGE_FINAL_SHARD_COUNT="${SHARD_COUNT}" \
+        "${PYTHON_BIN}" -m src.main_stage_calibrated_pruning \
+          --config "${CONFIG_PATH}" \
+          --profile "${PROFILE}" \
+          --stage evaluate_final \
+          --force \
+          > "${log_path}" 2>&1; then
+        touch "${QUEUE_DIR}/done_${DATASET}_${SHARD_INDEX}"
+        try_merge_dataset "${QUEUE_DIR}" "${DATASET}"
+      else
+        echo "FAILED dataset=${DATASET} shard=${SHARD_INDEX} gpu=${gpu}; log=${log_path}" >&2
+        touch "${QUEUE_DIR}/failed_${DATASET}_${SHARD_INDEX}"
+        return 1
+      fi
+    done
+    echo "Worker ${worker_index} on GPU ${gpu} has no more jobs."
+  }
+
+  pids=()
+  for worker_index in $(seq 0 $((${#GPUS[@]} - 1))); do
+    gpu="${GPUS[$worker_index]}"
+    worker_log="${LOG_DIR}/priority_suite_worker${worker_index}_gpu${gpu}.log"
+    echo "START worker=${worker_index} gpu=${gpu}; log=${worker_log}"
+    run_worker "${worker_index}" "${gpu}" > "${worker_log}" 2>&1 &
+    pids+=("$!")
+  done
+
+  failed=0
+  for pid in "${pids[@]}"; do
+    if ! wait "${pid}"; then
+      failed=1
+    fi
+  done
+  if [[ "${failed}" -ne 0 ]] || compgen -G "${QUEUE_DIR}/failed_*" > /dev/null; then
+    echo "At least one priority suite worker failed. Check ${LOG_DIR}/priority_suite_worker*_gpu*.log and shard logs." >&2
+    exit 1
+  fi
+
+  for dataset in "${active_datasets[@]}"; do
+    try_merge_dataset "${QUEUE_DIR}" "${dataset}"
+  done
+  write_suite_summaries
+  echo "ALL DONE: ${SUITE_ROOT}/aggregate_summary.md"
+  exit 0
+fi
 
 for dataset in "${DATASETS[@]}"; do
   DATASET_ROOT="${SUITE_ROOT}/${dataset}"

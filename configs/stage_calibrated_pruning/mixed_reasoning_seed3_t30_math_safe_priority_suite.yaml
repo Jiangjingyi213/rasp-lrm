@@ -143,8 +143,8 @@ evaluation:
       name_or_path: zwhe99/amc23
       split: train
     - dataset: gpqa_diamond
-      name_or_path: Idavidrein/gpqa
-      dataset_config: gpqa_diamond
+      name_or_path: zai-org/glm-simple-evals-dataset
+      data_files: gpqa/gpqa_diamond.csv
       split: train
       choice_seed: 17
     - dataset: arc_challenge

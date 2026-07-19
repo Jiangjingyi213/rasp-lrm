@@ -24,10 +24,14 @@ SIMPLE_FRACTION_RE = re.compile(r"[-+]?\d+(?:\.\d+)?/[-+]?\d+(?:\.\d+)?")
 ANSWER_STOP_MARKERS = ("Human:", "User:", "Assistant:", "Problem:")
 SYMBOLIC_HINT_RE = re.compile(r"[A-Za-zπ]|\\pi|[()=]")
 MULTIPLE_CHOICE_RE = re.compile(r"[A-Z]")
+FINAL_STAGE_MARKERS = ("[[STAGE_FINAL]]", "<STAGE_FINAL>")
 
 
 def extract_answer(text: str) -> str:
     text = text or ""
+    staged_boxed = extract_first_boxed_after_final_stage(text)
+    if staged_boxed:
+        return normalize_answer_span(staged_boxed, allow_numeric_fallback=False)
     boxed = extract_last_boxed(text)
     if boxed:
         return normalize_answer_span(boxed, allow_numeric_fallback=False)
@@ -134,6 +138,39 @@ def extract_last_boxed(text: str) -> str | None:
     return boxed[-1] if boxed else None
 
 
+def extract_first_boxed(text: str) -> str | None:
+    marker = "\\boxed{"
+    start = text.find(marker)
+    if start < 0:
+        boxed = BOXED_RE.findall(text)
+        return boxed[0] if boxed else None
+    pos = start + len(marker)
+    depth = 1
+    chars = []
+    while pos < len(text):
+        ch = text[pos]
+        if ch == "{":
+            depth += 1
+            chars.append(ch)
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return "".join(chars)
+            chars.append(ch)
+        else:
+            chars.append(ch)
+        pos += 1
+    return None
+
+
+def extract_first_boxed_after_final_stage(text: str) -> str | None:
+    start = max(text.rfind(marker) for marker in FINAL_STAGE_MARKERS)
+    if start < 0:
+        return None
+    marker = next(marker for marker in FINAL_STAGE_MARKERS if text.startswith(marker, start))
+    return extract_first_boxed(text[start + len(marker) :])
+
+
 def normalize_choice_label(value: str) -> str:
     cleaned = clean_answer(str(value)).strip().upper()
     match = re.fullmatch(r"\(?\s*([A-Z])\s*\)?", cleaned)
@@ -141,7 +178,7 @@ def normalize_choice_label(value: str) -> str:
 
 
 def extract_multiple_choice_answer(text: str) -> str:
-    boxed = extract_last_boxed(text or "")
+    boxed = extract_first_boxed_after_final_stage(text or "") or extract_last_boxed(text or "")
     if boxed is None:
         return ""
     return normalize_choice_label(boxed)

@@ -21,6 +21,13 @@ class AnswerMatchTest(unittest.TestCase):
     def test_extracts_nested_boxed_answer(self) -> None:
         self.assertEqual(extract_answer(r"Therefore \boxed{\frac{14}{3}}."), "14/3")
 
+    def test_extract_prefers_first_boxed_after_final_stage(self) -> None:
+        text = (
+            r"[[STAGE_FINAL]] \boxed{211} </think> "
+            r"The model restarted and later wrote \boxed{540}."
+        )
+        self.assertEqual(extract_answer(text), "211")
+
     def test_fraction_and_decimal_are_equivalent_without_optional_grader(self) -> None:
         self.assertTrue(answer_match(r"\boxed{\frac{1}{2}}", "0.5", use_math_verify=False))
 
@@ -64,6 +71,10 @@ class AnswerMatchTest(unittest.TestCase):
         self.assertFalse(answer_match("Final answer: A", "A", answer_type="multiple_choice"))
         self.assertFalse(answer_match(r"Therefore \boxed{B}.", "A", answer_type="multiple_choice"))
         self.assertEqual(extract_multiple_choice_answer(r"Check \boxed{C}."), "C")
+        self.assertEqual(
+            extract_multiple_choice_answer(r"[[STAGE_FINAL]] \boxed{A}. Later \boxed{B}."),
+            "A",
+        )
 
 
 if __name__ == "__main__":

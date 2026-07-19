@@ -223,9 +223,10 @@ def _load_dataset_with_split_fallback(
     args: list[str],
     split: str,
     config: dict[str, Any],
+    **kwargs: Any,
 ):
     try:
-        return load_dataset(*args, split=split), split
+        return load_dataset(*args, split=split, **kwargs), split
     except ValueError as exc:
         if "Unknown split" not in str(exc):
             raise
@@ -237,7 +238,7 @@ def _load_dataset_with_split_fallback(
                 continue
             tried.add(fallback)
             try:
-                return load_dataset(*args, split=fallback), fallback
+                return load_dataset(*args, split=fallback, **kwargs), fallback
             except ValueError as fallback_exc:
                 if "Unknown split" not in str(fallback_exc):
                     raise
@@ -460,9 +461,53 @@ def load_gpqa_hf(config: dict[str, Any]) -> list[dict[str, Any]]:
     limit = _as_int_or_none(config.get("limit"))
     offset = int(config.get("offset", 0))
     seed = int(config.get("choice_seed", 17))
-    dataset, used_split = _load_dataset_with_split_fallback([name_or_path, dataset_config], split, config)
+    dataset, used_split = _load_gpqa_dataset_with_fallback(name_or_path, dataset_config, split, config)
     rows = [_normalize_gpqa_row(dict(row), i, used_split, seed=seed) for i, row in enumerate(dataset)]
     return slice_rows(rows, limit, offset)
+
+
+def _load_gpqa_dataset_with_fallback(
+    name_or_path: str,
+    dataset_config: str | None,
+    split: str,
+    config: dict[str, Any],
+):
+    data_files = config.get("data_files")
+    candidates: list[tuple[list[str], dict[str, Any], str]] = []
+    if data_files:
+        candidates.append(([name_or_path], {"data_files": data_files}, split))
+    elif dataset_config:
+        candidates.append(([name_or_path, str(dataset_config)], {}, split))
+    else:
+        candidates.append(([name_or_path], {}, split))
+
+    # The canonical Idavidrein/gpqa repository is gated. This public mirror
+    # contains the same simple-evals GPQA CSV layout and works with HF mirrors.
+    candidates.append(
+        (
+            ["zai-org/glm-simple-evals-dataset"],
+            {"data_files": "gpqa/gpqa_diamond.csv"},
+            "train",
+        )
+    )
+    # Last resort for environments that can reach Azure directly, matching
+    # OpenAI simple-evals' reference GPQA loader.
+    candidates.append(
+        (
+            ["csv"],
+            {"data_files": "https://openaipublic.blob.core.windows.net/simple-evals/gpqa_diamond.csv"},
+            "train",
+        )
+    )
+
+    errors = []
+    for args, kwargs, candidate_split in candidates:
+        try:
+            return _load_dataset_with_split_fallback(args, candidate_split, config, **kwargs)
+        except (FileNotFoundError, PermissionError, ValueError, ConnectionError) as exc:
+            errors.append(f"{args}: {type(exc).__name__}: {exc}")
+            continue
+    raise FileNotFoundError("Unable to load GPQA Diamond from any configured source:\n" + "\n".join(errors))
 
 
 def load_gpqa_local(path: str | Path, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:

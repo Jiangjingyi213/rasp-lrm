@@ -6,6 +6,7 @@ from unittest.mock import patch
 from src.data import load_gsm8k
 from src.data.load_gsm8k import (
     load_competition_hf,
+    load_gpqa_hf,
     _normalize_competition_row,
     _normalize_gpqa_row,
     load_tasks,
@@ -103,6 +104,38 @@ class DownstreamTaskLoadersTest(unittest.TestCase):
             )
         self.assertEqual(rows[0]["id"], "aime2025-test-0")
         self.assertEqual(rows[0]["gold"], "2")
+
+    def test_gpqa_hf_falls_back_to_public_simple_evals_mirror(self) -> None:
+        gpqa_rows = [
+            {
+                "Question": "Which option is correct?",
+                "Correct Answer": "Right",
+                "Incorrect Answer 1": "Wrong 1",
+                "Incorrect Answer 2": "Wrong 2",
+                "Incorrect Answer 3": "Wrong 3",
+            }
+        ]
+        calls = []
+
+        def fake_load_dataset(*args, **kwargs):
+            calls.append((args, kwargs))
+            if args[:2] == ("Idavidrein/gpqa", "gpqa_diamond"):
+                raise FileNotFoundError("official GPQA source is unavailable")
+            self.assertEqual(args, ("zai-org/glm-simple-evals-dataset",))
+            self.assertEqual(kwargs["data_files"], "gpqa/gpqa_diamond.csv")
+            return gpqa_rows
+
+        with patch.object(load_gsm8k, "load_dataset", side_effect=fake_load_dataset):
+            rows = load_gpqa_hf(
+                {
+                    "name_or_path": "Idavidrein/gpqa",
+                    "dataset_config": "gpqa_diamond",
+                    "split": "train",
+                }
+            )
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(rows[0]["dataset"], "gpqa_diamond")
+        self.assertEqual(rows[0]["answer_type"], "multiple_choice")
 
 
 if __name__ == "__main__":
