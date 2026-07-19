@@ -11,13 +11,13 @@ SOURCE_ROOT="${SOURCE_ROOT:-runs/08_stage_calibrated_pruning/main_pilot_mixed_re
 SUITE_ROOT="${RUN_ROOT:-runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3_t30_math_safe_priority_suite}"
 FINAL_METHODS="${STAGE_FINAL_METHODS:-structured_dense,static_t30_0p37,t30_math_safe}"
 FINAL_EVAL_LIMIT="${STAGE_FINAL_EVAL_LIMIT:--1}"
-SHARD_COUNT="${STAGE_FINAL_SHARD_COUNT:-8}"
 LOG_DIR="${LOG_DIR:-logs}"
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 SEED="${STAGE_SEED:-3}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
 
 read -r -a GPUS <<< "${FINAL_GPUS:-0 1 2 3 4 5 6 7}"
+SHARD_COUNT="${STAGE_FINAL_SHARD_COUNT:-${#GPUS[@]}}"
 if [[ "${#GPUS[@]}" -lt "${SHARD_COUNT}" ]]; then
   echo "Need at least ${SHARD_COUNT} GPU ids, got ${#GPUS[@]}: ${GPUS[*]}" >&2
   exit 2
