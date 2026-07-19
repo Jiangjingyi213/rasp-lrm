@@ -281,6 +281,32 @@ def _final_dataset_name(dataset_cfg: dict[str, Any]) -> str:
     return name or "dataset"
 
 
+def _filter_final_datasets_for_env(cfg: dict[str, Any]) -> None:
+    env_value = os.environ.get("STAGE_FINAL_DATASET_NAME")
+    if not env_value:
+        return
+    requested = {value.strip() for value in env_value.split(",") if value.strip()}
+    if not requested:
+        return
+    datasets = _final_dataset_configs(cfg)
+    selected = []
+    for row in datasets:
+        candidates = {
+            _final_dataset_name(row),
+            str(row.get("dataset", "")),
+            str(row.get("dataset_label", "")),
+        }
+        if candidates & requested:
+            selected.append(row)
+    if not selected:
+        available = sorted(_final_dataset_name(row) for row in datasets)
+        raise RuntimeError(
+            f"STAGE_FINAL_DATASET_NAME={env_value!r} did not match any configured final dataset. "
+            f"Available: {available}"
+        )
+    cfg.setdefault("evaluation", {})["final_datasets"] = selected
+
+
 def _protected_final_tasks(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     tasks: list[dict[str, Any]] = []
     for dataset_cfg in _final_dataset_configs(cfg):
@@ -2446,6 +2472,9 @@ def main() -> None:
         cfg["workflow"]["profile"] = args.profile
     if os.environ.get("STAGE_SEED") is not None:
         cfg["seed"] = int(os.environ["STAGE_SEED"])
+    if os.environ.get("STAGE_WORKFLOW_ROOT"):
+        cfg["workflow"]["root"] = os.environ["STAGE_WORKFLOW_ROOT"]
+    _filter_final_datasets_for_env(cfg)
     set_seed(int(cfg["seed"]))
     p = paths(cfg)
     ensure_dir(p["root"] / PHASES[args.stage])

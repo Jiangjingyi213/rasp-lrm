@@ -6,13 +6,19 @@ The active research workflow is explicit reasoning-stage calibrated structured
 pruning:
 
 ```text
-decontaminated Big-Math problems
+decontaminated mixed reasoning pool
 -> Qwen3 self-generated explicit-stage trajectories
 -> stage-conditioned WIFV calibration
--> frozen structured MLP masks
--> explicit stage-triggered runtime mask switching
+-> frozen stage priors and compensation statistics
+-> protected-core, instance-adaptive runtime MLP masking
 -> held-out GSM8K / MATH-500 evaluation
 ```
+
+The current method is `calibrated_stage_safe_dynamic_griffin`
+(`t30_math_safe`), not fixed switching among four stage masks. It combines a
+stage-conditioned WIFV-inspired prior with a recent per-instance activation
+window and dynamically selects channels only outside a protected core. The
+backend is a logical MLP mask; no wall-clock speedup is claimed.
 
 Run the centralized smoke workflow on the remote server:
 
@@ -24,8 +30,10 @@ PROFILE=smoke PYTHON=/home/cike/jjy/envs/rasp_qwen3_eval/bin/python \
 bash scripts/run_stage_calibrated_pruning.sh
 ```
 
-See `docs/CURRENT_WORKFLOW_ZH.md`. The older action-risk and multi-window
-workflows are frozen legacy experiments and are no longer the default route.
+See `docs/CURRENT_WORKFLOW_ZH.md` and
+`docs/stage_dynamic_method_paper_material_zh.md`. The older action-risk,
+learned-router, hidden-stage-probe, and static stage-mask workflows are frozen
+legacy experiments or ablations and are no longer the default route.
 
 This repository contains a minimal closed-loop experiment for motivating reasoning-aware structured pruning in LRMs.
 

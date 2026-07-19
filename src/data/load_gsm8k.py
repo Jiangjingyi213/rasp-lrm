@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 from pathlib import Path
 from typing import Any
@@ -106,6 +107,130 @@ def load_aime2024_local(path: str | Path, limit: int | None = None, offset: int 
         for i, line in enumerate(f):
             item = json.loads(line)
             rows.append(_normalize_aime(item, i, "local"))
+    return slice_rows(rows, limit, offset)
+
+
+def _prompt_content(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        for item in reversed(value):
+            if isinstance(item, dict) and item.get("content"):
+                return str(item["content"])
+            if isinstance(item, str):
+                return item
+    if isinstance(value, dict) and value.get("content"):
+        return str(value["content"])
+    return None
+
+
+def _nested_value(row: dict[str, Any], *paths: str) -> Any:
+    for path in paths:
+        current: Any = row
+        ok = True
+        for part in path.split("."):
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                ok = False
+                break
+        if ok and current not in (None, ""):
+            return current
+    return None
+
+
+def _normalize_competition_row(
+    row: dict[str, Any],
+    idx: int,
+    split: str,
+    dataset_label: str,
+) -> dict[str, Any]:
+    question = (
+        row.get("problem")
+        or row.get("question")
+        or row.get("prompt")
+        or row.get("input")
+        or row.get("query")
+    )
+    question_text = _prompt_content(question)
+    answer = _nested_value(
+        row,
+        "answer",
+        "final_answer",
+        "target",
+        "label",
+        "gold",
+        "reward_model.ground_truth",
+        "extra_info.answer",
+        "extra_info.ground_truth",
+    )
+    if not question_text:
+        raise ValueError(f"{dataset_label} row {idx} is missing a problem/question field")
+    if answer is None:
+        raise ValueError(f"{dataset_label} row {idx} is missing an answer field")
+    pairs = _choice_pairs(row.get("choices") or row.get("options"))
+    answer_text = str(answer).strip()
+    is_choice = bool(re.fullmatch(r"\(?\s*[A-E]\s*\)?", answer_text.upper()))
+    if pairs:
+        canonical_pairs, label_map = _canonical_choice_labels(pairs)
+        gold = _normalize_choice_answer(answer_text, label_map)
+        question_text = _format_multiple_choice_question(question_text, canonical_pairs)
+        answer_type = "multiple_choice"
+        choices = [{"label": label, "text": text} for label, text in canonical_pairs]
+    elif is_choice:
+        gold = _normalize_choice_answer(answer_text, {letter: letter for letter in "ABCDE"})
+        if "boxed" not in question_text:
+            question_text = f"{question_text.strip()}\n\nPut only the option letter in \\boxed{{}}."
+        answer_type = "multiple_choice"
+        choices = None
+    else:
+        gold = answer_text
+        if "boxed" not in question_text:
+            question_text = f"{question_text.strip()}\n\nPut the final answer in \\boxed{{}}."
+        answer_type = "math"
+        choices = None
+    output = {
+        "id": row.get("id") or row.get("unique_id") or f"{dataset_label}-{split}-{idx}",
+        "dataset": dataset_label,
+        "source_dataset": row.get("source_dataset") or row.get("data_source") or dataset_label,
+        "question": question_text,
+        "gold": gold,
+        "answer_type": answer_type,
+    }
+    if choices is not None:
+        output["choices"] = choices
+    return output
+
+
+def load_competition_hf(config: dict[str, Any], dataset_label: str, default_name: str) -> list[dict[str, Any]]:
+    name_or_path = config.get("name_or_path", default_name)
+    dataset_config = config.get("dataset_config") or config.get("config_name")
+    split = config.get("split", "train")
+    limit = _as_int_or_none(config.get("limit"))
+    offset = int(config.get("offset", 0))
+    args = [name_or_path]
+    if dataset_config:
+        args.append(str(dataset_config))
+    dataset = load_dataset(*args, split=split)
+    rows = [
+        _normalize_competition_row(dict(row), i, split, dataset_label)
+        for i, row in enumerate(dataset)
+    ]
+    return slice_rows(rows, limit, offset)
+
+
+def load_competition_local(
+    path: str | Path,
+    dataset_label: str,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    path = Path(path)
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            item = json.loads(line)
+            rows.append(_normalize_competition_row(item, i, "local", dataset_label))
     return slice_rows(rows, limit, offset)
 
 
@@ -254,6 +379,76 @@ def load_bbh_selected_hf(config: dict[str, Any]) -> list[dict[str, Any]]:
     return slice_rows(rows, limit, offset)
 
 
+def _normalize_gpqa_row(row: dict[str, Any], idx: int, split: str, seed: int = 17) -> dict[str, Any]:
+    question = (
+        row.get("Question")
+        or row.get("question")
+        or row.get("problem")
+        or row.get("input")
+        or row.get("prompt")
+    )
+    if not question:
+        raise ValueError(f"GPQA row {idx} is missing a question field")
+    pairs = _choice_pairs(row.get("choices") or row.get("options"))
+    answer = row.get("answer") or row.get("label") or row.get("target")
+    if pairs:
+        canonical_pairs, label_map = _canonical_choice_labels(pairs)
+        gold = _normalize_choice_answer(answer, label_map)
+    else:
+        correct = row.get("Correct Answer") or row.get("correct_answer") or row.get("correct")
+        incorrects = [
+            row.get("Incorrect Answer 1") or row.get("incorrect_answer_1"),
+            row.get("Incorrect Answer 2") or row.get("incorrect_answer_2"),
+            row.get("Incorrect Answer 3") or row.get("incorrect_answer_3"),
+        ]
+        if correct is None or any(value is None for value in incorrects):
+            raise ValueError(f"GPQA row {idx} is missing answer choices")
+        shuffled = [(str(correct).strip(), True)] + [
+            (str(value).strip(), False) for value in incorrects
+        ]
+        random.Random(f"{seed}:{idx}").shuffle(shuffled)
+        canonical_pairs = [
+            (chr(ord("A") + choice_index), text)
+            for choice_index, (text, _is_correct) in enumerate(shuffled)
+        ]
+        gold = next(
+            chr(ord("A") + choice_index)
+            for choice_index, (_text, is_correct) in enumerate(shuffled)
+            if is_correct
+        )
+    return {
+        "id": row.get("id") or row.get("Record ID") or f"gpqa_diamond-{split}-{idx}",
+        "dataset": "gpqa_diamond",
+        "source_dataset": "gpqa",
+        "question": _format_multiple_choice_question(str(question), canonical_pairs),
+        "gold": gold,
+        "answer_type": "multiple_choice",
+        "choices": [{"label": label, "text": text} for label, text in canonical_pairs],
+    }
+
+
+def load_gpqa_hf(config: dict[str, Any]) -> list[dict[str, Any]]:
+    name_or_path = config.get("name_or_path", "Idavidrein/gpqa")
+    dataset_config = config.get("dataset_config") or config.get("config_name") or "gpqa_diamond"
+    split = config.get("split", "train")
+    limit = _as_int_or_none(config.get("limit"))
+    offset = int(config.get("offset", 0))
+    seed = int(config.get("choice_seed", 17))
+    dataset = load_dataset(name_or_path, dataset_config, split=split)
+    rows = [_normalize_gpqa_row(dict(row), i, split, seed=seed) for i, row in enumerate(dataset)]
+    return slice_rows(rows, limit, offset)
+
+
+def load_gpqa_local(path: str | Path, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+    path = Path(path)
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            item = json.loads(line)
+            rows.append(_normalize_gpqa_row(item, i, "local"))
+    return slice_rows(rows, limit, offset)
+
+
 def load_tasks(config: dict[str, Any]) -> list[dict[str, Any]]:
     name = config.get("dataset", "gsm8k").lower()
     limit = _as_int_or_none(config.get("limit"))
@@ -268,6 +463,18 @@ def load_tasks(config: dict[str, Any]) -> list[dict[str, Any]]:
         if config.get("path"):
             return load_aime2024_local(config["path"], limit, offset)
         return load_aime2024_hf(config)
+    if name in {"aime2025", "aime25"}:
+        if config.get("path"):
+            return load_competition_local(config["path"], "aime2025", limit, offset)
+        return load_competition_hf(config, "aime2025", "math-ai/aime25")
+    if name in {"amc", "amc2023", "amc23"}:
+        if config.get("path"):
+            return load_competition_local(config["path"], "amc2023", limit, offset)
+        return load_competition_hf(config, "amc2023", "zwhe99/amc23")
+    if name in {"gpqa", "gpqa_diamond", "gpqa-diamond"}:
+        if config.get("path"):
+            return load_gpqa_local(config["path"], limit, offset)
+        return load_gpqa_hf(config)
     if name in {"arc_easy", "arc-easy", "ai2_arc_easy"}:
         merged = dict(config)
         merged.setdefault("dataset", "arc_easy")

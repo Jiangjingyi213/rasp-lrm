@@ -1,0 +1,256 @@
+seed: 3
+
+workflow:
+  profile: pilot
+  root: runs/08_stage_calibrated_pruning/main_{profile}_mixed_reasoning_seed3_t30_math_safe_priority_suite
+
+stages: [setup, reasoning, verify, final]
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float32
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  ordinary:
+    use_chat_template: true
+    enable_thinking: true
+    answer_format: boxed
+  structured:
+    use_chat_template: true
+    enable_thinking: true
+    explicit_stage_protocol: true
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
+
+generation:
+  max_input_tokens: 4096
+  max_new_tokens: 16384
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+
+calibration_pool:
+  allowed_sources: ["*"]
+  excluded_sources: [GSM8k, GSM8K, MATH, Omni-MATH, amc_aime, cn_k12]
+
+selection:
+  difficulty_filter: any_correct
+
+calibration:
+  forward_chunk_tokens: 1024
+
+masks:
+  metric: WIFV
+  structure: UL-UM
+  ratios: [0.00, 0.10, 0.15, 0.20]
+  c4_samples: 0
+  bias_compensation: true
+
+adaptive_griffin:
+  enabled: true
+  policy: calibrated_stage_safe_dynamic_griffin
+  score_mode: protected_core_safe_prune
+  runtime_weight: 0.25
+  prior_weight: 0.75
+  warmup_tokens:
+    setup: 0
+    reasoning: 16
+    verify: 16
+    final: 0
+  stage_ratios:
+    setup: 0.42
+    reasoning: 0.38
+    verify: 0.38
+    final: 0.38
+  protected_core_ratios:
+    setup: 0.35
+    reasoning: 0.40
+    verify: 0.45
+    final: 0.45
+  refresh_intervals:
+    setup: 192
+    reasoning: 192
+    verify: 192
+    final: 0
+  window_tokens:
+    setup: 192
+    reasoning: 192
+    verify: 192
+    final: 1
+  prior_policy: stage_specific
+  static_matched_ratio: 0.37
+  static_matched_to: t30_math_safe
+  additional_fixed_stage_methods:
+    - name: static_t30_0p37
+      policy: trajectory_global
+      ablation_role: strict_static_matched_target_30_high
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30
+      stage_ratios:
+        setup: 0.37
+        reasoning: 0.37
+        verify: 0.37
+        final: 0.37
+      selection_note: "Priority-suite static trajectory-global baseline matched to t30_math_safe actual pruning."
+  bias_compensation: true
+  backend: logical_mask
+  variants:
+    - method_name: t30_math_safe
+      variant_role: target_30_math_safe_priority_suite_main
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30
+      runtime_weight: 0.25
+      prior_weight: 0.75
+      stage_ratios:
+        setup: 0.42
+        reasoning: 0.38
+        verify: 0.38
+        final: 0.38
+      protected_core_ratios:
+        setup: 0.35
+        reasoning: 0.40
+        verify: 0.45
+        final: 0.45
+      refresh_intervals:
+        setup: 192
+        reasoning: 192
+        verify: 192
+        final: 0
+      window_tokens:
+        setup: 192
+        reasoning: 192
+        verify: 192
+        final: 1
+      selection_note: "Frozen full-evaluation main method selected from 1040-question diagnostic."
+
+evaluation:
+  math500_name_or_path: HuggingFaceH4/MATH-500
+  allow_final_without_dev: true
+  max_dev_accuracy_drop: 0.05
+  minimum_stage_protocol_rate: 0.90
+  maximum_structured_prompt_accuracy_drop: 0.05
+  maximum_truncation_rate: 0.05
+  final_datasets:
+    - dataset: aime2024
+      name_or_path: HuggingFaceH4/aime_2024
+      split: train
+    - dataset: aime2025
+      name_or_path: math-ai/aime25
+      split: train
+    - dataset: amc2023
+      name_or_path: zwhe99/amc23
+      split: train
+    - dataset: gpqa_diamond
+      name_or_path: Idavidrein/gpqa
+      dataset_config: gpqa_diamond
+      split: train
+      choice_seed: 17
+    - dataset: arc_challenge
+      name_or_path: ai2_arc
+      dataset_config: ARC-Challenge
+      split: test
+
+profiles:
+  smoke:
+    candidate_problems: 60
+    generations_per_problem: 1
+    calibration_problems: 16
+    dev_problems: 16
+    min_stage_tokens: 128
+    min_stage_tokens_by_stage:
+      setup: 128
+      reasoning: 256
+      verify: 128
+      final: 16
+    stage_token_balanced_selection: true
+    expansion_problems: 0
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: -1
+    final_seeds: [3]
+    dev_uniform_ratios: []
+    dev_global_policies: []
+    run_stage_specific_uniform: false
+    run_shuffled_uniform: false
+    budget_search_ratios: []
+    coordinate_rounds: 0
+    run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: true
+    reuse_existing_method_summaries: true
+    minimum_candidate_stage_protocol_rate: 0.90
+    maximum_candidate_fallback_rate: 0.10
+    maximum_candidate_truncation_rate: 0.05
+    final_methods:
+      - structured_dense
+      - static_t30_0p37
+      - t30_math_safe
+
+  pilot:
+    candidate_problems: 600
+    generations_per_problem: 2
+    calibration_problems: 128
+    dev_problems: 128
+    min_stage_tokens: 2048
+    min_stage_tokens_by_stage:
+      setup: 2048
+      reasoning: 4096
+      verify: 2048
+      final: 256
+    stage_token_balanced_selection: true
+    expansion_problems: 300
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: -1
+    final_seeds: [3]
+    dev_uniform_ratios: []
+    dev_global_policies: []
+    run_stage_specific_uniform: false
+    run_shuffled_uniform: false
+    budget_search_ratios: []
+    coordinate_rounds: 0
+    run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: true
+    reuse_existing_method_summaries: true
+    minimum_candidate_stage_protocol_rate: 0.90
+    maximum_candidate_fallback_rate: 0.10
+    maximum_candidate_truncation_rate: 0.05
+    final_methods:
+      - structured_dense
+      - static_t30_0p37
+      - t30_math_safe
+
+  formal:
+    candidate_problems: 900
+    generations_per_problem: 2
+    calibration_problems: 128
+    dev_problems: 128
+    min_stage_tokens: 2048
+    min_stage_tokens_by_stage:
+      setup: 2048
+      reasoning: 4096
+      verify: 2048
+      final: 256
+    stage_token_balanced_selection: true
+    expansion_problems: 300
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: -1
+    final_seeds: [3]
+    dev_uniform_ratios: []
+    dev_global_policies: []
+    run_stage_specific_uniform: false
+    run_shuffled_uniform: false
+    budget_search_ratios: []
+    coordinate_rounds: 0
+    run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: true
+    reuse_existing_method_summaries: true
+    minimum_candidate_stage_protocol_rate: 0.90
+    maximum_candidate_fallback_rate: 0.10
+    maximum_candidate_truncation_rate: 0.05
+    final_methods:
+      - structured_dense
+      - static_t30_0p37
+      - t30_math_safe
