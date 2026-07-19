@@ -138,7 +138,7 @@ evaluation:
       split: train
     - dataset: aime2025
       name_or_path: math-ai/aime25
-      split: train
+      split: test
     - dataset: amc2023
       name_or_path: zwhe99/amc23
       split: train

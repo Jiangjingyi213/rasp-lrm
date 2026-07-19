@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from src.data import load_gsm8k
 from src.data.load_gsm8k import (
+    load_competition_hf,
     _normalize_competition_row,
     _normalize_gpqa_row,
     load_tasks,
@@ -84,6 +85,24 @@ class DownstreamTaskLoadersTest(unittest.TestCase):
             self.assertEqual(load_tasks({"dataset": "aime2025"})[0]["dataset"], "aime2025")
         with patch.object(load_gsm8k, "load_dataset", return_value=competition_rows):
             self.assertEqual(load_tasks({"dataset": "amc2023"})[0]["dataset"], "amc2023")
+
+    def test_competition_hf_falls_back_when_split_is_missing(self) -> None:
+        competition_rows = [{"question": "Compute 1+1.", "answer": "2"}]
+
+        def fake_load_dataset(*args, split):
+            if split == "train":
+                raise ValueError('Unknown split "train". Should be one of [\'test\'].')
+            self.assertEqual(split, "test")
+            return competition_rows
+
+        with patch.object(load_gsm8k, "load_dataset", side_effect=fake_load_dataset):
+            rows = load_competition_hf(
+                {"name_or_path": "math-ai/aime25", "split": "train"},
+                "aime2025",
+                "math-ai/aime25",
+            )
+        self.assertEqual(rows[0]["id"], "aime2025-test-0")
+        self.assertEqual(rows[0]["gold"], "2")
 
 
 if __name__ == "__main__":

@@ -211,12 +211,38 @@ def load_competition_hf(config: dict[str, Any], dataset_label: str, default_name
     args = [name_or_path]
     if dataset_config:
         args.append(str(dataset_config))
-    dataset = load_dataset(*args, split=split)
+    dataset, used_split = _load_dataset_with_split_fallback(args, split, config)
     rows = [
-        _normalize_competition_row(dict(row), i, split, dataset_label)
+        _normalize_competition_row(dict(row), i, used_split, dataset_label)
         for i, row in enumerate(dataset)
     ]
     return slice_rows(rows, limit, offset)
+
+
+def _load_dataset_with_split_fallback(
+    args: list[str],
+    split: str,
+    config: dict[str, Any],
+):
+    try:
+        return load_dataset(*args, split=split), split
+    except ValueError as exc:
+        if "Unknown split" not in str(exc):
+            raise
+        fallbacks = config.get("split_fallbacks") or ["test", "validation", "train"]
+        tried = {split}
+        for fallback in fallbacks:
+            fallback = str(fallback)
+            if fallback in tried:
+                continue
+            tried.add(fallback)
+            try:
+                return load_dataset(*args, split=fallback), fallback
+            except ValueError as fallback_exc:
+                if "Unknown split" not in str(fallback_exc):
+                    raise
+                continue
+        raise
 
 
 def load_competition_local(
@@ -434,8 +460,8 @@ def load_gpqa_hf(config: dict[str, Any]) -> list[dict[str, Any]]:
     limit = _as_int_or_none(config.get("limit"))
     offset = int(config.get("offset", 0))
     seed = int(config.get("choice_seed", 17))
-    dataset = load_dataset(name_or_path, dataset_config, split=split)
-    rows = [_normalize_gpqa_row(dict(row), i, split, seed=seed) for i, row in enumerate(dataset)]
+    dataset, used_split = _load_dataset_with_split_fallback([name_or_path, dataset_config], split, config)
+    rows = [_normalize_gpqa_row(dict(row), i, used_split, seed=seed) for i, row in enumerate(dataset)]
     return slice_rows(rows, limit, offset)
 
 
