@@ -11,12 +11,13 @@ SOURCE_ROOT="${SOURCE_ROOT:-runs/08_stage_calibrated_pruning/main_pilot_mixed_re
 RUN_ROOT="${RUN_ROOT:-runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3_t30_math_safe_full}"
 FINAL_METHODS="${STAGE_FINAL_METHODS:-structured_dense,static_t30_0p37,t30_math_safe}"
 FINAL_EVAL_LIMIT="${STAGE_FINAL_EVAL_LIMIT:--1}"
-SHARD_COUNT="${STAGE_FINAL_SHARD_COUNT:-8}"
 LOG_DIR="${LOG_DIR:-logs}"
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 SEED="${STAGE_SEED:-3}"
+RUN_LABEL="${RUN_LABEL:-t30_math_safe_full}"
 
 read -r -a GPUS <<< "${FINAL_GPUS:-0 1 2 3 4 5 6 7}"
+SHARD_COUNT="${STAGE_FINAL_SHARD_COUNT:-${#GPUS[@]}}"
 if [[ "${#GPUS[@]}" -lt "${SHARD_COUNT}" ]]; then
   echo "Need at least ${SHARD_COUNT} GPU ids, got ${#GPUS[@]}: ${GPUS[*]}" >&2
   exit 2
@@ -54,11 +55,11 @@ for artifact_dir in 03_selected 04_masks; do
   fi
 done
 
-echo "START t30_math_safe full sharded final; methods=${FINAL_METHODS}; shards=${SHARD_COUNT}; global_limit=${FINAL_EVAL_LIMIT}"
+echo "START ${RUN_LABEL} sharded final; methods=${FINAL_METHODS}; shards=${SHARD_COUNT}; global_limit=${FINAL_EVAL_LIMIT}"
 pids=()
 for shard_index in $(seq 0 $((SHARD_COUNT - 1))); do
   gpu="${GPUS[$shard_index]}"
-  log_path="${LOG_DIR}/t30_math_safe_full_seed${SEED}_shard${shard_index}_of${SHARD_COUNT}_gpu${gpu}.log"
+  log_path="${LOG_DIR}/${RUN_LABEL}_seed${SEED}_shard${shard_index}_of${SHARD_COUNT}_gpu${gpu}.log"
   echo "Launching shard ${shard_index}/${SHARD_COUNT} on GPU ${gpu}; log=${log_path}"
   CUDA_VISIBLE_DEVICES="${gpu}" \
   HF_ENDPOINT="${HF_ENDPOINT}" \
@@ -86,7 +87,7 @@ for pid in "${pids[@]}"; do
   fi
 done
 if [[ "${failed}" -ne 0 ]]; then
-  echo "At least one t30_math_safe full shard failed. Check logs under ${LOG_DIR}." >&2
+  echo "At least one ${RUN_LABEL} shard failed. Check logs under ${LOG_DIR}." >&2
   exit 1
 fi
 

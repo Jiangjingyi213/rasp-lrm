@@ -17,6 +17,7 @@ SEED="${STAGE_SEED:-3}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
 BARRIER_FREE="${BARRIER_FREE:-1}"
 FORCE_DATASETS="${FORCE_DATASETS:-}"
+LOG_PREFIX="${LOG_PREFIX:-priority_suite}"
 
 read -r -a GPUS <<< "${FINAL_GPUS:-0 1 2 3 4 5 6 7}"
 SHARD_COUNT="${STAGE_FINAL_SHARD_COUNT:-${#GPUS[@]}}"
@@ -40,6 +41,9 @@ DATASETS=(
   gpqa_diamond
   arc_challenge
 )
+if [[ -n "${DATASETS_OVERRIDE:-}" ]]; then
+  read -r -a DATASETS <<< "${DATASETS_OVERRIDE}"
+fi
 
 mkdir -p "${LOG_DIR}" "${SUITE_ROOT}"
 
@@ -290,7 +294,7 @@ if [[ "${BARRIER_FREE}" == "1" ]]; then
       # shellcheck disable=SC1090
       source "${job_file}"
       dataset_root="${SUITE_ROOT}/${DATASET}"
-      log_path="${LOG_DIR}/priority_suite_${DATASET}_seed${SEED}_shard${SHARD_INDEX}_of${SHARD_COUNT}_gpu${gpu}.log"
+      log_path="${LOG_DIR}/${LOG_PREFIX}_${DATASET}_seed${SEED}_shard${SHARD_INDEX}_of${SHARD_COUNT}_gpu${gpu}.log"
       echo "Launching dataset=${DATASET} shard ${SHARD_INDEX}/${SHARD_COUNT} on GPU ${gpu}; log=${log_path}"
       if CUDA_VISIBLE_DEVICES="${gpu}" \
         HF_ENDPOINT="${HF_ENDPOINT}" \
@@ -324,7 +328,7 @@ if [[ "${BARRIER_FREE}" == "1" ]]; then
   pids=()
   for worker_index in $(seq 0 $((${#GPUS[@]} - 1))); do
     gpu="${GPUS[$worker_index]}"
-    worker_log="${LOG_DIR}/priority_suite_worker${worker_index}_gpu${gpu}.log"
+    worker_log="${LOG_DIR}/${LOG_PREFIX}_worker${worker_index}_gpu${gpu}.log"
     echo "START worker=${worker_index} gpu=${gpu}; log=${worker_log}"
     run_worker "${worker_index}" "${gpu}" > "${worker_log}" 2>&1 &
     pids+=("$!")
@@ -337,7 +341,7 @@ if [[ "${BARRIER_FREE}" == "1" ]]; then
     fi
   done
   if [[ "${failed}" -ne 0 ]] || compgen -G "${QUEUE_DIR}/failed_*" > /dev/null; then
-    echo "At least one priority suite worker failed. Check ${LOG_DIR}/priority_suite_worker*_gpu*.log and shard logs." >&2
+    echo "At least one priority suite worker failed. Check ${LOG_DIR}/${LOG_PREFIX}_worker*_gpu*.log and shard logs." >&2
     exit 1
   fi
 
@@ -387,7 +391,7 @@ for dataset in "${DATASETS[@]}"; do
   pids=()
   for shard_index in $(seq 0 $((SHARD_COUNT - 1))); do
     gpu="${GPUS[$shard_index]}"
-    log_path="${LOG_DIR}/priority_suite_${dataset}_seed${SEED}_shard${shard_index}_of${SHARD_COUNT}_gpu${gpu}.log"
+    log_path="${LOG_DIR}/${LOG_PREFIX}_${dataset}_seed${SEED}_shard${shard_index}_of${SHARD_COUNT}_gpu${gpu}.log"
     echo "Launching dataset=${dataset} shard ${shard_index}/${SHARD_COUNT} on GPU ${gpu}; log=${log_path}"
     CUDA_VISIBLE_DEVICES="${gpu}" \
     HF_ENDPOINT="${HF_ENDPOINT}" \
