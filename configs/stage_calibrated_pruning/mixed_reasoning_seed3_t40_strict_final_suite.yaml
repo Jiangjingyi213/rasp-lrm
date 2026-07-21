@@ -232,8 +232,6 @@ profiles:
     final_methods:
       - static_t40_0p48
       - t40_stage_safe
-      - static_t45_0p52
-      - t45_boundary_safe
 
   pilot:
     candidate_problems: 600
@@ -267,8 +265,6 @@ profiles:
     final_methods:
       - static_t40_0p48
       - t40_stage_safe
-      - static_t45_0p52
-      - t45_boundary_safe
 
   formal:
     candidate_problems: 900
@@ -302,5 +298,3 @@ profiles:
     final_methods:
       - static_t40_0p48
       - t40_stage_safe
-      - static_t45_0p52
-      - t45_boundary_safe
