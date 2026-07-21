@@ -2180,8 +2180,26 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     if policy_methods is not None:
         methods = policy_methods
     elif _adaptive_griffin_enabled(cfg):
+        requested_final_methods = set()
+        env_final_methods = os.environ.get("STAGE_FINAL_METHODS")
+        if env_final_methods:
+            requested_final_methods.update(
+                name.strip() for name in env_final_methods.split(",") if name.strip()
+            )
+        elif "final_methods" in profile(cfg):
+            requested_final_methods.update(str(name) for name in profile(cfg)["final_methods"])
+        dense_methods = []
+        if bool(_evaluation_threshold(cfg, "include_ordinary_dense_in_final", False)) or (
+            "ordinary_dense" in requested_final_methods
+        ):
+            dense_methods.append(
+                method("ordinary_dense", "trajectory_global", uniform_ratios(0.0), ordinary_prompt(cfg))
+            )
+        dense_methods.append(
+            method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg))
+        )
         methods = (
-            [method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg))]
+            dense_methods
             + adaptive_griffin_methods(cfg)
             + [static_matched_global_method(cfg, [float(value) for value in cfg["masks"]["ratios"]])]
             + additional_static_matched_global_methods(cfg)
