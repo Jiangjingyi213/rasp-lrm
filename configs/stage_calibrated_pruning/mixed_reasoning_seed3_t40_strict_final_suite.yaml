@@ -105,6 +105,17 @@ adaptive_griffin:
         verify: 0.52
         final: 0.52
       selection_note: "Higher static trajectory-global baseline; compare with t45_boundary_safe if t40 misses 40% actual pruning."
+    - name: static_t40_always_on_0p47
+      policy: trajectory_global_always_on
+      ablation_role: strict_actual_matched_static_always_on_target_40
+      target_pruning_ratio: 0.40
+      target_pruning_label: t40_actual_matched
+      stage_ratios:
+        setup: 0.47
+        reasoning: 0.47
+        verify: 0.47
+        final: 0.47
+      selection_note: "Always-on trajectory-global static baseline targeting the observed t40_stage_safe actual pruning."
   bias_compensation: true
   backend: logical_mask
   variants:

@@ -14,6 +14,7 @@ from .decode import decode_with_stage_masks
 from .protocol import STAGES
 from .runtime import (
     AdaptiveStageGriffinRuntime,
+    AlwaysOnStaticMaskRuntime,
     SafeDynamicStageGriffinRuntime,
     StageMaskRuntime,
     StaticCoreResidualStageRuntime,
@@ -28,6 +29,16 @@ def uniform_ratios(ratio: float) -> dict[str, float]:
 
 def _runtime_for_method(model, bank: dict[str, Any], method: dict[str, Any]):
     stage_ratios = {stage: float(method["stage_ratios"].get(stage, 0.0)) for stage in STAGES}
+    if str(method["policy"]).endswith("_always_on"):
+        base_policy = str(method["policy"])[: -len("_always_on")]
+        runtime = AlwaysOnStaticMaskRuntime(
+            bank,
+            policy=base_policy,
+            stage_ratios=stage_ratios,
+            bias_compensation=bool(method.get("bias_compensation", True)),
+        )
+        apply_fixed_stage_masking_qwen3(model, runtime)
+        return runtime
     if method["policy"] == "calibrated_stage_adaptive_griffin":
         runtime = AdaptiveStageGriffinRuntime(
             bank,

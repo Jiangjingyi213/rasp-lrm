@@ -191,6 +191,46 @@ class StageMaskRuntime:
         }
 
 
+class AlwaysOnStaticMaskRuntime(StageMaskRuntime):
+    """Static global-mask baseline that records protocol fallback but keeps pruning.
+
+    The regular fixed-stage runtime falls back to dense after an invalid stage
+    sequence. That is correct for stage-conditioned methods, but it makes a
+    static baseline's actual pruning depend on the stage protocol. This runtime
+    keeps the same static mask active after fallback so it can serve as a strict
+    actual-pruning matched baseline.
+    """
+
+    def __init__(
+        self,
+        bank: dict[str, Any],
+        policy: str,
+        stage_ratios: dict[str, float],
+        bias_compensation: bool = True,
+    ) -> None:
+        super().__init__(
+            bank,
+            policy=policy,
+            stage_ratios=stage_ratios,
+            bias_compensation=bias_compensation,
+        )
+        self.runtime_policy = f"{policy}_always_on"
+
+    def fallback_dense(self, reason: str) -> None:
+        if self.fallback_reason is None:
+            self.fallback_reason = str(reason)
+        # Deliberately keep active_stage unchanged: static pruning should not
+        # become dense merely because the generated stage tags are invalid.
+
+    def summary(self) -> dict[str, Any]:
+        output = super().summary()
+        output["backend"] = "always_on_static_mask_logical_v1"
+        output["policy"] = self.runtime_policy
+        output["base_policy"] = self.policy
+        output["fallback_behavior"] = "record_only_keep_masking"
+        return output
+
+
 class FixedStageMaskedQwen3MLP(nn.Module):
     def __init__(self, original_mlp: nn.Module, layer_id: int, runtime: StageMaskRuntime) -> None:
         super().__init__()
