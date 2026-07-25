@@ -34,7 +34,10 @@ def _as_int_or_none(value: Any) -> int | None:
 
 
 def load_gsm8k(split: str = "test", limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
-    dataset = load_dataset("gsm8k", "main", split=split)
+    try:
+        dataset = load_dataset("openai/gsm8k", "main", split=split)
+    except Exception:
+        dataset = load_dataset("gsm8k", "main", split=split)
     rows = [_normalize_gsm8k(dict(row), i, split) for i, row in enumerate(dataset)]
     return slice_rows(rows, limit, offset)
 
@@ -335,12 +338,20 @@ def _normalize_arc_row(
 def load_arc_hf(config: dict[str, Any]) -> list[dict[str, Any]]:
     dataset_label = str(config.get("dataset_label") or config.get("dataset", "arc_easy"))
     default_config = "ARC-Challenge" if "challenge" in dataset_label.lower() else "ARC-Easy"
-    name_or_path = config.get("name_or_path", "ai2_arc")
+    name_or_path = config.get("name_or_path", "allenai/ai2_arc")
     dataset_config = config.get("dataset_config") or config.get("config_name") or default_config
     split = config.get("split", "test")
     limit = _as_int_or_none(config.get("limit"))
     offset = int(config.get("offset", 0))
-    dataset = load_dataset(name_or_path, dataset_config, split=split)
+    try:
+        dataset = load_dataset(name_or_path, dataset_config, split=split)
+    except Exception:
+        if str(name_or_path) == "ai2_arc":
+            dataset = load_dataset("allenai/ai2_arc", dataset_config, split=split)
+        elif str(name_or_path) == "allenai/ai2_arc":
+            dataset = load_dataset("ai2_arc", dataset_config, split=split)
+        else:
+            raise
     rows = [_normalize_arc_row(dict(row), i, split, dataset_label) for i, row in enumerate(dataset)]
     return slice_rows(rows, limit, offset)
 
