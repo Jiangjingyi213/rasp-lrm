@@ -191,6 +191,47 @@ class StageMaskRuntime:
         }
 
 
+class DenseStageRuntime:
+    def __init__(self, policy: str = "dense") -> None:
+        self.policy = str(policy)
+        self.active_stage: str | None = None
+        self.fallback_reason: str | None = None
+        self.tokens_by_stage: Counter[str] = Counter()
+
+    def reset(self) -> None:
+        self.active_stage = None
+        self.fallback_reason = None
+        self.tokens_by_stage.clear()
+
+    def set_stage(self, stage: str) -> None:
+        if stage in STAGES:
+            self.active_stage = stage
+        else:
+            self.fallback_dense(f"unknown_stage:{stage}")
+
+    def fallback_dense(self, reason: str) -> None:
+        if self.fallback_reason is None:
+            self.fallback_reason = str(reason)
+        self.active_stage = None
+
+    def record_token(self) -> None:
+        self.tokens_by_stage[self.active_stage or "dense"] += 1
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "backend": "dense_no_mask_v1",
+            "real_speedup_claimed": False,
+            "policy": self.policy,
+            "stage_ratios": {stage: 0.0 for stage in STAGES},
+            "active_stage": self.active_stage,
+            "fallback_reason": self.fallback_reason,
+            "tokens_by_stage": dict(self.tokens_by_stage),
+            "theoretical_average_mlp_pruning_ratio": 0.0,
+            "actual_average_mlp_pruning_ratio": 0.0,
+            "actual_pruning_accounting": "dense_no_mask",
+        }
+
+
 class AlwaysOnStaticMaskRuntime(StageMaskRuntime):
     """Static global-mask baseline that records protocol fallback but keeps pruning.
 
@@ -229,6 +270,149 @@ class AlwaysOnStaticMaskRuntime(StageMaskRuntime):
         output["base_policy"] = self.policy
         output["fallback_behavior"] = "record_only_keep_masking"
         return output
+
+
+class GriffinPromptRuntime:
+    """Prompt-prompted dynamic FFN pruning baseline.
+
+    The prompt/prefill pass is dense and only collects a per-layer GRIFFIN score.
+    Subsequent single-token decoding uses the prompt-specific keep mask. Stage
+    markers are recorded for diagnostics, but they do not control pruning.
+    """
+
+    def __init__(
+        self,
+        *,
+        prune_ratio: float,
+        selection_method: str = "topk",
+    ) -> None:
+        if not 0.0 <= float(prune_ratio) < 1.0:
+            raise ValueError(f"GRIFFIN prune_ratio must be in [0, 1), got {prune_ratio}")
+        if selection_method not in {"topk", "magnitude"}:
+            raise ValueError(f"Unsupported GRIFFIN selection method: {selection_method}")
+        self.prune_ratio = float(prune_ratio)
+        self.selection_method = str(selection_method)
+        self.active_stage: str | None = None
+        self.fallback_reason: str | None = None
+        self.tokens_by_stage: Counter[str] = Counter()
+        self.dense_observation_tokens_by_stage: Counter[str] = Counter()
+        self.masked_tokens_by_stage: Counter[str] = Counter()
+        self.mask_refresh_count_by_stage: Counter[str] = Counter()
+        self._prompt_score_sq: dict[int, torch.Tensor] = {}
+        self._mask_cache: dict[int, torch.Tensor] = {}
+        self._keep_ratios_by_layer: dict[int, float] = {}
+        self._actual_pruning_weighted_sum = 0.0
+        self._actual_pruning_denominator = 0
+
+    def reset(self) -> None:
+        self.active_stage = None
+        self.fallback_reason = None
+        self.tokens_by_stage.clear()
+        self.dense_observation_tokens_by_stage.clear()
+        self.masked_tokens_by_stage.clear()
+        self.mask_refresh_count_by_stage.clear()
+        self._prompt_score_sq.clear()
+        self._mask_cache.clear()
+        self._keep_ratios_by_layer.clear()
+        self._actual_pruning_weighted_sum = 0.0
+        self._actual_pruning_denominator = 0
+
+    def set_stage(self, stage: str) -> None:
+        if stage in STAGES:
+            self.active_stage = stage
+        else:
+            self.fallback_dense(f"unknown_stage:{stage}")
+
+    def fallback_dense(self, reason: str) -> None:
+        if self.fallback_reason is None:
+            self.fallback_reason = str(reason)
+        # GRIFFIN is not stage-conditioned; protocol fallback is diagnostic only.
+
+    def record_token(self) -> None:
+        self.tokens_by_stage[self.active_stage or "dense"] += 1
+
+    def _record_actual_pruning(self, token_count: int, mask: torch.Tensor | None) -> None:
+        ratio = 0.0 if mask is None else _mask_pruning_ratio(mask)
+        count = int(token_count)
+        self._actual_pruning_weighted_sum += ratio * count
+        self._actual_pruning_denominator += count
+
+    def _accumulate_prompt(self, layer_id: int, intermediate: torch.Tensor) -> None:
+        score_sq = griffin_activation_score(intermediate).square()
+        previous = self._prompt_score_sq.get(layer_id)
+        self._prompt_score_sq[layer_id] = (
+            score_sq if previous is None else previous.to(score_sq.device) + score_sq
+        )
+        self._mask_cache.pop(layer_id, None)
+
+    def observe_or_mask(self, layer_id: int, intermediate: torch.Tensor) -> torch.Tensor | None:
+        token_count = int(intermediate.shape[1])
+        if token_count > 1:
+            self._accumulate_prompt(layer_id, intermediate)
+            if layer_id == 0:
+                self.dense_observation_tokens_by_stage["prompt"] += token_count
+            self._record_actual_pruning(token_count, None)
+            return None
+        if self.prune_ratio <= 0.0:
+            if layer_id == 0:
+                self.dense_observation_tokens_by_stage[self.active_stage or "dense"] += token_count
+            self._record_actual_pruning(token_count, None)
+            return None
+        mask = self.keep_mask(layer_id)
+        if layer_id == 0:
+            self.masked_tokens_by_stage[self.active_stage or "dense"] += token_count
+        self._record_actual_pruning(token_count, mask)
+        return mask
+
+    def keep_mask(self, layer_id: int) -> torch.Tensor:
+        cached = self._mask_cache.get(layer_id)
+        if cached is not None:
+            return cached
+        score_sq = self._prompt_score_sq.get(layer_id)
+        if score_sq is None:
+            raise RuntimeError("GRIFFIN prompt score is unavailable before decode masking")
+        mask = _keep_mask_from_scores(score_sq.float().sqrt(), self.prune_ratio)
+        self._mask_cache[layer_id] = mask
+        self._keep_ratios_by_layer[layer_id] = float(mask.float().mean().item())
+        if layer_id == 0:
+            self.mask_refresh_count_by_stage["prompt"] += 1
+        return mask
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "backend": "griffin_prompt_logical_v1",
+            "baseline_type": "prompt_prompted_dynamic",
+            "real_speedup_claimed": False,
+            "policy": "griffin_prompt",
+            "score_mode": "prompt_activation_topk",
+            "selection_method": self.selection_method,
+            "prune_ratio": self.prune_ratio,
+            "density": 1.0 - self.prune_ratio,
+            "stage_ratios": {stage: self.prune_ratio for stage in STAGES},
+            "tokens_by_stage": dict(self.tokens_by_stage),
+            "dense_observation_tokens_by_stage": dict(self.dense_observation_tokens_by_stage),
+            "masked_tokens_by_stage": dict(self.masked_tokens_by_stage),
+            "mask_refresh_count_by_stage": dict(self.mask_refresh_count_by_stage),
+            "prompt_dense_tokens": int(self.dense_observation_tokens_by_stage.get("prompt", 0)),
+            "decode_masked_tokens": int(sum(self.masked_tokens_by_stage.values())),
+            "keep_ratios_by_layer": {
+                str(layer_id): ratio for layer_id, ratio in sorted(self._keep_ratios_by_layer.items())
+            },
+            "active_stage": self.active_stage,
+            "fallback_reason": self.fallback_reason,
+            "fallback_behavior": "record_only_keep_prompt_masking",
+            "theoretical_average_mlp_pruning_ratio": (
+                self._actual_pruning_weighted_sum / self._actual_pruning_denominator
+                if self._actual_pruning_denominator
+                else 0.0
+            ),
+            "actual_average_mlp_pruning_ratio": (
+                self._actual_pruning_weighted_sum / self._actual_pruning_denominator
+                if self._actual_pruning_denominator
+                else 0.0
+            ),
+            "actual_pruning_accounting": "prompt_dense_and_decode_mask_layer_token_weighted",
+        }
 
 
 class FixedStageMaskedQwen3MLP(nn.Module):
@@ -288,6 +472,39 @@ def apply_fixed_stage_masking_qwen3(model: nn.Module, runtime: StageMaskRuntime)
         if not all(hasattr(mlp, name) for name in ("gate_proj", "up_proj", "down_proj", "act_fn")):
             raise ValueError("Expected Qwen3 MLP")
         layer.mlp = FixedStageMaskedQwen3MLP(mlp, layer_id, runtime)
+    return model
+
+
+class GriffinPromptQwen3MLP(nn.Module):
+    def __init__(self, original_mlp: nn.Module, layer_id: int, runtime: GriffinPromptRuntime) -> None:
+        super().__init__()
+        self.gate_proj = original_mlp.gate_proj
+        self.up_proj = original_mlp.up_proj
+        self.down_proj = original_mlp.down_proj
+        self.act_fn = original_mlp.act_fn
+        self.layer_id = int(layer_id)
+        self.runtime = runtime
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        intermediate = self.act_fn(self.gate_proj(x)) * self.up_proj(x)
+        mask = self.runtime.observe_or_mask(self.layer_id, intermediate)
+        if mask is None:
+            return self.down_proj(intermediate)
+        mask = mask.to(device=intermediate.device, dtype=intermediate.dtype)
+        return self.down_proj(intermediate * mask)
+
+
+def apply_griffin_prompt_qwen3(model: nn.Module, runtime: GriffinPromptRuntime) -> nn.Module:
+    layers = get_decoder_layers(model)
+    for layer_id, layer in enumerate(layers):
+        mlp = getattr(layer, "mlp", None)
+        if isinstance(mlp, GriffinPromptQwen3MLP):
+            if mlp.runtime is not runtime:
+                mlp.runtime = runtime
+            continue
+        if not all(hasattr(mlp, name) for name in ("gate_proj", "up_proj", "down_proj", "act_fn")):
+            raise ValueError("Expected Qwen3 MLP")
+        layer.mlp = GriffinPromptQwen3MLP(mlp, layer_id, runtime)
     return model
 
 

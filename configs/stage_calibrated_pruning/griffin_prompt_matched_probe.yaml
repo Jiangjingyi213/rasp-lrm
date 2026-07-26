@@ -1,0 +1,98 @@
+seed: 3
+
+workflow:
+  profile: pilot
+  root: runs/08_stage_calibrated_pruning/main_{profile}_griffin_prompt_matched_probe
+
+stages: [setup, reasoning, verify, final]
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float32
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  ordinary:
+    use_chat_template: true
+    enable_thinking: true
+    answer_format: boxed
+  structured:
+    use_chat_template: true
+    enable_thinking: true
+    explicit_stage_protocol: true
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
+
+generation:
+  max_input_tokens: 4096
+  max_new_tokens: 16384
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+
+calibration_pool:
+  allowed_sources: ["*"]
+  excluded_sources: [GSM8k, GSM8K, MATH, Omni-MATH, amc_aime, cn_k12]
+
+masks:
+  metric: WIFV
+  structure: UL-UM
+  ratios: [0.00, 0.10, 0.15, 0.20]
+  c4_samples: 0
+  bias_compensation: true
+
+griffin_prompt:
+  enabled: true
+  selection_method: topk
+  variants:
+    - method_name: griffin_t20_nominal_0p24
+      prune_ratio: 0.24
+      target_pruning_ratio: 0.22
+      target_pruning_label: t20
+      selection_note: "Probe candidate for matching t20_math_safe actual pruning."
+    - method_name: griffin_t20_nominal_0p27
+      prune_ratio: 0.27
+      target_pruning_ratio: 0.22
+      target_pruning_label: t20
+      selection_note: "Probe candidate for matching t20_math_safe actual pruning."
+    - method_name: griffin_t30_nominal_0p37
+      prune_ratio: 0.37
+      target_pruning_ratio: 0.34
+      target_pruning_label: t30
+      selection_note: "Probe candidate for matching t30_math_safe actual pruning."
+    - method_name: griffin_t30_nominal_0p40
+      prune_ratio: 0.40
+      target_pruning_ratio: 0.34
+      target_pruning_label: t30
+      selection_note: "Probe candidate for matching t30_math_safe actual pruning."
+
+evaluation:
+  allow_final_without_dev: true
+  math500_name_or_path: HuggingFaceH4/MATH-500
+  final_datasets:
+    - dataset: gsm8k
+      split: test
+    - dataset: math500
+      name_or_path: HuggingFaceH4/MATH-500
+      split: test
+
+profiles:
+  smoke:
+    final_eval_limit: 16
+    final_seeds: [3]
+    final_methods:
+      - griffin_t20_nominal_0p24
+      - griffin_t20_nominal_0p27
+      - griffin_t30_nominal_0p37
+      - griffin_t30_nominal_0p40
+
+  pilot:
+    final_eval_limit: 50
+    final_seeds: [3]
+    reuse_existing_method_summaries: true
+    final_methods:
+      - griffin_t20_nominal_0p24
+      - griffin_t20_nominal_0p27
+      - griffin_t30_nominal_0p37
+      - griffin_t30_nominal_0p40

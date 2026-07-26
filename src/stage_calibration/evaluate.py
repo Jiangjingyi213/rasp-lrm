@@ -15,11 +15,14 @@ from .protocol import STAGES
 from .runtime import (
     AdaptiveStageGriffinRuntime,
     AlwaysOnStaticMaskRuntime,
+    DenseStageRuntime,
+    GriffinPromptRuntime,
     SafeDynamicStageGriffinRuntime,
     StageMaskRuntime,
     StaticCoreResidualStageRuntime,
     apply_adaptive_stage_griffin_qwen3,
     apply_fixed_stage_masking_qwen3,
+    apply_griffin_prompt_qwen3,
 )
 
 
@@ -27,7 +30,24 @@ def uniform_ratios(ratio: float) -> dict[str, float]:
     return {stage: float(ratio) for stage in STAGES}
 
 
-def _runtime_for_method(model, bank: dict[str, Any], method: dict[str, Any]):
+def method_requires_mask_bank(method: dict[str, Any]) -> bool:
+    if all(float(value) <= 0.0 for value in method.get("stage_ratios", {}).values()):
+        return False
+    return method.get("policy") not in {"griffin_prompt"}
+
+
+def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, Any]):
+    if method["policy"] == "griffin_prompt":
+        runtime = GriffinPromptRuntime(
+            prune_ratio=float(method.get("prune_ratio", method["stage_ratios"].get("setup", 0.0))),
+            selection_method=str(method.get("selection_method", "topk")),
+        )
+        apply_griffin_prompt_qwen3(model, runtime)
+        return runtime
+    if all(float(value) <= 0.0 for value in method.get("stage_ratios", {}).values()):
+        return DenseStageRuntime(policy=str(method.get("policy", "dense")))
+    if bank is None:
+        raise ValueError(f"Method {method['name']} with policy {method['policy']} requires a mask bank")
     stage_ratios = {stage: float(method["stage_ratios"].get(stage, 0.0)) for stage in STAGES}
     if str(method["policy"]).endswith("_always_on"):
         base_policy = str(method["policy"])[: -len("_always_on")]
@@ -127,7 +147,7 @@ def evaluate_method(
     model,
     tokenizer,
     tasks: list[dict[str, Any]],
-    bank: dict[str, Any],
+    bank: dict[str, Any] | None,
     method: dict[str, Any],
     generation: dict[str, Any],
     seed: int,
@@ -189,9 +209,25 @@ def evaluate_method(
     runtime_static_core_ratios = None
     runtime_swap_ratios = None
     runtime_actual_swapped_channels = None
+    runtime_baseline_type = None
+    runtime_selection_method = None
+    runtime_prune_ratio = None
+    runtime_density = None
+    prompt_dense_tokens = 0
+    decode_masked_tokens = 0
+    keep_ratios_by_layer = None
     for row in rows:
         runtime_summary = row["runtime_stage_mask"]
         runtime_backend = runtime_backend or runtime_summary.get("backend")
+        runtime_baseline_type = runtime_baseline_type or runtime_summary.get("baseline_type")
+        runtime_selection_method = runtime_selection_method or runtime_summary.get("selection_method")
+        runtime_prune_ratio = (
+            runtime_prune_ratio if runtime_prune_ratio is not None else runtime_summary.get("prune_ratio")
+        )
+        runtime_density = runtime_density if runtime_density is not None else runtime_summary.get("density")
+        prompt_dense_tokens += int(runtime_summary.get("prompt_dense_tokens", 0))
+        decode_masked_tokens += int(runtime_summary.get("decode_masked_tokens", 0))
+        keep_ratios_by_layer = keep_ratios_by_layer or runtime_summary.get("keep_ratios_by_layer")
         runtime_alpha = runtime_alpha if runtime_alpha is not None else runtime_summary.get("alpha")
         runtime_warmup_tokens = runtime_warmup_tokens or runtime_summary.get("warmup_tokens")
         runtime_score_mode = runtime_score_mode or runtime_summary.get("score_mode")
@@ -271,6 +307,20 @@ def evaluate_method(
         summary["target_pruning_label"] = method["target_pruning_label"]
     if runtime_backend:
         summary["runtime_backend"] = runtime_backend
+    if runtime_baseline_type:
+        summary["runtime_baseline_type"] = runtime_baseline_type
+    if runtime_selection_method:
+        summary["runtime_selection_method"] = runtime_selection_method
+    if runtime_prune_ratio is not None:
+        summary["runtime_prune_ratio"] = runtime_prune_ratio
+    if runtime_density is not None:
+        summary["runtime_density"] = runtime_density
+    if prompt_dense_tokens:
+        summary["prompt_dense_tokens"] = prompt_dense_tokens
+    if decode_masked_tokens:
+        summary["decode_masked_tokens"] = decode_masked_tokens
+    if keep_ratios_by_layer:
+        summary["keep_ratios_by_layer"] = keep_ratios_by_layer
     if dense_observation_tokens:
         summary["dense_observation_tokens_by_stage"] = dict(dense_observation_tokens)
     if masked_tokens:

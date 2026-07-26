@@ -110,9 +110,25 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
     runtime_static_core_ratios = None
     runtime_swap_ratios = None
     runtime_actual_swapped_channels = None
+    runtime_baseline_type = None
+    runtime_selection_method = None
+    runtime_prune_ratio = None
+    runtime_density = None
+    prompt_dense_tokens = 0
+    decode_masked_tokens = 0
+    keep_ratios_by_layer = None
     for row in rows:
         runtime = row.get("runtime_stage_mask", {})
         runtime_backend = runtime_backend or runtime.get("backend")
+        runtime_baseline_type = runtime_baseline_type or runtime.get("baseline_type")
+        runtime_selection_method = runtime_selection_method or runtime.get("selection_method")
+        runtime_prune_ratio = (
+            runtime_prune_ratio if runtime_prune_ratio is not None else runtime.get("prune_ratio")
+        )
+        runtime_density = runtime_density if runtime_density is not None else runtime.get("density")
+        prompt_dense_tokens += int(runtime.get("prompt_dense_tokens", 0))
+        decode_masked_tokens += int(runtime.get("decode_masked_tokens", 0))
+        keep_ratios_by_layer = keep_ratios_by_layer or runtime.get("keep_ratios_by_layer")
         runtime_alpha = runtime_alpha if runtime_alpha is not None else runtime.get("alpha")
         runtime_warmup_tokens = runtime_warmup_tokens or runtime.get("warmup_tokens")
         runtime_score_mode = runtime_score_mode or runtime.get("score_mode")
@@ -198,6 +214,20 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         summary["target_pruning_label"] = method["target_pruning_label"]
     if runtime_backend:
         summary["runtime_backend"] = runtime_backend
+    if runtime_baseline_type:
+        summary["runtime_baseline_type"] = runtime_baseline_type
+    if runtime_selection_method:
+        summary["runtime_selection_method"] = runtime_selection_method
+    if runtime_prune_ratio is not None:
+        summary["runtime_prune_ratio"] = runtime_prune_ratio
+    if runtime_density is not None:
+        summary["runtime_density"] = runtime_density
+    if prompt_dense_tokens:
+        summary["prompt_dense_tokens"] = prompt_dense_tokens
+    if decode_masked_tokens:
+        summary["decode_masked_tokens"] = decode_masked_tokens
+    if keep_ratios_by_layer:
+        summary["keep_ratios_by_layer"] = keep_ratios_by_layer
     if dense_observation_tokens:
         summary["dense_observation_tokens_by_stage"] = dict(dense_observation_tokens)
     if masked_tokens:

@@ -23,7 +23,7 @@ from src.metrics.answer_match import answer_match, extract_answer, math_verify_a
 from src.models.load_model import load_model_bundle
 from src.stage_calibration.artifacts import manifest_hash, stable_hash
 from src.stage_calibration.calibrate import collect_stage_statistics
-from src.stage_calibration.evaluate import evaluate_method, uniform_ratios
+from src.stage_calibration.evaluate import evaluate_method, method_requires_mask_bank, uniform_ratios
 from src.stage_calibration.final_shards import (
     aggregate_final_summaries,
     annotate_final_eval_indices,
@@ -1234,6 +1234,66 @@ def _adaptive_griffin_enabled(cfg: dict[str, Any]) -> bool:
     return bool(_adaptive_griffin_cfg(cfg).get("enabled", False))
 
 
+def _griffin_prompt_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    return deepcopy(cfg.get("griffin_prompt", {}))
+
+
+def _griffin_prompt_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(_griffin_prompt_cfg(cfg).get("enabled", False))
+
+
+def _griffin_prompt_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> dict[str, Any]:
+    prune_ratio = float(row.get("prune_ratio", row.get("ratio", 0.0)))
+    name = str(row.get("method_name", row.get("name", f"griffin_prompt_{prune_ratio:.4f}".replace(".", "p"))))
+    return method(
+        name,
+        "griffin_prompt",
+        uniform_ratios(prune_ratio),
+        prompt,
+        bias=False,
+        prune_ratio=prune_ratio,
+        density=1.0 - prune_ratio,
+        selection_method=str(row.get("selection_method", "topk")),
+        baseline_type="prompt_prompted_dynamic",
+        variant_role=str(row.get("variant_role", name)),
+        selection_note=str(row.get("selection_note", "")),
+        **(
+            {"target_pruning_ratio": float(row["target_pruning_ratio"])}
+            if "target_pruning_ratio" in row
+            else {}
+        ),
+        **(
+            {"target_pruning_label": str(row["target_pruning_label"])}
+            if "target_pruning_label" in row
+            else {}
+        ),
+    )
+
+
+def griffin_prompt_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    gcfg = _griffin_prompt_cfg(cfg)
+    variants = gcfg.get("variants")
+    if variants is None:
+        if not gcfg:
+            return []
+        variants = [gcfg]
+    if not isinstance(variants, list) or not variants:
+        raise ValueError("griffin_prompt.variants must be a non-empty list when provided")
+    methods = []
+    for index, row in enumerate(variants):
+        if not isinstance(row, dict):
+            raise ValueError(f"griffin_prompt.variants[{index}] must be a mapping")
+        merged = deepcopy(gcfg)
+        merged.pop("variants", None)
+        merged.update(deepcopy(row))
+        methods.append(_griffin_prompt_method_from_cfg(merged, structured_prompt(cfg)))
+    names = [row["name"] for row in methods]
+    if len(names) != len(set(names)):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"GRIFFIN prompt method names must be unique: {duplicates}")
+    return methods
+
+
 def _adaptive_stage_float_map_from_cfg(
     acfg: dict[str, Any],
     name: str,
@@ -2094,15 +2154,10 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
 
 
 def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
-    expected_metadata = expected_bank_metadata(cfg, p)
-    bank = load_mask_bank(
-        p["bank"],
-        expected_metadata,
-        ignored_metadata_keys=("config_hash",),
-    )
-    bank_metadata = dict(bank.get("metadata", {}))
     allow_final_without_dev = bool(_evaluation_threshold(cfg, "allow_final_without_dev", False))
-    final_without_dev_allowed = allow_final_without_dev and _adaptive_griffin_enabled(cfg)
+    final_without_dev_allowed = allow_final_without_dev and (
+        _adaptive_griffin_enabled(cfg) or _griffin_prompt_enabled(cfg)
+    )
     if p["dev_summary"].exists():
         dev_summary = read_json(p["dev_summary"])
     elif final_without_dev_allowed:
@@ -2110,6 +2165,7 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             "dev_summary_missing": True,
             "final_without_dev_allowed": True,
             "adaptive_griffin_policy_frozen": True,
+            "griffin_prompt_baseline_frozen": _griffin_prompt_enabled(cfg),
         }
     else:
         raise RuntimeError(
@@ -2121,6 +2177,59 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     policy_selection = None
     if policy_selection_path is not None:
         policy_methods, policy_selection = load_downstream_methods_from_selection(policy_selection_path)
+    if policy_methods is not None:
+        methods = policy_methods
+    elif _adaptive_griffin_enabled(cfg) or _griffin_prompt_enabled(cfg):
+        requested_final_methods = set()
+        env_final_methods = os.environ.get("STAGE_FINAL_METHODS")
+        if env_final_methods:
+            requested_final_methods.update(
+                name.strip() for name in env_final_methods.split(",") if name.strip()
+            )
+        elif "final_methods" in profile(cfg):
+            requested_final_methods.update(str(name) for name in profile(cfg)["final_methods"])
+        dense_methods = []
+        if bool(_evaluation_threshold(cfg, "include_ordinary_dense_in_final", False)) or (
+            "ordinary_dense" in requested_final_methods
+        ):
+            dense_methods.append(
+                method("ordinary_dense", "trajectory_global", uniform_ratios(0.0), ordinary_prompt(cfg))
+            )
+        if "structured_dense" in requested_final_methods or _adaptive_griffin_enabled(cfg):
+            dense_methods.append(
+                method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg))
+            )
+        methods = dense_methods
+        if _adaptive_griffin_enabled(cfg):
+            methods.extend(adaptive_griffin_methods(cfg))
+            methods.append(static_matched_global_method(cfg, [float(value) for value in cfg["masks"]["ratios"]]))
+            methods.extend(additional_static_matched_global_methods(cfg))
+            methods.extend(additional_fixed_stage_methods(cfg))
+        if _griffin_prompt_enabled(cfg):
+            methods.extend(griffin_prompt_methods(cfg))
+    else:
+        frozen = read_json(p["frozen"]) if p["frozen"].exists() else {}
+        stage_budget = frozen["stage_budget"]
+        shuffled_budget = method(
+            "shuffled_stage_budget",
+            "shuffled_stage",
+            stage_budget["stage_ratios"],
+            structured_prompt(cfg),
+        )
+        methods = [
+            method("ordinary_dense", "trajectory_global", uniform_ratios(0.0), ordinary_prompt(cfg)),
+            method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg)),
+            frozen["best_trajectory_global"],
+            method(
+                "stage_specific_matched_global",
+                "stage_specific",
+                frozen["best_trajectory_global"]["stage_ratios"],
+                structured_prompt(cfg),
+            ),
+            stage_budget,
+            shuffled_budget,
+        ]
+    methods = _limit_final_methods_for_smoke(cfg, methods)
     smoke_relaxed = cfg["workflow"].get("profile") == "smoke" and bool(
         dev_summary.get("smoke_relaxed_e2e")
     )
@@ -2134,10 +2243,23 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     ):
         raise RuntimeError("Development gates did not pass; final evaluation is forbidden")
     frozen = read_json(p["frozen"]) if p["frozen"].exists() else {}
+    requires_bank = any(method_requires_mask_bank(row) for row in methods)
+    expected_metadata = expected_bank_metadata(cfg, p) if requires_bank else {}
+    bank = (
+        load_mask_bank(
+            p["bank"],
+            expected_metadata,
+            ignored_metadata_keys=("config_hash",),
+        )
+        if requires_bank
+        else None
+    )
+    bank_metadata = dict(bank.get("metadata", {})) if bank is not None else {}
     metadata_extra = {
         "frozen_policy_hash": stable_hash(frozen),
         "dev_summary_missing_for_final": bool(dev_summary.get("dev_summary_missing")),
         "final_without_dev_allowed": final_without_dev_allowed,
+        "mask_bank_loaded": bank is not None,
         "mask_bank_metadata": {
             "config_hash_expected": expected_metadata.get("config_hash"),
             "config_hash_actual": bank_metadata.get("config_hash"),
@@ -2177,56 +2299,6 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     if policy_selection is None and bool(frozen.get("final_evaluation_forbidden")):
         raise RuntimeError("Frozen policy is diagnostic only; final evaluation is forbidden")
     bundle = load_model_bundle(cfg["model"])
-    if policy_methods is not None:
-        methods = policy_methods
-    elif _adaptive_griffin_enabled(cfg):
-        requested_final_methods = set()
-        env_final_methods = os.environ.get("STAGE_FINAL_METHODS")
-        if env_final_methods:
-            requested_final_methods.update(
-                name.strip() for name in env_final_methods.split(",") if name.strip()
-            )
-        elif "final_methods" in profile(cfg):
-            requested_final_methods.update(str(name) for name in profile(cfg)["final_methods"])
-        dense_methods = []
-        if bool(_evaluation_threshold(cfg, "include_ordinary_dense_in_final", False)) or (
-            "ordinary_dense" in requested_final_methods
-        ):
-            dense_methods.append(
-                method("ordinary_dense", "trajectory_global", uniform_ratios(0.0), ordinary_prompt(cfg))
-            )
-        dense_methods.append(
-            method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg))
-        )
-        methods = (
-            dense_methods
-            + adaptive_griffin_methods(cfg)
-            + [static_matched_global_method(cfg, [float(value) for value in cfg["masks"]["ratios"]])]
-            + additional_static_matched_global_methods(cfg)
-            + additional_fixed_stage_methods(cfg)
-        )
-    else:
-        stage_budget = frozen["stage_budget"]
-        shuffled_budget = method(
-            "shuffled_stage_budget",
-            "shuffled_stage",
-            stage_budget["stage_ratios"],
-            structured_prompt(cfg),
-        )
-        methods = [
-            method("ordinary_dense", "trajectory_global", uniform_ratios(0.0), ordinary_prompt(cfg)),
-            method("structured_dense", "trajectory_global", uniform_ratios(0.0), structured_prompt(cfg)),
-            frozen["best_trajectory_global"],
-            method(
-                "stage_specific_matched_global",
-                "stage_specific",
-                frozen["best_trajectory_global"]["stage_ratios"],
-                structured_prompt(cfg),
-            ),
-            stage_budget,
-            shuffled_budget,
-        ]
-    methods = _limit_final_methods_for_smoke(cfg, methods)
     final_shard = _final_shard_from_env()
     output = {}
     dataset_output_dirs = {}

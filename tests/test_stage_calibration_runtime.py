@@ -14,6 +14,8 @@ try:
         AdaptiveStageGriffinQwen3MLP,
         AdaptiveStageGriffinRuntime,
         FixedStageMaskedQwen3MLP,
+        GriffinPromptQwen3MLP,
+        GriffinPromptRuntime,
         SafeDynamicStageGriffinRuntime,
         StageMaskRuntime,
         StaticCoreResidualStageRuntime,
@@ -95,6 +97,43 @@ class StageCalibrationRuntimeTest(unittest.TestCase):
         expected = rank_intermediate_neurons(values)
         actual = torch.argsort(griffin_activation_score(values), descending=True)
         self.assertTrue(torch.equal(actual, expected))
+
+    def test_prompt_griffin_prefill_dense_then_decode_masks(self) -> None:
+        original = TinyMlp()
+        runtime = GriffinPromptRuntime(prune_ratio=0.5)
+        wrapped = GriffinPromptQwen3MLP(original, 0, runtime)
+        prompt = torch.randn(1, 3, 2)
+        expected_prompt = original.down_proj(original.act_fn(original.gate_proj(prompt)) * original.up_proj(prompt))
+        self.assertTrue(torch.allclose(wrapped(prompt), expected_prompt))
+        runtime.set_stage("reasoning")
+        token = torch.randn(1, 1, 2)
+        output = wrapped(token)
+        self.assertEqual(tuple(output.shape), (1, 1, 2))
+        summary = runtime.summary()
+        self.assertEqual(summary["backend"], "griffin_prompt_logical_v1")
+        self.assertEqual(summary["prompt_dense_tokens"], 3)
+        self.assertEqual(summary["decode_masked_tokens"], 1)
+        self.assertAlmostEqual(summary["actual_average_mlp_pruning_ratio"], 0.125)
+
+    def test_prompt_griffin_ratio_zero_is_dense_equivalent(self) -> None:
+        original = TinyMlp()
+        runtime = GriffinPromptRuntime(prune_ratio=0.0)
+        wrapped = GriffinPromptQwen3MLP(original, 0, runtime)
+        wrapped(torch.randn(1, 3, 2))
+        value = torch.randn(1, 1, 2)
+        expected = original.down_proj(original.act_fn(original.gate_proj(value)) * original.up_proj(value))
+        self.assertTrue(torch.allclose(wrapped(value), expected))
+        self.assertEqual(runtime.summary()["actual_average_mlp_pruning_ratio"], 0.0)
+
+    def test_prompt_griffin_fallback_is_record_only(self) -> None:
+        runtime = GriffinPromptRuntime(prune_ratio=0.5)
+        runtime.set_stage("setup")
+        runtime.fallback_dense("invalid")
+        runtime.record_token()
+        summary = runtime.summary()
+        self.assertEqual(summary["fallback_reason"], "invalid")
+        self.assertEqual(summary["fallback_behavior"], "record_only_keep_prompt_masking")
+        self.assertEqual(summary["tokens_by_stage"]["setup"], 1)
 
     def test_adaptive_runtime_warmup_then_masks(self) -> None:
         original = TinyMlp()

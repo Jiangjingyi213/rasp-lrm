@@ -11,6 +11,13 @@ from src.stage_calibration.final_shards import (
     shard_tasks,
     summarize_rows,
 )
+try:
+    from src.stage_calibration.evaluate import method_requires_mask_bank
+
+    EVALUATE_AVAILABLE = True
+except ModuleNotFoundError:
+    method_requires_mask_bank = None
+    EVALUATE_AVAILABLE = False
 from src.utils.io import read_json, write_json, write_jsonl
 
 
@@ -41,6 +48,27 @@ def method(name: str) -> dict:
 
 
 class StageFinalShardsTest(unittest.TestCase):
+    @unittest.skipUnless(EVALUATE_AVAILABLE, "evaluate dependencies are required")
+    def test_griffin_and_zero_ratio_dense_do_not_require_mask_bank(self) -> None:
+        griffin = {
+            "name": "griffin",
+            "policy": "griffin_prompt",
+            "stage_ratios": {"setup": 0.4, "reasoning": 0.4, "verify": 0.4, "final": 0.4},
+        }
+        dense = {
+            "name": "structured_dense",
+            "policy": "trajectory_global",
+            "stage_ratios": {"setup": 0.0, "reasoning": 0.0, "verify": 0.0, "final": 0.0},
+        }
+        static = {
+            "name": "static",
+            "policy": "trajectory_global",
+            "stage_ratios": {"setup": 0.3, "reasoning": 0.3, "verify": 0.3, "final": 0.3},
+        }
+        self.assertFalse(method_requires_mask_bank(griffin))
+        self.assertFalse(method_requires_mask_bank(dense))
+        self.assertTrue(method_requires_mask_bank(static))
+
     def test_shard_tasks_covers_each_item_once(self) -> None:
         tasks = [{"id": index} for index in range(10)]
         shards = [shard_tasks(tasks, shard_index=index, shard_count=4) for index in range(4)]
