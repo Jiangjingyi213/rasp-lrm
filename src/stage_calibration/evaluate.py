@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 from src.data.format_prompt import build_prompt, forced_assistant_prefix
 from src.metrics.answer_match import answer_match, extract_answer
+from src.baselines.wanda_official_qwen3 import apply_wanda_official_qwen3, summary_to_dict
 
 from .decode import decode_with_stage_masks
 from .protocol import STAGES
@@ -19,6 +20,7 @@ from .runtime import (
     GriffinPromptRuntime,
     SafeDynamicStageGriffinRuntime,
     StageMaskRuntime,
+    StaticWeightPruningRuntime,
     StaticCoreResidualStageRuntime,
     apply_adaptive_stage_griffin_qwen3,
     apply_fixed_stage_masking_qwen3,
@@ -33,7 +35,7 @@ def uniform_ratios(ratio: float) -> dict[str, float]:
 def method_requires_mask_bank(method: dict[str, Any]) -> bool:
     if all(float(value) <= 0.0 for value in method.get("stage_ratios", {}).values()):
         return False
-    return method.get("policy") not in {"griffin_prompt"}
+    return method.get("policy") not in {"griffin_prompt", "wanda_official"}
 
 
 def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, Any]):
@@ -44,6 +46,45 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
         )
         apply_griffin_prompt_qwen3(model, runtime)
         return runtime
+    if method["policy"] == "wanda_official":
+        wanda_summary = apply_wanda_official_qwen3(
+            model,
+            method["tokenizer"],
+            calibration_path=str(method["calibration_path"]),
+            prompt_config=dict(method.get("prompt", {})),
+            sparsity_ratio=float(method.get("sparsity_ratio", method["stage_ratios"].get("setup", 0.0))),
+            calibration_samples=int(method.get("calibration_samples", 128)),
+            max_input_tokens=int(method.get("calibration_max_input_tokens", 2048)),
+            target_modules=method.get("target_modules"),
+            matched_rasp_reference=str(method.get("matched_rasp_reference", "")),
+            target_matched_to_rasp_actual_mlp_pruning=(
+                float(method["target_pruning_ratio"])
+                if "target_pruning_ratio" in method
+                else None
+            ),
+        )
+        summary = summary_to_dict(wanda_summary)
+        return StaticWeightPruningRuntime(
+            policy="wanda_official",
+            backend="wanda_official_weight_mask_v1",
+            baseline_type="official_style_wanda",
+            pruning_granularity="weight_unstructured",
+            weight_sparsity_overall=float(summary["weight_sparsity_overall"]),
+            extra_summary={
+                "wanda_official_summary": summary,
+                "wanda_sparsity_ratio": float(summary["sparsity_ratio"]),
+                "wanda_weight_sparsity": float(summary["weight_sparsity_overall"]),
+                "wanda_calibration_samples": int(summary["calibration_samples"]),
+                "wanda_calibration_source": str(summary["calibration_path"]),
+                "wanda_target_modules": list(summary["target_modules"]),
+                "weight_sparsity_by_module": dict(summary["weight_sparsity_by_module"]),
+                "matched_rasp_reference": str(summary["matched_rasp_reference"]),
+                "target_matched_to_rasp_actual_mlp_pruning": summary[
+                    "target_matched_to_rasp_actual_mlp_pruning"
+                ],
+                "real_speedup_claimed": False,
+            },
+        )
     if all(float(value) <= 0.0 for value in method.get("stage_ratios", {}).values()):
         return DenseStageRuntime(policy=str(method.get("policy", "dense")))
     if bank is None:
@@ -154,7 +195,11 @@ def evaluate_method(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     torch.manual_seed(seed)
     random.seed(seed)
+    method = dict(method)
+    if method.get("policy") == "wanda_official":
+        method["tokenizer"] = tokenizer
     runtime = _runtime_for_method(model, bank, method)
+    method.pop("tokenizer", None)
     rows = []
     for task in tqdm(tasks, desc=f"eval-{method['name']}"):
         prompt_cfg = dict(method.get("prompt", {}))
@@ -216,6 +261,15 @@ def evaluate_method(
     prompt_dense_tokens = 0
     decode_masked_tokens = 0
     keep_ratios_by_layer = None
+    wanda_weight_sparsity = None
+    wanda_sparsity_ratio = None
+    wanda_calibration_samples = None
+    wanda_calibration_source = None
+    wanda_target_modules = None
+    weight_sparsity_by_module = None
+    matched_rasp_reference = None
+    target_matched_to_rasp_actual_mlp_pruning = None
+    pruning_granularity = None
     for row in rows:
         runtime_summary = row["runtime_stage_mask"]
         runtime_backend = runtime_backend or runtime_summary.get("backend")
@@ -228,6 +282,36 @@ def evaluate_method(
         prompt_dense_tokens += int(runtime_summary.get("prompt_dense_tokens", 0))
         decode_masked_tokens += int(runtime_summary.get("decode_masked_tokens", 0))
         keep_ratios_by_layer = keep_ratios_by_layer or runtime_summary.get("keep_ratios_by_layer")
+        wanda_weight_sparsity = (
+            wanda_weight_sparsity
+            if wanda_weight_sparsity is not None
+            else runtime_summary.get("wanda_weight_sparsity")
+        )
+        wanda_sparsity_ratio = (
+            wanda_sparsity_ratio
+            if wanda_sparsity_ratio is not None
+            else runtime_summary.get("wanda_sparsity_ratio")
+        )
+        wanda_calibration_samples = (
+            wanda_calibration_samples
+            if wanda_calibration_samples is not None
+            else runtime_summary.get("wanda_calibration_samples")
+        )
+        wanda_calibration_source = (
+            wanda_calibration_source
+            or runtime_summary.get("wanda_calibration_source")
+        )
+        wanda_target_modules = wanda_target_modules or runtime_summary.get("wanda_target_modules")
+        weight_sparsity_by_module = (
+            weight_sparsity_by_module or runtime_summary.get("weight_sparsity_by_module")
+        )
+        matched_rasp_reference = matched_rasp_reference or runtime_summary.get("matched_rasp_reference")
+        target_matched_to_rasp_actual_mlp_pruning = (
+            target_matched_to_rasp_actual_mlp_pruning
+            if target_matched_to_rasp_actual_mlp_pruning is not None
+            else runtime_summary.get("target_matched_to_rasp_actual_mlp_pruning")
+        )
+        pruning_granularity = pruning_granularity or runtime_summary.get("pruning_granularity")
         runtime_alpha = runtime_alpha if runtime_alpha is not None else runtime_summary.get("alpha")
         runtime_warmup_tokens = runtime_warmup_tokens or runtime_summary.get("warmup_tokens")
         runtime_score_mode = runtime_score_mode or runtime_summary.get("score_mode")
@@ -321,6 +405,26 @@ def evaluate_method(
         summary["decode_masked_tokens"] = decode_masked_tokens
     if keep_ratios_by_layer:
         summary["keep_ratios_by_layer"] = keep_ratios_by_layer
+    if pruning_granularity:
+        summary["pruning_granularity"] = pruning_granularity
+    if wanda_weight_sparsity is not None:
+        summary["wanda_weight_sparsity"] = wanda_weight_sparsity
+    if wanda_sparsity_ratio is not None:
+        summary["wanda_sparsity_ratio"] = wanda_sparsity_ratio
+    if wanda_calibration_samples is not None:
+        summary["wanda_calibration_samples"] = wanda_calibration_samples
+    if wanda_calibration_source:
+        summary["wanda_calibration_source"] = wanda_calibration_source
+    if wanda_target_modules:
+        summary["wanda_target_modules"] = wanda_target_modules
+    if weight_sparsity_by_module:
+        summary["weight_sparsity_by_module"] = weight_sparsity_by_module
+    if matched_rasp_reference:
+        summary["matched_rasp_reference"] = matched_rasp_reference
+    if target_matched_to_rasp_actual_mlp_pruning is not None:
+        summary["target_matched_to_rasp_actual_mlp_pruning"] = (
+            target_matched_to_rasp_actual_mlp_pruning
+        )
     if dense_observation_tokens:
         summary["dense_observation_tokens_by_stage"] = dict(dense_observation_tokens)
     if masked_tokens:

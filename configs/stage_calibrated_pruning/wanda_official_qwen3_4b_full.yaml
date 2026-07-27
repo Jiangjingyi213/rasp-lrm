@@ -1,0 +1,82 @@
+seed: 3
+
+workflow:
+  profile: pilot
+  root: runs/08_stage_calibrated_pruning/main_{profile}_wanda_official_qwen3_4b_full
+
+stages: [setup, reasoning, verify, final]
+
+model:
+  name_or_path: Qwen/Qwen3-4B
+  dtype: float16
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  ordinary:
+    use_chat_template: true
+    enable_thinking: true
+    answer_format: boxed
+  structured:
+    use_chat_template: true
+    enable_thinking: true
+    explicit_stage_protocol: true
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
+
+generation:
+  max_input_tokens: 4096
+  max_new_tokens: 16384
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+
+calibration_pool:
+  allowed_sources: ["*"]
+  excluded_sources: [GSM8k, GSM8K, MATH, Omni-MATH, amc_aime, cn_k12]
+
+masks:
+  metric: WIFV
+  structure: UL-UM
+  ratios: [0.00, 0.10, 0.15, 0.20]
+  c4_samples: 0
+  bias_compensation: true
+
+wanda_official:
+  enabled: true
+  calibration_samples: 128
+  calibration_max_input_tokens: 2048
+  variants:
+    - method_name: wanda_t20_official
+      sparsity_ratio: 0.22
+      target_pruning_ratio: 0.22
+      target_pruning_label: t20
+      matched_rasp_reference: t20_math_safe
+    - method_name: wanda_t30_official
+      sparsity_ratio: 0.35
+      target_pruning_ratio: 0.35
+      target_pruning_label: t30
+      matched_rasp_reference: t30_math_safe
+
+evaluation:
+  allow_final_without_dev: true
+  math500_name_or_path: HuggingFaceH4/MATH-500
+  final_datasets:
+    - dataset: gsm8k
+      split: test
+    - dataset: math500
+      name_or_path: HuggingFaceH4/MATH-500
+      split: test
+
+profiles:
+  smoke:
+    final_eval_limit: 16
+    final_seeds: [3]
+    final_methods:
+      - wanda_t30_official
+  pilot:
+    final_eval_limit: -1
+    final_seeds: [3]
+    reuse_existing_method_summaries: true
+    final_methods:
+      - wanda_t30_official

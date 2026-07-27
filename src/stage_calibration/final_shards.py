@@ -117,6 +117,15 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
     prompt_dense_tokens = 0
     decode_masked_tokens = 0
     keep_ratios_by_layer = None
+    pruning_granularity = None
+    wanda_weight_sparsity = None
+    wanda_sparsity_ratio = None
+    wanda_calibration_samples = None
+    wanda_calibration_source = None
+    wanda_target_modules = None
+    weight_sparsity_by_module = None
+    matched_rasp_reference = None
+    target_matched_to_rasp_actual_mlp_pruning = None
     for row in rows:
         runtime = row.get("runtime_stage_mask", {})
         runtime_backend = runtime_backend or runtime.get("backend")
@@ -129,6 +138,31 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         prompt_dense_tokens += int(runtime.get("prompt_dense_tokens", 0))
         decode_masked_tokens += int(runtime.get("decode_masked_tokens", 0))
         keep_ratios_by_layer = keep_ratios_by_layer or runtime.get("keep_ratios_by_layer")
+        pruning_granularity = pruning_granularity or runtime.get("pruning_granularity")
+        wanda_weight_sparsity = (
+            wanda_weight_sparsity
+            if wanda_weight_sparsity is not None
+            else runtime.get("wanda_weight_sparsity")
+        )
+        wanda_sparsity_ratio = (
+            wanda_sparsity_ratio
+            if wanda_sparsity_ratio is not None
+            else runtime.get("wanda_sparsity_ratio")
+        )
+        wanda_calibration_samples = (
+            wanda_calibration_samples
+            if wanda_calibration_samples is not None
+            else runtime.get("wanda_calibration_samples")
+        )
+        wanda_calibration_source = wanda_calibration_source or runtime.get("wanda_calibration_source")
+        wanda_target_modules = wanda_target_modules or runtime.get("wanda_target_modules")
+        weight_sparsity_by_module = weight_sparsity_by_module or runtime.get("weight_sparsity_by_module")
+        matched_rasp_reference = matched_rasp_reference or runtime.get("matched_rasp_reference")
+        target_matched_to_rasp_actual_mlp_pruning = (
+            target_matched_to_rasp_actual_mlp_pruning
+            if target_matched_to_rasp_actual_mlp_pruning is not None
+            else runtime.get("target_matched_to_rasp_actual_mlp_pruning")
+        )
         runtime_alpha = runtime_alpha if runtime_alpha is not None else runtime.get("alpha")
         runtime_warmup_tokens = runtime_warmup_tokens or runtime.get("warmup_tokens")
         runtime_score_mode = runtime_score_mode or runtime.get("score_mode")
@@ -228,6 +262,26 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         summary["decode_masked_tokens"] = decode_masked_tokens
     if keep_ratios_by_layer:
         summary["keep_ratios_by_layer"] = keep_ratios_by_layer
+    if pruning_granularity:
+        summary["pruning_granularity"] = pruning_granularity
+    if wanda_weight_sparsity is not None:
+        summary["wanda_weight_sparsity"] = wanda_weight_sparsity
+    if wanda_sparsity_ratio is not None:
+        summary["wanda_sparsity_ratio"] = wanda_sparsity_ratio
+    if wanda_calibration_samples is not None:
+        summary["wanda_calibration_samples"] = wanda_calibration_samples
+    if wanda_calibration_source:
+        summary["wanda_calibration_source"] = wanda_calibration_source
+    if wanda_target_modules:
+        summary["wanda_target_modules"] = wanda_target_modules
+    if weight_sparsity_by_module:
+        summary["weight_sparsity_by_module"] = weight_sparsity_by_module
+    if matched_rasp_reference:
+        summary["matched_rasp_reference"] = matched_rasp_reference
+    if target_matched_to_rasp_actual_mlp_pruning is not None:
+        summary["target_matched_to_rasp_actual_mlp_pruning"] = (
+            target_matched_to_rasp_actual_mlp_pruning
+        )
     if dense_observation_tokens:
         summary["dense_observation_tokens_by_stage"] = dict(dense_observation_tokens)
     if masked_tokens:

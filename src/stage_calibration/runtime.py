@@ -232,6 +232,42 @@ class DenseStageRuntime:
         }
 
 
+class StaticWeightPruningRuntime(DenseStageRuntime):
+    def __init__(
+        self,
+        *,
+        policy: str,
+        backend: str,
+        baseline_type: str,
+        pruning_granularity: str,
+        weight_sparsity_overall: float,
+        extra_summary: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(policy=policy)
+        self.backend = str(backend)
+        self.baseline_type = str(baseline_type)
+        self.pruning_granularity = str(pruning_granularity)
+        self.weight_sparsity_overall = float(weight_sparsity_overall)
+        self.extra_summary = dict(extra_summary or {})
+
+    def summary(self) -> dict[str, Any]:
+        output = super().summary()
+        output.update(self.extra_summary)
+        output.update(
+            {
+                "backend": self.backend,
+                "baseline_type": self.baseline_type,
+                "policy": self.policy,
+                "pruning_granularity": self.pruning_granularity,
+                "weight_sparsity_overall": self.weight_sparsity_overall,
+                "theoretical_average_mlp_pruning_ratio": self.weight_sparsity_overall,
+                "actual_average_mlp_pruning_ratio": self.weight_sparsity_overall,
+                "actual_pruning_accounting": "static_weight_sparsity_over_target_linears",
+            }
+        )
+        return output
+
+
 class AlwaysOnStaticMaskRuntime(StageMaskRuntime):
     """Static global-mask baseline that records protocol fallback but keeps pruning.
 

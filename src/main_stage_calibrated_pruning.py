@@ -1242,6 +1242,14 @@ def _griffin_prompt_enabled(cfg: dict[str, Any]) -> bool:
     return bool(_griffin_prompt_cfg(cfg).get("enabled", False))
 
 
+def _wanda_official_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    return deepcopy(cfg.get("wanda_official", {}))
+
+
+def _wanda_official_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(_wanda_official_cfg(cfg).get("enabled", False))
+
+
 def _griffin_prompt_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> dict[str, Any]:
     prune_ratio = float(row.get("prune_ratio", row.get("ratio", 0.0)))
     name = str(row.get("method_name", row.get("name", f"griffin_prompt_{prune_ratio:.4f}".replace(".", "p"))))
@@ -1291,6 +1299,73 @@ def griffin_prompt_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     if len(names) != len(set(names)):
         duplicates = sorted({name for name in names if names.count(name) > 1})
         raise ValueError(f"GRIFFIN prompt method names must be unique: {duplicates}")
+    return methods
+
+
+def _wanda_calibration_path(row: dict[str, Any]) -> str:
+    if row.get("calibration_path"):
+        return str(row["calibration_path"])
+    source_root = os.environ.get(
+        "SOURCE_ROOT",
+        "runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3",
+    )
+    return str(Path(source_root) / "03_selected" / "calibration.jsonl")
+
+
+def _wanda_official_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> dict[str, Any]:
+    sparsity = float(row.get("sparsity_ratio", row.get("ratio", 0.0)))
+    name = str(row.get("method_name", row.get("name", f"wanda_official_{sparsity:.4f}".replace(".", "p"))))
+    return method(
+        name,
+        "wanda_official",
+        uniform_ratios(sparsity),
+        prompt,
+        bias=False,
+        sparsity_ratio=sparsity,
+        density=1.0 - sparsity,
+        calibration_path=_wanda_calibration_path(row),
+        calibration_samples=int(row.get("calibration_samples", 128)),
+        calibration_max_input_tokens=int(row.get("calibration_max_input_tokens", 2048)),
+        target_modules=list(row.get("target_modules") or []) or None,
+        baseline_type="official_style_wanda",
+        pruning_granularity="weight_unstructured",
+        matched_rasp_reference=str(row.get("matched_rasp_reference", "")),
+        variant_role=str(row.get("variant_role", name)),
+        selection_note=str(row.get("selection_note", "")),
+        **(
+            {"target_pruning_ratio": float(row["target_pruning_ratio"])}
+            if "target_pruning_ratio" in row
+            else {}
+        ),
+        **(
+            {"target_pruning_label": str(row["target_pruning_label"])}
+            if "target_pruning_label" in row
+            else {}
+        ),
+    )
+
+
+def wanda_official_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    wcfg = _wanda_official_cfg(cfg)
+    variants = wcfg.get("variants")
+    if variants is None:
+        if not wcfg:
+            return []
+        variants = [wcfg]
+    if not isinstance(variants, list) or not variants:
+        raise ValueError("wanda_official.variants must be a non-empty list when provided")
+    methods = []
+    for index, row in enumerate(variants):
+        if not isinstance(row, dict):
+            raise ValueError(f"wanda_official.variants[{index}] must be a mapping")
+        merged = deepcopy(wcfg)
+        merged.pop("variants", None)
+        merged.update(deepcopy(row))
+        methods.append(_wanda_official_method_from_cfg(merged, structured_prompt(cfg)))
+    names = [row["name"] for row in methods]
+    if len(names) != len(set(names)):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"Wanda official method names must be unique: {duplicates}")
     return methods
 
 
@@ -1595,6 +1670,11 @@ def _run_methods(cfg, p, tasks, bank, bundle, methods, output_dir, seed: int | N
     summaries = []
     ensure_dir(output_dir)
     seed = int(cfg["seed"]) if seed is None else int(seed)
+    if any(row.get("policy") == "wanda_official" for row in methods) and len(methods) != 1:
+        raise RuntimeError(
+            "Wanda official zeroes model weights in-place; run exactly one Wanda method per "
+            "process via STAGE_FINAL_METHODS to avoid stacked pruning."
+        )
     for value in methods:
         suffix = f"_seed{seed}"
         rows_path = output_dir / f"{value['name']}{suffix}.jsonl"
@@ -2156,7 +2236,7 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
 def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     allow_final_without_dev = bool(_evaluation_threshold(cfg, "allow_final_without_dev", False))
     final_without_dev_allowed = allow_final_without_dev and (
-        _adaptive_griffin_enabled(cfg) or _griffin_prompt_enabled(cfg)
+        _adaptive_griffin_enabled(cfg) or _griffin_prompt_enabled(cfg) or _wanda_official_enabled(cfg)
     )
     if p["dev_summary"].exists():
         dev_summary = read_json(p["dev_summary"])
@@ -2166,6 +2246,7 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             "final_without_dev_allowed": True,
             "adaptive_griffin_policy_frozen": True,
             "griffin_prompt_baseline_frozen": _griffin_prompt_enabled(cfg),
+            "wanda_official_baseline_frozen": _wanda_official_enabled(cfg),
         }
     else:
         raise RuntimeError(
@@ -2179,7 +2260,7 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         policy_methods, policy_selection = load_downstream_methods_from_selection(policy_selection_path)
     if policy_methods is not None:
         methods = policy_methods
-    elif _adaptive_griffin_enabled(cfg) or _griffin_prompt_enabled(cfg):
+    elif _adaptive_griffin_enabled(cfg) or _griffin_prompt_enabled(cfg) or _wanda_official_enabled(cfg):
         requested_final_methods = set()
         env_final_methods = os.environ.get("STAGE_FINAL_METHODS")
         if env_final_methods:
@@ -2207,6 +2288,8 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             methods.extend(additional_fixed_stage_methods(cfg))
         if _griffin_prompt_enabled(cfg):
             methods.extend(griffin_prompt_methods(cfg))
+        if _wanda_official_enabled(cfg):
+            methods.extend(wanda_official_methods(cfg))
     else:
         frozen = read_json(p["frozen"]) if p["frozen"].exists() else {}
         stage_budget = frozen["stage_budget"]
