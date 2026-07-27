@@ -123,6 +123,15 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
     wanda_calibration_samples = None
     wanda_calibration_source = None
     wanda_target_modules = None
+    sparsegpt_weight_sparsity = None
+    sparsegpt_sparsity_ratio = None
+    sparsegpt_calibration_samples = None
+    sparsegpt_calibration_source = None
+    sparsegpt_target_modules = None
+    sparsegpt_artifact_path = None
+    sparsegpt_artifact_hash = None
+    sparsegpt_blocksize = None
+    sparsegpt_percdamp = None
     weight_sparsity_by_module = None
     matched_rasp_reference = None
     target_matched_to_rasp_actual_mlp_pruning = None
@@ -156,6 +165,37 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         )
         wanda_calibration_source = wanda_calibration_source or runtime.get("wanda_calibration_source")
         wanda_target_modules = wanda_target_modules or runtime.get("wanda_target_modules")
+        sparsegpt_weight_sparsity = (
+            sparsegpt_weight_sparsity
+            if sparsegpt_weight_sparsity is not None
+            else runtime.get("sparsegpt_weight_sparsity")
+        )
+        sparsegpt_sparsity_ratio = (
+            sparsegpt_sparsity_ratio
+            if sparsegpt_sparsity_ratio is not None
+            else runtime.get("sparsegpt_sparsity_ratio")
+        )
+        sparsegpt_calibration_samples = (
+            sparsegpt_calibration_samples
+            if sparsegpt_calibration_samples is not None
+            else runtime.get("sparsegpt_calibration_samples")
+        )
+        sparsegpt_calibration_source = sparsegpt_calibration_source or runtime.get(
+            "sparsegpt_calibration_source"
+        )
+        sparsegpt_target_modules = sparsegpt_target_modules or runtime.get("sparsegpt_target_modules")
+        sparsegpt_artifact_path = sparsegpt_artifact_path or runtime.get("sparsegpt_artifact_path")
+        sparsegpt_artifact_hash = sparsegpt_artifact_hash or runtime.get("sparsegpt_artifact_hash")
+        sparsegpt_blocksize = (
+            sparsegpt_blocksize
+            if sparsegpt_blocksize is not None
+            else runtime.get("sparsegpt_blocksize")
+        )
+        sparsegpt_percdamp = (
+            sparsegpt_percdamp
+            if sparsegpt_percdamp is not None
+            else runtime.get("sparsegpt_percdamp")
+        )
         weight_sparsity_by_module = weight_sparsity_by_module or runtime.get("weight_sparsity_by_module")
         matched_rasp_reference = matched_rasp_reference or runtime.get("matched_rasp_reference")
         target_matched_to_rasp_actual_mlp_pruning = (
@@ -274,6 +314,24 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         summary["wanda_calibration_source"] = wanda_calibration_source
     if wanda_target_modules:
         summary["wanda_target_modules"] = wanda_target_modules
+    if sparsegpt_weight_sparsity is not None:
+        summary["sparsegpt_weight_sparsity"] = sparsegpt_weight_sparsity
+    if sparsegpt_sparsity_ratio is not None:
+        summary["sparsegpt_sparsity_ratio"] = sparsegpt_sparsity_ratio
+    if sparsegpt_calibration_samples is not None:
+        summary["sparsegpt_calibration_samples"] = sparsegpt_calibration_samples
+    if sparsegpt_calibration_source:
+        summary["sparsegpt_calibration_source"] = sparsegpt_calibration_source
+    if sparsegpt_target_modules:
+        summary["sparsegpt_target_modules"] = sparsegpt_target_modules
+    if sparsegpt_artifact_path:
+        summary["sparsegpt_artifact_path"] = sparsegpt_artifact_path
+    if sparsegpt_artifact_hash:
+        summary["sparsegpt_artifact_hash"] = sparsegpt_artifact_hash
+    if sparsegpt_blocksize is not None:
+        summary["sparsegpt_blocksize"] = sparsegpt_blocksize
+    if sparsegpt_percdamp is not None:
+        summary["sparsegpt_percdamp"] = sparsegpt_percdamp
     if weight_sparsity_by_module:
         summary["weight_sparsity_by_module"] = weight_sparsity_by_module
     if matched_rasp_reference:

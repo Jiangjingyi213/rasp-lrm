@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
 
 def require_plotting_libs():
     try:
+        os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "rasp_lrm_matplotlib"))
+
         import matplotlib
 
         matplotlib.use("Agg")
@@ -33,6 +37,7 @@ RUN_DIRS = [
 
 STAGE_ORDER = ["understanding", "planning", "derivation", "verification", "final"]
 MODULE_ORDER = ["attention_heads", "attention_block", "mlp_channels", "mlp_block", "layer"]
+MODULE_DISPLAY_LABELS = ["head", "att-block", "channel", "mlp-block", "layer"]
 FEATURE_ORDER = ["entropy", "confidence", "activation", "hidden", "combined"]
 RATIO_ORDER = [0.2, 0.4, 0.6]
 
@@ -80,25 +85,31 @@ def savefig(fig, output: Path, stem: str, formats: Iterable[str], dpi: int) -> N
 
 def style(sns, plt) -> None:
     sns.set_theme(
-        context="paper",
+        context="talk",
         style="whitegrid",
-        font="DejaVu Sans",
+        font="Comic Sans MS",
         rc={
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Comic Sans MS", "Comic Sans", "Arial", "DejaVu Sans", "sans-serif"],
             "axes.spines.right": False,
             "axes.spines.top": False,
             "axes.titleweight": "bold",
-            "axes.labelsize": 11,
-            "axes.titlesize": 12,
-            "xtick.labelsize": 9,
-            "ytick.labelsize": 9,
-            "legend.fontsize": 9,
-            "figure.titlesize": 13,
+            "axes.labelsize": 18,
+            "axes.titlesize": 21,
+            "xtick.labelsize": 17,
+            "ytick.labelsize": 17,
+            "legend.fontsize": 15,
+            "figure.titlesize": 24,
             "savefig.dpi": 300,
         },
     )
-    plt.rcParams["pdf.fonttype"] = 42
-    plt.rcParams["ps.fonttype"] = 42
-    plt.rcParams["svg.fonttype"] = "none"
+    plt.rcParams.update(
+        {
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+            "svg.fonttype": "none",
+        }
+    )
 
 
 def load_tables(pd, analysis_dir: Path) -> dict[str, object]:
@@ -136,7 +147,7 @@ def fig1_stage_sensitivity(plt, sns, tables: dict, output: Path, formats: list[s
         index=STAGE_ORDER, columns=RATIO_ORDER
     )
 
-    fig, axes = plt.subplots(1, 2, figsize=(11.2, 4.4), gridspec_kw={"width_ratios": [1.6, 1.0]})
+    fig, axes = plt.subplots(1, 2, figsize=(15.8, 5.6), gridspec_kw={"width_ratios": [1.6, 1.0]})
     cmap = sns.color_palette("rocket_r", as_cmap=True)
     sns.heatmap(
         module_pivot,
@@ -148,11 +159,15 @@ def fig1_stage_sensitivity(plt, sns, tables: dict, output: Path, formats: list[s
         fmt=".2f",
         linewidths=0.7,
         linecolor="white",
+        annot_kws={"fontsize": 19},
         cbar_kws={"label": "Answer flip rate"},
     )
-    axes[0].set_title("Stage x pruning module")
-    axes[0].set_xlabel("")
+    axes[0].set_title("")
+    axes[0].set_xlabel("(a) Stage × pruning module", labelpad=18)
     axes[0].set_ylabel("Reasoning stage")
+    axes[0].set_xticklabels(MODULE_DISPLAY_LABELS)
+    axes[0].tick_params(axis="x", labelrotation=0, labelsize=17)
+    axes[0].tick_params(axis="y", labelrotation=0, labelsize=18)
     sns.heatmap(
         ratio_pivot,
         ax=axes[1],
@@ -163,19 +178,18 @@ def fig1_stage_sensitivity(plt, sns, tables: dict, output: Path, formats: list[s
         fmt=".2f",
         linewidths=0.7,
         linecolor="white",
+        annot_kws={"fontsize": 19},
         cbar=False,
     )
-    axes[1].set_title("Stage x pruning ratio")
-    axes[1].set_xlabel("")
+    axes[1].set_title("")
+    axes[1].set_xlabel("(b) Stage × pruning ratio", labelpad=18)
     axes[1].set_ylabel("")
-    fig.suptitle("LRM reasoning pruning sensitivity is stage-dependent", y=1.03, fontweight="bold")
-    fig.text(
-        0.02,
-        -0.02,
-        "Rows are automatically assigned reasoning stages. Values are answer flip rates on dense-correct trajectories.",
-        fontsize=9,
-        color="#4b5563",
-    )
+    axes[1].tick_params(axis="x", labelrotation=0, labelsize=18)
+    axes[1].tick_params(axis="y", labelrotation=0, labelsize=18)
+    cbar = axes[0].collections[0].colorbar
+    cbar.ax.tick_params(labelsize=18)
+    cbar.ax.yaxis.label.set_size(19)
+    cbar.ax.yaxis.labelpad = 18
     fig.tight_layout()
     savefig(fig, output, "fig1_reasoning_stage_sensitivity_heatmaps", formats, dpi)
     plt.close(fig)
@@ -220,7 +234,7 @@ def fig2_oracle_gap(plt, sns, tables: dict, output: Path, formats: list[str], dp
             f"{row['flip_rate']:.2f}",
             ha="center",
             va="bottom",
-            fontsize=10,
+            fontsize=13,
             fontweight="bold",
         )
     static = float(df[df["policy"] == "static oracle"]["flip_rate"].iloc[0])
@@ -231,7 +245,7 @@ def fig2_oracle_gap(plt, sns, tables: dict, output: Path, formats: list[str], dp
         xytext=(0, static + 0.08),
         arrowprops=dict(arrowstyle="->", lw=1.5, color="#17202a"),
         ha="center",
-        fontsize=10,
+        fontsize=13,
         color="#17202a",
     )
     ax.set_ylim(0, min(1.0, max(df["flip_rate"]) + 0.12))
@@ -319,9 +333,9 @@ def fig5_proxy_pareto(plt, sns, tables: dict, output: Path, formats: list[str], 
         ax=ax,
     )
     for _, row in df.iterrows():
-        ax.text(row["activated_proxy"] + 0.008, row["answer_retention"], f"r={row['ratio']:.1f}", fontsize=7)
+        ax.text(row["activated_proxy"] + 0.008, row["answer_retention"], f"r={row['ratio']:.1f}", fontsize=10)
     ax.scatter([1.0], [1.0], marker="*", s=160, color="#111827", label="dense")
-    ax.text(1.0, 0.985, "Dense", ha="right", va="top", fontsize=9, fontweight="bold")
+    ax.text(1.0, 0.985, "Dense", ha="right", va="top", fontsize=12, fontweight="bold")
     ax.set_xlim(0.34, 1.04)
     ax.set_ylim(max(0.25, df["answer_retention"].min() - 0.08), 1.03)
     ax.set_xlabel("Activated structure proxy (1 - pruning ratio)")
@@ -372,7 +386,7 @@ def main() -> None:
     parser.add_argument("--combined", default="runs/01_motivation/formal_qwen3_gsm8k_math500_combined.json")
     parser.add_argument("--output-dir", default="runs/01_motivation/motivation_analysis/paper_figures")
     parser.add_argument("--formats", nargs="+", default=["png", "pdf", "svg"], choices=["png", "pdf", "svg"])
-    parser.add_argument("--dpi", type=int, default=400)
+    parser.add_argument("--dpi", type=int, default=600)
     parser.add_argument("--skip-counterfactual-scan", action="store_true")
     args = parser.parse_args()
 

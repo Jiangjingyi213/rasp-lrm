@@ -15,6 +15,8 @@ HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 SEED="${STAGE_SEED:-3}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
 LOG_PREFIX="${LOG_PREFIX:-griffin_prompt_priority}"
+export BASELINE_LABEL="${BASELINE_LABEL:-GRIFFIN Prompt}"
+export BASELINE_SCHEMA="${BASELINE_SCHEMA:-griffin_prompt_priority_suite_aggregate_v1}"
 
 read -r -a GPUS <<< "${FINAL_GPUS:-0 1 2 3 4 5 6 7}"
 SHARD_COUNT="${STAGE_FINAL_SHARD_COUNT:-${#GPUS[@]}}"
@@ -66,7 +68,7 @@ for summary_path in sorted(suite.glob("*/06_final/summary.json")):
             )
         items.append({"dataset": dataset_name, "run_root": str(run_root), "rows": rows})
         lines = [
-            f"# {dataset_name} GRIFFIN Prompt Baseline Summary",
+            f"# {dataset_name} {os.environ.get('BASELINE_LABEL', 'GRIFFIN Prompt')} Baseline Summary",
             "",
             f"- run_root: `{run_root}`",
             f"- summary: `{summary_path}`",
@@ -86,11 +88,11 @@ for summary_path in sorted(suite.glob("*/06_final/summary.json")):
         (run_root / "06_final" / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 (suite / "aggregate_summary.json").write_text(
-    json.dumps({"schema": "griffin_prompt_priority_suite_aggregate_v1", "datasets": items}, ensure_ascii=False, indent=2) + "\n",
+    json.dumps({"schema": os.environ.get("BASELINE_SCHEMA", "griffin_prompt_priority_suite_aggregate_v1"), "datasets": items}, ensure_ascii=False, indent=2) + "\n",
     encoding="utf-8",
 )
 lines = [
-    "# GRIFFIN Prompt Priority Suite Aggregate Summary",
+    f"# {os.environ.get('BASELINE_LABEL', 'GRIFFIN Prompt')} Priority Suite Aggregate Summary",
     "",
     f"- completed_datasets: {len(items)}",
     "",

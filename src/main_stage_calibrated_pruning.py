@@ -21,6 +21,10 @@ from src.data.format_prompt import build_prompt, forced_assistant_prefix
 from src.data.load_gsm8k import load_tasks
 from src.metrics.answer_match import answer_match, extract_answer, math_verify_available
 from src.models.load_model import load_model_bundle
+from src.baselines.sparsegpt_official_qwen3 import (
+    prepare_sparsegpt_official_qwen3_artifact,
+    summary_to_dict as sparsegpt_summary_to_dict,
+)
 from src.stage_calibration.artifacts import manifest_hash, stable_hash
 from src.stage_calibration.calibrate import collect_stage_statistics
 from src.stage_calibration.evaluate import evaluate_method, method_requires_mask_bank, uniform_ratios
@@ -66,6 +70,7 @@ PHASES = {
     "evaluate_dev": "05_dev",
     "evaluate_final": "06_final",
     "merge_final_shards": "06_final",
+    "prepare_sparsegpt": "07_sparsegpt",
     "summarize": ".",
 }
 
@@ -202,6 +207,8 @@ def paths(cfg: dict[str, Any]) -> dict[str, Path]:
         "frozen": root / "05_dev" / "frozen_policy.json",
         "final_dir": root / "06_final",
         "final_summary": root / "06_final" / "summary.json",
+        "sparsegpt_dir": root / "07_sparsegpt",
+        "sparsegpt_summary": root / "07_sparsegpt" / "summary.json",
         "workflow_summary": root / "final_summary.json",
         "workflow_gate": root / "workflow_gate.json",
     }
@@ -1250,6 +1257,14 @@ def _wanda_official_enabled(cfg: dict[str, Any]) -> bool:
     return bool(_wanda_official_cfg(cfg).get("enabled", False))
 
 
+def _sparsegpt_official_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    return deepcopy(cfg.get("sparsegpt_official", {}))
+
+
+def _sparsegpt_official_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(_sparsegpt_official_cfg(cfg).get("enabled", False))
+
+
 def _griffin_prompt_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> dict[str, Any]:
     prune_ratio = float(row.get("prune_ratio", row.get("ratio", 0.0)))
     name = str(row.get("method_name", row.get("name", f"griffin_prompt_{prune_ratio:.4f}".replace(".", "p"))))
@@ -1366,6 +1381,104 @@ def wanda_official_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     if len(names) != len(set(names)):
         duplicates = sorted({name for name in names if names.count(name) > 1})
         raise ValueError(f"Wanda official method names must be unique: {duplicates}")
+    return methods
+
+
+def _sparsegpt_calibration_path(row: dict[str, Any]) -> str:
+    if row.get("calibration_path"):
+        return str(row["calibration_path"])
+    source_root = os.environ.get(
+        "SOURCE_ROOT",
+        "runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3",
+    )
+    return str(Path(source_root) / "03_selected" / "calibration.jsonl")
+
+
+def _sparsegpt_artifact_root(cfg: dict[str, Any]) -> Path:
+    env_root = os.environ.get("SPARSEGPT_ARTIFACT_ROOT")
+    if env_root:
+        return Path(env_root)
+    scfg = _sparsegpt_official_cfg(cfg)
+    if scfg.get("artifact_root"):
+        return Path(str(scfg["artifact_root"]))
+    model_name = str(cfg["model"]["name_or_path"]).rstrip("/").split("/")[-1].lower().replace("-", "_")
+    return Path("runs/08_stage_calibrated_pruning/sparsegpt_artifacts") / model_name
+
+
+def _sparsegpt_artifact_path(cfg: dict[str, Any], row: dict[str, Any], name: str) -> str:
+    if row.get("artifact_path"):
+        return str(row["artifact_path"])
+    return str(_sparsegpt_artifact_root(cfg) / name)
+
+
+def _sparsegpt_official_method_from_cfg(
+    cfg: dict[str, Any],
+    row: dict[str, Any],
+    prompt: dict[str, Any],
+) -> dict[str, Any]:
+    sparsity = float(row.get("sparsity_ratio", row.get("ratio", 0.0)))
+    name = str(row.get("method_name", row.get("name", f"sparsegpt_official_{sparsity:.4f}".replace(".", "p"))))
+    return method(
+        name,
+        "sparsegpt_official",
+        uniform_ratios(sparsity),
+        prompt,
+        bias=False,
+        sparsity_ratio=sparsity,
+        density=1.0 - sparsity,
+        calibration_path=_sparsegpt_calibration_path(row),
+        calibration_samples=int(row.get("calibration_samples", 128)),
+        calibration_max_input_tokens=int(row.get("calibration_max_input_tokens", 2048)),
+        calibration_batch_size=int(
+            os.environ.get(
+                "SPARSEGPT_CALIBRATION_BATCH_SIZE",
+                row.get("calibration_batch_size", 1),
+            )
+        ),
+        target_modules=list(row.get("target_modules") or []) or None,
+        blocksize=int(row.get("blocksize", 128)),
+        percdamp=float(row.get("percdamp", 0.01)),
+        artifact_path=_sparsegpt_artifact_path(cfg, row, name),
+        artifact_save_dtype=str(row.get("artifact_save_dtype", "float16")),
+        baseline_type="official_style_sparsegpt",
+        pruning_granularity="weight_unstructured",
+        matched_rasp_reference=str(row.get("matched_rasp_reference", "")),
+        variant_role=str(row.get("variant_role", name)),
+        selection_note=str(row.get("selection_note", "")),
+        **(
+            {"target_pruning_ratio": float(row["target_pruning_ratio"])}
+            if "target_pruning_ratio" in row
+            else {}
+        ),
+        **(
+            {"target_pruning_label": str(row["target_pruning_label"])}
+            if "target_pruning_label" in row
+            else {}
+        ),
+    )
+
+
+def sparsegpt_official_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    scfg = _sparsegpt_official_cfg(cfg)
+    variants = scfg.get("variants")
+    if variants is None:
+        if not scfg:
+            return []
+        variants = [scfg]
+    if not isinstance(variants, list) or not variants:
+        raise ValueError("sparsegpt_official.variants must be a non-empty list when provided")
+    methods = []
+    for index, row in enumerate(variants):
+        if not isinstance(row, dict):
+            raise ValueError(f"sparsegpt_official.variants[{index}] must be a mapping")
+        merged = deepcopy(scfg)
+        merged.pop("variants", None)
+        merged.update(deepcopy(row))
+        methods.append(_sparsegpt_official_method_from_cfg(cfg, merged, structured_prompt(cfg)))
+    names = [row["name"] for row in methods]
+    if len(names) != len(set(names)):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"SparseGPT official method names must be unique: {duplicates}")
     return methods
 
 
@@ -1674,6 +1787,11 @@ def _run_methods(cfg, p, tasks, bank, bundle, methods, output_dir, seed: int | N
         raise RuntimeError(
             "Wanda official zeroes model weights in-place; run exactly one Wanda method per "
             "process via STAGE_FINAL_METHODS to avoid stacked pruning."
+        )
+    if any(row.get("policy") == "sparsegpt_official" for row in methods) and len(methods) != 1:
+        raise RuntimeError(
+            "SparseGPT official loads pruned weights in-place; run exactly one SparseGPT "
+            "method per process via STAGE_FINAL_METHODS to avoid stacked pruning."
         )
     for value in methods:
         suffix = f"_seed{seed}"
@@ -2233,10 +2351,61 @@ def command_evaluate_dev(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     )
 
 
+def command_prepare_sparsegpt(cfg: dict[str, Any], p: dict[str, Path]) -> None:
+    if not _sparsegpt_official_enabled(cfg):
+        raise RuntimeError("sparsegpt_official.enabled must be true to run prepare_sparsegpt")
+    methods = _limit_final_methods_for_smoke(cfg, sparsegpt_official_methods(cfg))
+    if not methods:
+        raise RuntimeError("No SparseGPT official methods selected for prepare_sparsegpt")
+    ensure_dir(p["sparsegpt_dir"])
+    summaries = []
+    for row in methods:
+        bundle = load_model_bundle(cfg["model"])
+        summary = prepare_sparsegpt_official_qwen3_artifact(
+            bundle.model,
+            bundle.tokenizer,
+            artifact_dir=str(row["artifact_path"]),
+            calibration_path=str(row["calibration_path"]),
+            prompt_config=dict(row.get("prompt", {})),
+            sparsity_ratio=float(row["sparsity_ratio"]),
+            calibration_samples=int(row.get("calibration_samples", 128)),
+            calibration_max_input_tokens=int(row.get("calibration_max_input_tokens", 2048)),
+            calibration_batch_size=int(row.get("calibration_batch_size", 1)),
+            target_modules=row.get("target_modules"),
+            blocksize=int(row.get("blocksize", 128)),
+            percdamp=float(row.get("percdamp", 0.01)),
+            artifact_save_dtype=str(row.get("artifact_save_dtype", "float16")),
+            matched_rasp_reference=str(row.get("matched_rasp_reference", "")),
+            target_matched_to_rasp_actual_mlp_pruning=(
+                float(row["target_pruning_ratio"])
+                if "target_pruning_ratio" in row
+                else None
+            ),
+            force=bool(os.environ.get("SPARSEGPT_FORCE_PREPARE") == "1"),
+        )
+        summaries.append({"method": row, "artifact": sparsegpt_summary_to_dict(summary)})
+        del bundle
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    write_json(
+        p["sparsegpt_summary"],
+        {
+            "schema": "sparsegpt_official_prepare_summary_v1",
+            **metadata(cfg),
+            "methods": summaries,
+            "calibration_reuses_test_labels": False,
+            "real_speedup_claimed": False,
+        },
+    )
+
+
 def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     allow_final_without_dev = bool(_evaluation_threshold(cfg, "allow_final_without_dev", False))
     final_without_dev_allowed = allow_final_without_dev and (
-        _adaptive_griffin_enabled(cfg) or _griffin_prompt_enabled(cfg) or _wanda_official_enabled(cfg)
+        _adaptive_griffin_enabled(cfg)
+        or _griffin_prompt_enabled(cfg)
+        or _wanda_official_enabled(cfg)
+        or _sparsegpt_official_enabled(cfg)
     )
     if p["dev_summary"].exists():
         dev_summary = read_json(p["dev_summary"])
@@ -2247,6 +2416,7 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             "adaptive_griffin_policy_frozen": True,
             "griffin_prompt_baseline_frozen": _griffin_prompt_enabled(cfg),
             "wanda_official_baseline_frozen": _wanda_official_enabled(cfg),
+            "sparsegpt_official_baseline_frozen": _sparsegpt_official_enabled(cfg),
         }
     else:
         raise RuntimeError(
@@ -2260,7 +2430,12 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         policy_methods, policy_selection = load_downstream_methods_from_selection(policy_selection_path)
     if policy_methods is not None:
         methods = policy_methods
-    elif _adaptive_griffin_enabled(cfg) or _griffin_prompt_enabled(cfg) or _wanda_official_enabled(cfg):
+    elif (
+        _adaptive_griffin_enabled(cfg)
+        or _griffin_prompt_enabled(cfg)
+        or _wanda_official_enabled(cfg)
+        or _sparsegpt_official_enabled(cfg)
+    ):
         requested_final_methods = set()
         env_final_methods = os.environ.get("STAGE_FINAL_METHODS")
         if env_final_methods:
@@ -2290,6 +2465,8 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             methods.extend(griffin_prompt_methods(cfg))
         if _wanda_official_enabled(cfg):
             methods.extend(wanda_official_methods(cfg))
+        if _sparsegpt_official_enabled(cfg):
+            methods.extend(sparsegpt_official_methods(cfg))
     else:
         frozen = read_json(p["frozen"]) if p["frozen"].exists() else {}
         stage_budget = frozen["stage_budget"]
@@ -2608,6 +2785,7 @@ COMMANDS = {
     "calibrate_masks": command_calibrate_masks,
     "validate_masks": command_validate_masks,
     "evaluate_dev": command_evaluate_dev,
+    "prepare_sparsegpt": command_prepare_sparsegpt,
     "evaluate_final": command_evaluate_final,
     "merge_final_shards": command_merge_final_shards,
     "summarize": command_summarize,
@@ -2628,6 +2806,7 @@ def completion_artifacts(p: dict[str, Path], stage: str) -> tuple[Path, ...]:
         "calibrate_masks": (p["bank_summary"], p["bank"]),
         "validate_masks": (p["bank_validation"],),
         "evaluate_dev": (p["dev_summary"], p["frozen"]),
+        "prepare_sparsegpt": (p["sparsegpt_summary"],),
         "merge_final_shards": (p["final_summary"],),
         "summarize": (p["workflow_summary"], p["workflow_gate"]),
     }[stage]

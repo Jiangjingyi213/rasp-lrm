@@ -9,6 +9,10 @@ from tqdm import tqdm
 
 from src.data.format_prompt import build_prompt, forced_assistant_prefix
 from src.metrics.answer_match import answer_match, extract_answer
+from src.baselines.sparsegpt_official_qwen3 import (
+    apply_sparsegpt_official_qwen3_artifact,
+    summary_to_dict as sparsegpt_summary_to_dict,
+)
 from src.baselines.wanda_official_qwen3 import apply_wanda_official_qwen3, summary_to_dict
 
 from .decode import decode_with_stage_masks
@@ -35,7 +39,7 @@ def uniform_ratios(ratio: float) -> dict[str, float]:
 def method_requires_mask_bank(method: dict[str, Any]) -> bool:
     if all(float(value) <= 0.0 for value in method.get("stage_ratios", {}).values()):
         return False
-    return method.get("policy") not in {"griffin_prompt", "wanda_official"}
+    return method.get("policy") not in {"griffin_prompt", "wanda_official", "sparsegpt_official"}
 
 
 def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, Any]):
@@ -77,6 +81,37 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
                 "wanda_calibration_samples": int(summary["calibration_samples"]),
                 "wanda_calibration_source": str(summary["calibration_path"]),
                 "wanda_target_modules": list(summary["target_modules"]),
+                "weight_sparsity_by_module": dict(summary["weight_sparsity_by_module"]),
+                "matched_rasp_reference": str(summary["matched_rasp_reference"]),
+                "target_matched_to_rasp_actual_mlp_pruning": summary[
+                    "target_matched_to_rasp_actual_mlp_pruning"
+                ],
+                "real_speedup_claimed": False,
+            },
+        )
+    if method["policy"] == "sparsegpt_official":
+        sparsegpt_summary = apply_sparsegpt_official_qwen3_artifact(
+            model,
+            artifact_dir=str(method["artifact_path"]),
+        )
+        summary = sparsegpt_summary_to_dict(sparsegpt_summary)
+        return StaticWeightPruningRuntime(
+            policy="sparsegpt_official",
+            backend="sparsegpt_official_weight_mask_v1",
+            baseline_type="official_style_sparsegpt",
+            pruning_granularity="weight_unstructured",
+            weight_sparsity_overall=float(summary["weight_sparsity_overall"]),
+            extra_summary={
+                "sparsegpt_official_summary": summary,
+                "sparsegpt_sparsity_ratio": float(summary["sparsity_ratio"]),
+                "sparsegpt_weight_sparsity": float(summary["weight_sparsity_overall"]),
+                "sparsegpt_calibration_samples": int(summary["calibration_samples"]),
+                "sparsegpt_calibration_source": str(summary["calibration_path"]),
+                "sparsegpt_target_modules": list(summary["target_modules"]),
+                "sparsegpt_artifact_path": str(summary["artifact_path"]),
+                "sparsegpt_artifact_hash": str(summary["artifact_hash"]),
+                "sparsegpt_blocksize": int(summary["blocksize"]),
+                "sparsegpt_percdamp": float(summary["percdamp"]),
                 "weight_sparsity_by_module": dict(summary["weight_sparsity_by_module"]),
                 "matched_rasp_reference": str(summary["matched_rasp_reference"]),
                 "target_matched_to_rasp_actual_mlp_pruning": summary[
@@ -266,6 +301,15 @@ def evaluate_method(
     wanda_calibration_samples = None
     wanda_calibration_source = None
     wanda_target_modules = None
+    sparsegpt_weight_sparsity = None
+    sparsegpt_sparsity_ratio = None
+    sparsegpt_calibration_samples = None
+    sparsegpt_calibration_source = None
+    sparsegpt_target_modules = None
+    sparsegpt_artifact_path = None
+    sparsegpt_artifact_hash = None
+    sparsegpt_blocksize = None
+    sparsegpt_percdamp = None
     weight_sparsity_by_module = None
     matched_rasp_reference = None
     target_matched_to_rasp_actual_mlp_pruning = None
@@ -302,6 +346,40 @@ def evaluate_method(
             or runtime_summary.get("wanda_calibration_source")
         )
         wanda_target_modules = wanda_target_modules or runtime_summary.get("wanda_target_modules")
+        sparsegpt_weight_sparsity = (
+            sparsegpt_weight_sparsity
+            if sparsegpt_weight_sparsity is not None
+            else runtime_summary.get("sparsegpt_weight_sparsity")
+        )
+        sparsegpt_sparsity_ratio = (
+            sparsegpt_sparsity_ratio
+            if sparsegpt_sparsity_ratio is not None
+            else runtime_summary.get("sparsegpt_sparsity_ratio")
+        )
+        sparsegpt_calibration_samples = (
+            sparsegpt_calibration_samples
+            if sparsegpt_calibration_samples is not None
+            else runtime_summary.get("sparsegpt_calibration_samples")
+        )
+        sparsegpt_calibration_source = (
+            sparsegpt_calibration_source
+            or runtime_summary.get("sparsegpt_calibration_source")
+        )
+        sparsegpt_target_modules = sparsegpt_target_modules or runtime_summary.get(
+            "sparsegpt_target_modules"
+        )
+        sparsegpt_artifact_path = sparsegpt_artifact_path or runtime_summary.get("sparsegpt_artifact_path")
+        sparsegpt_artifact_hash = sparsegpt_artifact_hash or runtime_summary.get("sparsegpt_artifact_hash")
+        sparsegpt_blocksize = (
+            sparsegpt_blocksize
+            if sparsegpt_blocksize is not None
+            else runtime_summary.get("sparsegpt_blocksize")
+        )
+        sparsegpt_percdamp = (
+            sparsegpt_percdamp
+            if sparsegpt_percdamp is not None
+            else runtime_summary.get("sparsegpt_percdamp")
+        )
         weight_sparsity_by_module = (
             weight_sparsity_by_module or runtime_summary.get("weight_sparsity_by_module")
         )
@@ -417,6 +495,24 @@ def evaluate_method(
         summary["wanda_calibration_source"] = wanda_calibration_source
     if wanda_target_modules:
         summary["wanda_target_modules"] = wanda_target_modules
+    if sparsegpt_weight_sparsity is not None:
+        summary["sparsegpt_weight_sparsity"] = sparsegpt_weight_sparsity
+    if sparsegpt_sparsity_ratio is not None:
+        summary["sparsegpt_sparsity_ratio"] = sparsegpt_sparsity_ratio
+    if sparsegpt_calibration_samples is not None:
+        summary["sparsegpt_calibration_samples"] = sparsegpt_calibration_samples
+    if sparsegpt_calibration_source:
+        summary["sparsegpt_calibration_source"] = sparsegpt_calibration_source
+    if sparsegpt_target_modules:
+        summary["sparsegpt_target_modules"] = sparsegpt_target_modules
+    if sparsegpt_artifact_path:
+        summary["sparsegpt_artifact_path"] = sparsegpt_artifact_path
+    if sparsegpt_artifact_hash:
+        summary["sparsegpt_artifact_hash"] = sparsegpt_artifact_hash
+    if sparsegpt_blocksize is not None:
+        summary["sparsegpt_blocksize"] = sparsegpt_blocksize
+    if sparsegpt_percdamp is not None:
+        summary["sparsegpt_percdamp"] = sparsegpt_percdamp
     if weight_sparsity_by_module:
         summary["weight_sparsity_by_module"] = weight_sparsity_by_module
     if matched_rasp_reference:
