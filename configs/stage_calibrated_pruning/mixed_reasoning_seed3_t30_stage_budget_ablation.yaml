@@ -1,0 +1,303 @@
+seed: 3
+
+workflow:
+  profile: pilot
+  root: runs/08_stage_calibrated_pruning/main_{profile}_mixed_reasoning_seed3_t30_stage_budget_ablation
+
+stages: [setup, reasoning, verify, final]
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float32
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  ordinary:
+    use_chat_template: true
+    enable_thinking: true
+    answer_format: boxed
+  structured:
+    use_chat_template: true
+    enable_thinking: true
+    explicit_stage_protocol: true
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
+
+generation:
+  max_input_tokens: 4096
+  max_new_tokens: 16384
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+
+calibration_pool:
+  allowed_sources: ["*"]
+  excluded_sources: [GSM8k, GSM8K, MATH, Omni-MATH, amc_aime, cn_k12]
+
+selection:
+  difficulty_filter: any_correct
+
+calibration:
+  forward_chunk_tokens: 1024
+
+masks:
+  metric: WIFV
+  structure: UL-UM
+  ratios: [0.00, 0.10, 0.15, 0.20]
+  c4_samples: 0
+  bias_compensation: true
+
+adaptive_griffin:
+  enabled: true
+  policy: calibrated_stage_safe_dynamic_griffin
+  score_mode: protected_core_safe_prune
+  runtime_weight: 0.25
+  prior_weight: 0.75
+  warmup_tokens:
+    setup: 0
+    reasoning: 16
+    verify: 16
+    final: 0
+  protected_core_ratios:
+    setup: 0.35
+    reasoning: 0.40
+    verify: 0.45
+    final: 0.45
+  refresh_intervals:
+    setup: 192
+    reasoning: 192
+    verify: 192
+    final: 0
+  window_tokens:
+    setup: 192
+    reasoning: 192
+    verify: 192
+    final: 1
+  prior_policy: stage_specific
+  bias_compensation: true
+  backend: logical_mask
+  variants:
+    - method_name: t30_current_budget
+      variant_role: budget_ablation_current_reference
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30_budget
+      stage_ratios:
+        setup: 0.42
+        reasoning: 0.38
+        verify: 0.38
+        final: 0.38
+      selection_note: "Current t30_math_safe budget; nominal average ratio is 0.39."
+    - method_name: budget_uniform_t30
+      variant_role: budget_ablation_uniform
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30_budget
+      stage_ratios:
+        setup: 0.39
+        reasoning: 0.39
+        verify: 0.39
+        final: 0.39
+      selection_note: "Uniform stage budget with the same nominal average ratio."
+    - method_name: budget_setup_aggressive_t30
+      variant_role: budget_ablation_setup_aggressive
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30_budget
+      stage_ratios:
+        setup: 0.55
+        reasoning: 0.34
+        verify: 0.34
+        final: 0.33
+      selection_note: "Only setup receives a high pruning budget; nominal average ratio remains 0.39."
+    - method_name: budget_reasoning_aggressive_t30
+      variant_role: budget_ablation_reasoning_aggressive
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30_budget
+      stage_ratios:
+        setup: 0.34
+        reasoning: 0.55
+        verify: 0.34
+        final: 0.33
+      selection_note: "Only reasoning receives a high pruning budget; nominal average ratio remains 0.39."
+    - method_name: budget_verify_aggressive_t30
+      variant_role: budget_ablation_verify_aggressive
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30_budget
+      stage_ratios:
+        setup: 0.34
+        reasoning: 0.34
+        verify: 0.55
+        final: 0.33
+      selection_note: "Only verify receives a high pruning budget; nominal average ratio remains 0.39."
+    - method_name: budget_final_aggressive_t30
+      variant_role: budget_ablation_final_aggressive
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30_budget
+      stage_ratios:
+        setup: 0.34
+        reasoning: 0.34
+        verify: 0.33
+        final: 0.55
+      selection_note: "Only final receives a high pruning budget; nominal average ratio remains 0.39."
+    - method_name: budget_sensitivity_guided_t30
+      variant_role: budget_ablation_sensitivity_guided
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30_budget
+      stage_ratios:
+        setup: 0.40
+        reasoning: 0.32
+        verify: 0.34
+        final: 0.50
+      selection_note: "Motivation-guided budget: protect reasoning/verify and prune final more aggressively; nominal average ratio remains 0.39."
+
+evaluation:
+  math500_name_or_path: HuggingFaceH4/MATH-500
+  allow_final_without_dev: true
+  max_dev_accuracy_drop: 0.05
+  minimum_stage_protocol_rate: 0.90
+  maximum_structured_prompt_accuracy_drop: 0.05
+  maximum_truncation_rate: 0.05
+  final_datasets:
+    - dataset: gsm8k
+      split: test
+      limit: 200
+    - dataset: math500
+      name_or_path: HuggingFaceH4/MATH-500
+      split: test
+      limit: 200
+    - dataset: arc_easy
+      name_or_path: allenai/ai2_arc
+      dataset_config: ARC-Easy
+      split: test
+      limit: 200
+    - dataset: arc_challenge
+      name_or_path: allenai/ai2_arc
+      dataset_config: ARC-Challenge
+      split: test
+      limit: 200
+    - dataset: bbh_selected
+      name_or_path: lukaemon/bbh
+      split: test
+      selected_tasks:
+        - boolean_expressions
+        - date_understanding
+        - disambiguation_qa
+        - logical_deduction_three_objects
+        - logical_deduction_five_objects
+        - tracking_shuffled_objects_three_objects
+      per_task_limit: 40
+      limit: 240
+
+profiles:
+  smoke:
+    candidate_problems: 60
+    generations_per_problem: 1
+    calibration_problems: 16
+    dev_problems: 16
+    min_stage_tokens: 128
+    min_stage_tokens_by_stage:
+      setup: 128
+      reasoning: 256
+      verify: 128
+      final: 16
+    stage_token_balanced_selection: true
+    expansion_problems: 0
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: -1
+    final_seeds: [3]
+    dev_uniform_ratios: []
+    dev_global_policies: []
+    run_stage_specific_uniform: false
+    run_shuffled_uniform: false
+    budget_search_ratios: []
+    coordinate_rounds: 0
+    run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: true
+    reuse_existing_method_summaries: true
+    minimum_candidate_stage_protocol_rate: 0.90
+    maximum_candidate_fallback_rate: 0.10
+    maximum_candidate_truncation_rate: 0.05
+    final_methods:
+      - t30_current_budget
+      - budget_uniform_t30
+      - budget_setup_aggressive_t30
+      - budget_reasoning_aggressive_t30
+      - budget_verify_aggressive_t30
+      - budget_final_aggressive_t30
+      - budget_sensitivity_guided_t30
+
+  pilot:
+    candidate_problems: 600
+    generations_per_problem: 2
+    calibration_problems: 128
+    dev_problems: 128
+    min_stage_tokens: 2048
+    min_stage_tokens_by_stage:
+      setup: 2048
+      reasoning: 4096
+      verify: 2048
+      final: 256
+    stage_token_balanced_selection: true
+    expansion_problems: 300
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: -1
+    final_seeds: [3]
+    dev_uniform_ratios: []
+    dev_global_policies: []
+    run_stage_specific_uniform: false
+    run_shuffled_uniform: false
+    budget_search_ratios: []
+    coordinate_rounds: 0
+    run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: true
+    reuse_existing_method_summaries: true
+    minimum_candidate_stage_protocol_rate: 0.90
+    maximum_candidate_fallback_rate: 0.10
+    maximum_candidate_truncation_rate: 0.05
+    final_methods:
+      - t30_current_budget
+      - budget_uniform_t30
+      - budget_setup_aggressive_t30
+      - budget_reasoning_aggressive_t30
+      - budget_verify_aggressive_t30
+      - budget_final_aggressive_t30
+      - budget_sensitivity_guided_t30
+
+  formal:
+    candidate_problems: 900
+    generations_per_problem: 2
+    calibration_problems: 128
+    dev_problems: 128
+    min_stage_tokens: 2048
+    min_stage_tokens_by_stage:
+      setup: 2048
+      reasoning: 4096
+      verify: 2048
+      final: 256
+    stage_token_balanced_selection: true
+    expansion_problems: 300
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: -1
+    final_seeds: [3]
+    dev_uniform_ratios: []
+    dev_global_policies: []
+    run_stage_specific_uniform: false
+    run_shuffled_uniform: false
+    budget_search_ratios: []
+    coordinate_rounds: 0
+    run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: true
+    reuse_existing_method_summaries: true
+    minimum_candidate_stage_protocol_rate: 0.90
+    maximum_candidate_fallback_rate: 0.10
+    maximum_candidate_truncation_rate: 0.05
+    final_methods:
+      - t30_current_budget
+      - budget_uniform_t30
+      - budget_setup_aggressive_t30
+      - budget_reasoning_aggressive_t30
+      - budget_verify_aggressive_t30
+      - budget_final_aggressive_t30
+      - budget_sensitivity_guided_t30
