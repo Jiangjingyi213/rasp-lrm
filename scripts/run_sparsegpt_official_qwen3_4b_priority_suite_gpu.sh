@@ -10,7 +10,10 @@ export BASELINE_SCHEMA="${BASELINE_SCHEMA:-sparsegpt_official_priority_suite_agg
 export SPARSEGPT_CALIBRATION_BATCH_SIZE="${SPARSEGPT_CALIBRATION_BATCH_SIZE:-4}"
 
 PYTHON_BIN="${PYTHON:-/root/jjy/envs/rasp_qwen3_eval/bin/python}"
+read -r -a PREPARE_GPUS <<< "${FINAL_GPUS:-0}"
+export PREPARE_GPU="${PREPARE_GPU:-${PREPARE_GPUS[0]}}"
 
+CUDA_VISIBLE_DEVICES="${PREPARE_GPU}" \
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}" \
 HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
 STAGE_WORKFLOW_ROOT="${RUN_ROOT}" \
@@ -20,6 +23,7 @@ STAGE_WORKFLOW_ROOT="${RUN_ROOT}" \
   --stage preflight \
   --force
 
+CUDA_VISIBLE_DEVICES="${PREPARE_GPU}" \
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}" \
 HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
 STAGE_WORKFLOW_ROOT="${RUN_ROOT}" \

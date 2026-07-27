@@ -1265,6 +1265,14 @@ def _sparsegpt_official_enabled(cfg: dict[str, Any]) -> bool:
     return bool(_sparsegpt_official_cfg(cfg).get("enabled", False))
 
 
+def _shortgpt_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    return deepcopy(cfg.get("shortgpt", {}))
+
+
+def _shortgpt_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(_shortgpt_cfg(cfg).get("enabled", False))
+
+
 def _griffin_prompt_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> dict[str, Any]:
     prune_ratio = float(row.get("prune_ratio", row.get("ratio", 0.0)))
     name = str(row.get("method_name", row.get("name", f"griffin_prompt_{prune_ratio:.4f}".replace(".", "p"))))
@@ -1479,6 +1487,82 @@ def sparsegpt_official_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     if len(names) != len(set(names)):
         duplicates = sorted({name for name in names if names.count(name) > 1})
         raise ValueError(f"SparseGPT official method names must be unique: {duplicates}")
+    return methods
+
+
+def _shortgpt_calibration_path(row: dict[str, Any]) -> str:
+    if row.get("calibration_path"):
+        return str(row["calibration_path"])
+    source_root = os.environ.get(
+        "SOURCE_ROOT",
+        "runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3",
+    )
+    return str(Path(source_root) / "03_selected" / "calibration.jsonl")
+
+
+def _shortgpt_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> dict[str, Any]:
+    prune_ratio = float(row.get("prune_ratio", row.get("ratio", 0.0)))
+    name = str(row.get("method_name", row.get("name", f"shortgpt_{prune_ratio:.4f}".replace(".", "p"))))
+    extra: dict[str, Any] = {}
+    for key in (
+        "candidate_layers",
+        "protected_first_layers",
+        "protected_last_layers",
+        "pruned_layers",
+    ):
+        if key in row:
+            extra[key] = deepcopy(row[key])
+    return method(
+        name,
+        "shortgpt",
+        uniform_ratios(prune_ratio),
+        prompt,
+        bias=False,
+        prune_ratio=prune_ratio,
+        density=1.0 - prune_ratio,
+        calibration_path=_shortgpt_calibration_path(row),
+        calibration_samples=int(row.get("calibration_samples", 128)),
+        calibration_max_input_tokens=int(row.get("calibration_max_input_tokens", 2048)),
+        baseline_type="shortgpt_depth_pruning",
+        pruning_granularity="decoder_layer_logical_skip",
+        matched_rasp_reference=str(row.get("matched_rasp_reference", "")),
+        variant_role=str(row.get("variant_role", name)),
+        selection_note=str(row.get("selection_note", "")),
+        **extra,
+        **(
+            {"target_pruning_ratio": float(row["target_pruning_ratio"])}
+            if "target_pruning_ratio" in row
+            else {}
+        ),
+        **(
+            {"target_pruning_label": str(row["target_pruning_label"])}
+            if "target_pruning_label" in row
+            else {}
+        ),
+    )
+
+
+def shortgpt_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    scfg = _shortgpt_cfg(cfg)
+    variants = scfg.get("variants")
+    if variants is None:
+        if not scfg:
+            return []
+        variants = [scfg]
+    if not isinstance(variants, list) or not variants:
+        raise ValueError("shortgpt.variants must be a non-empty list when provided")
+    methods = []
+    for index, row in enumerate(variants):
+        if not isinstance(row, dict):
+            raise ValueError(f"shortgpt.variants[{index}] must be a mapping")
+        merged = deepcopy(scfg)
+        merged.pop("variants", None)
+        merged.update(deepcopy(row))
+        methods.append(_shortgpt_method_from_cfg(merged, structured_prompt(cfg)))
+    names = [row["name"] for row in methods]
+    if len(names) != len(set(names)):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"ShortGPT method names must be unique: {duplicates}")
     return methods
 
 
@@ -2406,6 +2490,7 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         or _griffin_prompt_enabled(cfg)
         or _wanda_official_enabled(cfg)
         or _sparsegpt_official_enabled(cfg)
+        or _shortgpt_enabled(cfg)
     )
     if p["dev_summary"].exists():
         dev_summary = read_json(p["dev_summary"])
@@ -2417,6 +2502,7 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             "griffin_prompt_baseline_frozen": _griffin_prompt_enabled(cfg),
             "wanda_official_baseline_frozen": _wanda_official_enabled(cfg),
             "sparsegpt_official_baseline_frozen": _sparsegpt_official_enabled(cfg),
+            "shortgpt_baseline_frozen": _shortgpt_enabled(cfg),
         }
     else:
         raise RuntimeError(
@@ -2435,6 +2521,7 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         or _griffin_prompt_enabled(cfg)
         or _wanda_official_enabled(cfg)
         or _sparsegpt_official_enabled(cfg)
+        or _shortgpt_enabled(cfg)
     ):
         requested_final_methods = set()
         env_final_methods = os.environ.get("STAGE_FINAL_METHODS")
@@ -2467,6 +2554,8 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             methods.extend(wanda_official_methods(cfg))
         if _sparsegpt_official_enabled(cfg):
             methods.extend(sparsegpt_official_methods(cfg))
+        if _shortgpt_enabled(cfg):
+            methods.extend(shortgpt_methods(cfg))
     else:
         frozen = read_json(p["frozen"]) if p["frozen"].exists() else {}
         stage_budget = frozen["stage_budget"]

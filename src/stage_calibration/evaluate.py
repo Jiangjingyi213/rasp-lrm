@@ -13,6 +13,10 @@ from src.baselines.sparsegpt_official_qwen3 import (
     apply_sparsegpt_official_qwen3_artifact,
     summary_to_dict as sparsegpt_summary_to_dict,
 )
+from src.baselines.shortgpt_qwen3 import (
+    prepare_shortgpt_qwen3,
+    summary_to_dict as shortgpt_summary_to_dict,
+)
 from src.baselines.wanda_official_qwen3 import apply_wanda_official_qwen3, summary_to_dict
 
 from .decode import decode_with_stage_masks
@@ -23,6 +27,7 @@ from .runtime import (
     DenseStageRuntime,
     GriffinPromptRuntime,
     SafeDynamicStageGriffinRuntime,
+    StaticLayerPruningRuntime,
     StageMaskRuntime,
     StaticWeightPruningRuntime,
     StaticCoreResidualStageRuntime,
@@ -39,7 +44,7 @@ def uniform_ratios(ratio: float) -> dict[str, float]:
 def method_requires_mask_bank(method: dict[str, Any]) -> bool:
     if all(float(value) <= 0.0 for value in method.get("stage_ratios", {}).values()):
         return False
-    return method.get("policy") not in {"griffin_prompt", "wanda_official", "sparsegpt_official"}
+    return method.get("policy") not in {"griffin_prompt", "wanda_official", "sparsegpt_official", "shortgpt"}
 
 
 def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, Any]):
@@ -113,6 +118,55 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
                 "sparsegpt_blocksize": int(summary["blocksize"]),
                 "sparsegpt_percdamp": float(summary["percdamp"]),
                 "weight_sparsity_by_module": dict(summary["weight_sparsity_by_module"]),
+                "matched_rasp_reference": str(summary["matched_rasp_reference"]),
+                "target_matched_to_rasp_actual_mlp_pruning": summary[
+                    "target_matched_to_rasp_actual_mlp_pruning"
+                ],
+                "real_speedup_claimed": False,
+            },
+        )
+    if method["policy"] == "shortgpt":
+        shortgpt_summary, handles = prepare_shortgpt_qwen3(
+            model,
+            method["tokenizer"],
+            calibration_path=str(method["calibration_path"]),
+            prompt_config=dict(method.get("prompt", {})),
+            prune_ratio=float(method.get("prune_ratio", method["stage_ratios"].get("setup", 0.0))),
+            calibration_samples=int(method.get("calibration_samples", 128)),
+            max_input_tokens=int(method.get("calibration_max_input_tokens", 2048)),
+            candidate_layers=method.get("candidate_layers"),
+            protected_first_layers=int(method.get("protected_first_layers", 0)),
+            protected_last_layers=int(method.get("protected_last_layers", 0)),
+            pruned_layers=method.get("pruned_layers"),
+            matched_rasp_reference=str(method.get("matched_rasp_reference", "")),
+            target_matched_to_rasp_actual_mlp_pruning=(
+                float(method["target_pruning_ratio"])
+                if "target_pruning_ratio" in method
+                else None
+            ),
+        )
+        summary = shortgpt_summary_to_dict(shortgpt_summary)
+        return StaticLayerPruningRuntime(
+            policy="shortgpt",
+            backend="shortgpt_layer_skip_logical_v1",
+            baseline_type="shortgpt_depth_pruning",
+            pruning_granularity="decoder_layer_logical_skip",
+            total_layers=int(summary["total_layers"]),
+            pruned_layers=list(summary["pruned_layers"]),
+            handles=handles,
+            extra_summary={
+                "shortgpt_summary": summary,
+                "shortgpt_prune_ratio": float(summary["prune_ratio"]),
+                "shortgpt_layer_pruning_ratio": (
+                    len(summary["pruned_layers"]) / int(summary["total_layers"])
+                    if int(summary["total_layers"])
+                    else 0.0
+                ),
+                "shortgpt_calibration_samples": int(summary["calibration_samples"]),
+                "shortgpt_calibration_source": str(summary["calibration_path"]),
+                "shortgpt_candidate_layers": list(summary["candidate_layers"]),
+                "shortgpt_pruned_layers": list(summary["pruned_layers"]),
+                "shortgpt_block_influence_by_layer": dict(summary["block_influence_by_layer"]),
                 "matched_rasp_reference": str(summary["matched_rasp_reference"]),
                 "target_matched_to_rasp_actual_mlp_pruning": summary[
                     "target_matched_to_rasp_actual_mlp_pruning"
@@ -231,41 +285,46 @@ def evaluate_method(
     torch.manual_seed(seed)
     random.seed(seed)
     method = dict(method)
-    if method.get("policy") == "wanda_official":
+    if method.get("policy") in {"wanda_official", "shortgpt"}:
         method["tokenizer"] = tokenizer
     runtime = _runtime_for_method(model, bank, method)
     method.pop("tokenizer", None)
     rows = []
-    for task in tqdm(tasks, desc=f"eval-{method['name']}"):
-        prompt_cfg = dict(method.get("prompt", {}))
-        prompt = build_prompt(task["question"], tokenizer, prompt_cfg)
-        prefill = forced_assistant_prefix(prompt_cfg)
-        result = decode_with_stage_masks(
-            model,
-            tokenizer,
-            prompt,
-            runtime,
-            prefill=prefill,
-            max_new_tokens=int(generation["max_new_tokens"]),
-            max_input_tokens=int(generation.get("max_input_tokens", 4096)),
-            temperature=float(generation.get("temperature", 0.6)),
-            top_p=float(generation.get("top_p", 0.95)),
-            top_k=int(generation.get("top_k", 20)),
-        )
-        rows.append(
-            {
-                **task,
-                "method": method["name"],
-                "prompt": prompt,
-                **result,
-                "prediction": extract_answer(result["completion"]),
-                "correct": answer_match(
-                    result["completion"],
-                    str(task.get("gold", "")),
-                    answer_type=task.get("answer_type"),
-                ),
-            }
-        )
+    try:
+        for task in tqdm(tasks, desc=f"eval-{method['name']}"):
+            prompt_cfg = dict(method.get("prompt", {}))
+            prompt = build_prompt(task["question"], tokenizer, prompt_cfg)
+            prefill = forced_assistant_prefix(prompt_cfg)
+            result = decode_with_stage_masks(
+                model,
+                tokenizer,
+                prompt,
+                runtime,
+                prefill=prefill,
+                max_new_tokens=int(generation["max_new_tokens"]),
+                max_input_tokens=int(generation.get("max_input_tokens", 4096)),
+                temperature=float(generation.get("temperature", 0.6)),
+                top_p=float(generation.get("top_p", 0.95)),
+                top_k=int(generation.get("top_k", 20)),
+            )
+            rows.append(
+                {
+                    **task,
+                    "method": method["name"],
+                    "prompt": prompt,
+                    **result,
+                    "prediction": extract_answer(result["completion"]),
+                    "correct": answer_match(
+                        result["completion"],
+                        str(task.get("gold", "")),
+                        answer_type=task.get("answer_type"),
+                    ),
+                }
+            )
+    finally:
+        close = getattr(runtime, "close", None)
+        if close is not None:
+            close()
     correct = sum(int(row["correct"]) for row in rows)
     stage_tokens = Counter()
     dense_observation_tokens = Counter()
@@ -310,6 +369,12 @@ def evaluate_method(
     sparsegpt_artifact_hash = None
     sparsegpt_blocksize = None
     sparsegpt_percdamp = None
+    shortgpt_calibration_samples = None
+    shortgpt_calibration_source = None
+    shortgpt_candidate_layers = None
+    shortgpt_pruned_layers = None
+    shortgpt_block_influence_by_layer = None
+    shortgpt_layer_pruning_ratio = None
     weight_sparsity_by_module = None
     matched_rasp_reference = None
     target_matched_to_rasp_actual_mlp_pruning = None
@@ -379,6 +444,30 @@ def evaluate_method(
             sparsegpt_percdamp
             if sparsegpt_percdamp is not None
             else runtime_summary.get("sparsegpt_percdamp")
+        )
+        shortgpt_calibration_samples = (
+            shortgpt_calibration_samples
+            if shortgpt_calibration_samples is not None
+            else runtime_summary.get("shortgpt_calibration_samples")
+        )
+        shortgpt_calibration_source = (
+            shortgpt_calibration_source
+            or runtime_summary.get("shortgpt_calibration_source")
+        )
+        shortgpt_candidate_layers = (
+            shortgpt_candidate_layers or runtime_summary.get("shortgpt_candidate_layers")
+        )
+        shortgpt_pruned_layers = (
+            shortgpt_pruned_layers or runtime_summary.get("shortgpt_pruned_layers")
+        )
+        shortgpt_block_influence_by_layer = (
+            shortgpt_block_influence_by_layer
+            or runtime_summary.get("shortgpt_block_influence_by_layer")
+        )
+        shortgpt_layer_pruning_ratio = (
+            shortgpt_layer_pruning_ratio
+            if shortgpt_layer_pruning_ratio is not None
+            else runtime_summary.get("shortgpt_layer_pruning_ratio")
         )
         weight_sparsity_by_module = (
             weight_sparsity_by_module or runtime_summary.get("weight_sparsity_by_module")
@@ -513,6 +602,18 @@ def evaluate_method(
         summary["sparsegpt_blocksize"] = sparsegpt_blocksize
     if sparsegpt_percdamp is not None:
         summary["sparsegpt_percdamp"] = sparsegpt_percdamp
+    if shortgpt_calibration_samples is not None:
+        summary["shortgpt_calibration_samples"] = shortgpt_calibration_samples
+    if shortgpt_calibration_source:
+        summary["shortgpt_calibration_source"] = shortgpt_calibration_source
+    if shortgpt_candidate_layers:
+        summary["shortgpt_candidate_layers"] = shortgpt_candidate_layers
+    if shortgpt_pruned_layers:
+        summary["shortgpt_pruned_layers"] = shortgpt_pruned_layers
+    if shortgpt_block_influence_by_layer:
+        summary["shortgpt_block_influence_by_layer"] = shortgpt_block_influence_by_layer
+    if shortgpt_layer_pruning_ratio is not None:
+        summary["shortgpt_layer_pruning_ratio"] = shortgpt_layer_pruning_ratio
     if weight_sparsity_by_module:
         summary["weight_sparsity_by_module"] = weight_sparsity_by_module
     if matched_rasp_reference:

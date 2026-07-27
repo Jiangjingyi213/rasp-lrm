@@ -7,7 +7,10 @@ export STAGE_FINAL_METHODS="${STAGE_FINAL_METHODS:-sparsegpt_t30_official}"
 export RUN_LABEL="${RUN_LABEL:-sparsegpt_official_qwen3_1p7b_full}"
 
 PYTHON_BIN="${PYTHON:-/home/cike/jjy/envs/rasp_qwen3_eval/bin/python}"
+read -r -a PREPARE_GPUS <<< "${FINAL_GPUS:-0 1 2 3 4 5 6 7}"
+export PREPARE_GPU="${PREPARE_GPU:-${PREPARE_GPUS[0]}}"
 
+CUDA_VISIBLE_DEVICES="${PREPARE_GPU}" \
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}" \
 HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
 STAGE_WORKFLOW_ROOT="${RUN_ROOT}" \
@@ -17,6 +20,7 @@ STAGE_WORKFLOW_ROOT="${RUN_ROOT}" \
   --stage preflight \
   --force
 
+CUDA_VISIBLE_DEVICES="${PREPARE_GPU}" \
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}" \
 HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
 STAGE_WORKFLOW_ROOT="${RUN_ROOT}" \

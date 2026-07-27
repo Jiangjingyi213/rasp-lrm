@@ -268,6 +268,58 @@ class StaticWeightPruningRuntime(DenseStageRuntime):
         return output
 
 
+class StaticLayerPruningRuntime(DenseStageRuntime):
+    def __init__(
+        self,
+        *,
+        policy: str,
+        backend: str,
+        baseline_type: str,
+        pruning_granularity: str,
+        total_layers: int,
+        pruned_layers: list[int],
+        extra_summary: dict[str, Any] | None = None,
+        handles: list[Any] | None = None,
+    ) -> None:
+        super().__init__(policy=policy)
+        self.backend = str(backend)
+        self.baseline_type = str(baseline_type)
+        self.pruning_granularity = str(pruning_granularity)
+        self.total_layers = int(total_layers)
+        self.pruned_layers = [int(layer_id) for layer_id in pruned_layers]
+        self.extra_summary = dict(extra_summary or {})
+        self._handles = list(handles or [])
+
+    @property
+    def layer_pruning_ratio(self) -> float:
+        return len(self.pruned_layers) / self.total_layers if self.total_layers else 0.0
+
+    def close(self) -> None:
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
+
+    def summary(self) -> dict[str, Any]:
+        output = super().summary()
+        output.update(self.extra_summary)
+        output.update(
+            {
+                "backend": self.backend,
+                "baseline_type": self.baseline_type,
+                "policy": self.policy,
+                "pruning_granularity": self.pruning_granularity,
+                "total_layers": self.total_layers,
+                "pruned_layers": list(self.pruned_layers),
+                "layer_pruning_ratio": self.layer_pruning_ratio,
+                "density": 1.0 - self.layer_pruning_ratio,
+                "theoretical_average_mlp_pruning_ratio": self.layer_pruning_ratio,
+                "actual_average_mlp_pruning_ratio": self.layer_pruning_ratio,
+                "actual_pruning_accounting": "static_decoder_layer_fraction",
+            }
+        )
+        return output
+
+
 class AlwaysOnStaticMaskRuntime(StageMaskRuntime):
     """Static global-mask baseline that records protocol fallback but keeps pruning.
 
