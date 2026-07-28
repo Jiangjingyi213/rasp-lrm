@@ -1395,6 +1395,13 @@ def _wanda_official_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any])
         calibration_path=_wanda_calibration_path(row),
         calibration_samples=int(row.get("calibration_samples", 128)),
         calibration_max_input_tokens=int(row.get("calibration_max_input_tokens", 2048)),
+        calibration_prompt_mode=str(row.get("calibration_prompt_mode", "structured_prompt")),
+        calibration_text_field=str(row.get("calibration_text_field", "text")),
+        **(
+            {"calibration_seed": int(row["calibration_seed"])}
+            if row.get("calibration_seed") is not None
+            else {}
+        ),
         target_modules=list(row.get("target_modules") or []) or None,
         baseline_type="official_style_wanda",
         pruning_granularity="weight_unstructured",

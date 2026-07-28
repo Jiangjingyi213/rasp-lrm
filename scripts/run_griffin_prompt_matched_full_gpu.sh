@@ -14,6 +14,7 @@ LOG_DIR="${LOG_DIR:-logs}"
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 SEED="${STAGE_SEED:-3}"
 RUN_LABEL="${RUN_LABEL:-griffin_prompt_matched_full}"
+SKIP_EXISTING="${SKIP_EXISTING:-0}"
 
 read -r -a GPUS <<< "${FINAL_GPUS:-0 1 2 3 4 5 6 7}"
 SHARD_COUNT="${STAGE_FINAL_SHARD_COUNT:-${#GPUS[@]}}"
@@ -42,6 +43,11 @@ echo "START ${RUN_LABEL} sharded final; methods=${FINAL_METHODS}; shards=${SHARD
 pids=()
 for shard_index in $(seq 0 $((SHARD_COUNT - 1))); do
   gpu="${GPUS[$shard_index]}"
+  shard_summary="$(printf "%s/06_final/summary_shard_%05d_of_%05d.json" "${RUN_ROOT}" "${shard_index}" "${SHARD_COUNT}")"
+  if [[ "${SKIP_EXISTING}" == "1" && -f "${shard_summary}" ]]; then
+    echo "SKIP shard ${shard_index}/${SHARD_COUNT}; existing ${shard_summary}"
+    continue
+  fi
   log_path="${LOG_DIR}/${RUN_LABEL}_seed${SEED}_shard${shard_index}_of${SHARD_COUNT}_gpu${gpu}.log"
   echo "Launching shard ${shard_index}/${SHARD_COUNT} on GPU ${gpu}; log=${log_path}"
   CUDA_VISIBLE_DEVICES="${gpu}" \

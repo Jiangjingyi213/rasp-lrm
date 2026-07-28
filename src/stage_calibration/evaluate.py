@@ -111,6 +111,13 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
             sparsity_ratio=float(method.get("sparsity_ratio", method["stage_ratios"].get("setup", 0.0))),
             calibration_samples=int(method.get("calibration_samples", 128)),
             max_input_tokens=int(method.get("calibration_max_input_tokens", 2048)),
+            calibration_prompt_mode=str(method.get("calibration_prompt_mode", "structured_prompt")),
+            calibration_text_field=str(method.get("calibration_text_field", "text")),
+            calibration_seed=(
+                int(method["calibration_seed"])
+                if method.get("calibration_seed") is not None
+                else None
+            ),
             target_modules=method.get("target_modules"),
             matched_rasp_reference=str(method.get("matched_rasp_reference", "")),
             target_matched_to_rasp_actual_mlp_pruning=(
@@ -132,6 +139,9 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
                 "wanda_weight_sparsity": float(summary["weight_sparsity_overall"]),
                 "wanda_calibration_samples": int(summary["calibration_samples"]),
                 "wanda_calibration_source": str(summary["calibration_path"]),
+                "wanda_calibration_prompt_mode": str(summary["calibration_prompt_mode"]),
+                "wanda_calibration_text_field": str(summary["calibration_text_field"]),
+                "wanda_calibration_seed": summary["calibration_seed"],
                 "wanda_target_modules": list(summary["target_modules"]),
                 "weight_sparsity_by_module": dict(summary["weight_sparsity_by_module"]),
                 "matched_rasp_reference": str(summary["matched_rasp_reference"]),
@@ -516,6 +526,9 @@ def evaluate_method(
     wanda_sparsity_ratio = None
     wanda_calibration_samples = None
     wanda_calibration_source = None
+    wanda_calibration_prompt_mode = None
+    wanda_calibration_text_field = None
+    wanda_calibration_seed = None
     wanda_target_modules = None
     sparsegpt_weight_sparsity = None
     sparsegpt_sparsity_ratio = None
@@ -586,6 +599,19 @@ def evaluate_method(
         wanda_calibration_source = (
             wanda_calibration_source
             or runtime_summary.get("wanda_calibration_source")
+        )
+        wanda_calibration_prompt_mode = (
+            wanda_calibration_prompt_mode
+            or runtime_summary.get("wanda_calibration_prompt_mode")
+        )
+        wanda_calibration_text_field = (
+            wanda_calibration_text_field
+            or runtime_summary.get("wanda_calibration_text_field")
+        )
+        wanda_calibration_seed = (
+            wanda_calibration_seed
+            if wanda_calibration_seed is not None
+            else runtime_summary.get("wanda_calibration_seed")
         )
         wanda_target_modules = wanda_target_modules or runtime_summary.get("wanda_target_modules")
         sparsegpt_weight_sparsity = (
@@ -839,6 +865,12 @@ def evaluate_method(
         summary["wanda_calibration_samples"] = wanda_calibration_samples
     if wanda_calibration_source:
         summary["wanda_calibration_source"] = wanda_calibration_source
+    if wanda_calibration_prompt_mode:
+        summary["wanda_calibration_prompt_mode"] = wanda_calibration_prompt_mode
+    if wanda_calibration_text_field:
+        summary["wanda_calibration_text_field"] = wanda_calibration_text_field
+    if wanda_calibration_seed is not None:
+        summary["wanda_calibration_seed"] = wanda_calibration_seed
     if wanda_target_modules:
         summary["wanda_target_modules"] = wanda_target_modules
     if sparsegpt_weight_sparsity is not None:

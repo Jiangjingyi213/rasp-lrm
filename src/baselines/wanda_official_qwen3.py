@@ -33,6 +33,9 @@ class WandaOfficialSummary:
     calibration_path: str
     calibration_samples: int
     calibration_max_input_tokens: int
+    calibration_prompt_mode: str
+    calibration_text_field: str
+    calibration_seed: int | None
     target_modules: list[str]
     total_pruned_weights: int
     total_target_weights: int
@@ -103,6 +106,8 @@ def collect_wanda_input_stats_qwen3(
     prompt_config: dict[str, Any],
     calibration_samples: int,
     max_input_tokens: int,
+    calibration_prompt_mode: str = "structured_prompt",
+    calibration_text_field: str = "text",
     target_modules: Iterable[str] = DEFAULT_QWEN3_WANDA_TARGETS,
 ) -> dict[str, WandaInputStats]:
     modules = qwen3_wanda_linear_modules(model, target_modules)
@@ -123,7 +128,20 @@ def collect_wanda_input_stats_qwen3(
         model.config.use_cache = False
     try:
         for row in tqdm(calibration_rows[:calibration_samples], desc="wanda-official-calibration"):
-            prompt = build_prompt(str(row["question"]), tokenizer, prompt_config)
+            if calibration_prompt_mode == "raw_text":
+                if calibration_text_field not in row:
+                    raise KeyError(
+                        f"Wanda raw_text calibration expected field "
+                        f"{calibration_text_field!r}; available fields={sorted(row)}"
+                    )
+                prompt = str(row[calibration_text_field])
+            elif calibration_prompt_mode in ("structured_prompt", "prompt"):
+                prompt = build_prompt(str(row["question"]), tokenizer, prompt_config)
+            else:
+                raise ValueError(
+                    "Unsupported Wanda calibration_prompt_mode="
+                    f"{calibration_prompt_mode!r}; expected raw_text or structured_prompt"
+                )
             inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_input_tokens)
             inputs = inputs.to(model_device(model))
             model(**inputs, use_cache=False, return_dict=True)
@@ -183,6 +201,9 @@ def apply_wanda_official_qwen3(
     sparsity_ratio: float,
     calibration_samples: int = 128,
     max_input_tokens: int = 2048,
+    calibration_prompt_mode: str = "structured_prompt",
+    calibration_text_field: str = "text",
+    calibration_seed: int | None = None,
     target_modules: Iterable[str] | None = DEFAULT_QWEN3_WANDA_TARGETS,
     matched_rasp_reference: str = "",
     target_matched_to_rasp_actual_mlp_pruning: float | None = None,
@@ -199,6 +220,8 @@ def apply_wanda_official_qwen3(
         prompt_config=prompt_config,
         calibration_samples=sample_count,
         max_input_tokens=int(max_input_tokens),
+        calibration_prompt_mode=str(calibration_prompt_mode),
+        calibration_text_field=str(calibration_text_field),
         target_modules=target_modules,
     )
     sparsity_by_module, total_pruned, total_weights = apply_wanda_unstructured_masks_qwen3(
@@ -216,6 +239,9 @@ def apply_wanda_official_qwen3(
         calibration_path=str(calibration_path),
         calibration_samples=sample_count,
         calibration_max_input_tokens=int(max_input_tokens),
+        calibration_prompt_mode=str(calibration_prompt_mode),
+        calibration_text_field=str(calibration_text_field),
+        calibration_seed=calibration_seed,
         target_modules=target_modules,
         total_pruned_weights=total_pruned,
         total_target_weights=total_weights,

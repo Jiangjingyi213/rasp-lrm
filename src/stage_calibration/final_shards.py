@@ -122,6 +122,9 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
     wanda_sparsity_ratio = None
     wanda_calibration_samples = None
     wanda_calibration_source = None
+    wanda_calibration_prompt_mode = None
+    wanda_calibration_text_field = None
+    wanda_calibration_seed = None
     wanda_target_modules = None
     sparsegpt_weight_sparsity = None
     sparsegpt_sparsity_ratio = None
@@ -164,6 +167,17 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
             else runtime.get("wanda_calibration_samples")
         )
         wanda_calibration_source = wanda_calibration_source or runtime.get("wanda_calibration_source")
+        wanda_calibration_prompt_mode = (
+            wanda_calibration_prompt_mode or runtime.get("wanda_calibration_prompt_mode")
+        )
+        wanda_calibration_text_field = (
+            wanda_calibration_text_field or runtime.get("wanda_calibration_text_field")
+        )
+        wanda_calibration_seed = (
+            wanda_calibration_seed
+            if wanda_calibration_seed is not None
+            else runtime.get("wanda_calibration_seed")
+        )
         wanda_target_modules = wanda_target_modules or runtime.get("wanda_target_modules")
         sparsegpt_weight_sparsity = (
             sparsegpt_weight_sparsity
@@ -326,6 +340,12 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         summary["wanda_calibration_samples"] = wanda_calibration_samples
     if wanda_calibration_source:
         summary["wanda_calibration_source"] = wanda_calibration_source
+    if wanda_calibration_prompt_mode:
+        summary["wanda_calibration_prompt_mode"] = wanda_calibration_prompt_mode
+    if wanda_calibration_text_field:
+        summary["wanda_calibration_text_field"] = wanda_calibration_text_field
+    if wanda_calibration_seed is not None:
+        summary["wanda_calibration_seed"] = wanda_calibration_seed
     if wanda_target_modules:
         summary["wanda_target_modules"] = wanda_target_modules
     if sparsegpt_weight_sparsity is not None:

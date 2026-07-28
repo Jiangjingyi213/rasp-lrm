@@ -1,0 +1,95 @@
+seed: 0
+
+workflow:
+  profile: pilot
+  root: runs/08_stage_calibrated_pruning/main_{profile}_wanda_official_c4_seed0_qwen3_1p7b_priority_suite
+
+stages: [setup, reasoning, verify, final]
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float32
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  ordinary:
+    use_chat_template: true
+    enable_thinking: true
+    answer_format: boxed
+  structured:
+    use_chat_template: true
+    enable_thinking: true
+    explicit_stage_protocol: true
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
+
+generation:
+  max_input_tokens: 4096
+  max_new_tokens: 16384
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+
+calibration_pool:
+  allowed_sources: ["*"]
+  excluded_sources: [GSM8k, GSM8K, MATH, Omni-MATH, amc_aime, cn_k12]
+
+masks:
+  metric: WIFV
+  structure: UL-UM
+  ratios: [0.00, 0.10, 0.15, 0.20]
+  c4_samples: 0
+  bias_compensation: true
+
+wanda_official:
+  enabled: true
+  calibration_path: runs/08_stage_calibrated_pruning/wanda_c4_seed0_calibration/c4_128_seed0.jsonl
+  calibration_samples: 128
+  calibration_max_input_tokens: 2048
+  calibration_prompt_mode: raw_text
+  calibration_text_field: text
+  calibration_seed: 0
+  variants:
+    - method_name: wanda_c4_seed0_t20
+      sparsity_ratio: 0.22
+      target_pruning_ratio: 0.22
+      target_pruning_label: t20
+      matched_rasp_reference: t20_math_safe
+      selection_note: "Official-style Wanda with C4 raw-text calibration, seed 0, matched to RASP t20 nominal sparsity level."
+    - method_name: wanda_c4_seed0_t30
+      sparsity_ratio: 0.35
+      target_pruning_ratio: 0.35
+      target_pruning_label: t30
+      matched_rasp_reference: t30_math_safe
+      selection_note: "Official-style Wanda with C4 raw-text calibration, seed 0, matched to RASP t30 nominal sparsity level."
+
+evaluation:
+  allow_final_without_dev: true
+  math500_name_or_path: HuggingFaceH4/MATH-500
+  final_datasets:
+    - dataset: amc2023
+      name_or_path: zwhe99/amc23
+      split: train
+    - dataset: gpqa_diamond
+      name_or_path: zai-org/glm-simple-evals-dataset
+      data_files: gpqa/gpqa_diamond.csv
+      split: train
+      choice_seed: 17
+    - dataset: arc_challenge
+      name_or_path: allenai/ai2_arc
+      dataset_config: ARC-Challenge
+      split: test
+
+profiles:
+  smoke:
+    final_eval_limit: 16
+    final_seeds: [0]
+    final_methods:
+      - wanda_c4_seed0_t30
+  pilot:
+    final_eval_limit: -1
+    final_seeds: [0]
+    reuse_existing_method_summaries: true
+    final_methods:
+      - wanda_c4_seed0_t30
