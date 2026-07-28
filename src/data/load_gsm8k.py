@@ -214,7 +214,12 @@ def load_competition_hf(config: dict[str, Any], dataset_label: str, default_name
     args = [name_or_path]
     if dataset_config:
         args.append(str(dataset_config))
-    dataset, used_split = _load_dataset_with_split_fallback(args, split, config)
+    dataset, used_split = _load_dataset_with_split_fallback(
+        args,
+        split,
+        config,
+        trust_remote_code=bool(config.get("trust_remote_code", True)),
+    )
     rows = [
         _normalize_competition_row(dict(row), i, used_split, dataset_label)
         for i, row in enumerate(dataset)
@@ -400,7 +405,12 @@ def load_livecodebench_hf(config: dict[str, Any]) -> list[dict[str, Any]]:
     args = [name_or_path]
     if dataset_config:
         args.append(str(dataset_config))
-    dataset, used_split = _load_dataset_with_split_fallback(args, split, config)
+    dataset, used_split = _load_dataset_with_split_fallback(
+        args,
+        split,
+        config,
+        trust_remote_code=bool(config.get("trust_remote_code", True)),
+    )
     rows = [_normalize_livecodebench_row(dict(row), i, used_split) for i, row in enumerate(dataset)]
     return slice_rows(rows, limit, offset)
 
