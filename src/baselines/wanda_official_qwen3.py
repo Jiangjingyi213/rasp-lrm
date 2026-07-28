@@ -59,8 +59,8 @@ class WandaInputStats:
             values = values.unsqueeze(0)
         if values.ndim != 3:
             raise ValueError(f"Expected Linear input with shape [batch, tokens, hidden], got {tuple(values.shape)}")
-        flat = values.reshape(-1, values.shape[-1]).float()
-        self.scaler_row += flat.pow(2).sum(dim=0).double().cpu()
+        flat = values.reshape(-1, values.shape[-1]).to(device="cpu", dtype=torch.float32)
+        self.scaler_row += flat.pow(2).sum(dim=0).double()
         self.nsamples += int(flat.shape[0])
 
     def activation_scale(self) -> torch.Tensor:
