@@ -109,6 +109,23 @@ def assert_wanda_weights_materialized(modules: dict[str, nn.Linear]) -> None:
         )
 
 
+def _wanda_calibration_forward(model: nn.Module, inputs: dict[str, torch.Tensor]) -> None:
+    """Run only the transformer backbone; Wanda hooks do not need lm_head logits."""
+    backbone = getattr(model, "model", None)
+    if backbone is not None and backbone is not model:
+        kwargs = {
+            key: value
+            for key, value in inputs.items()
+            if key in {"input_ids", "attention_mask", "position_ids"}
+        }
+        backbone(**kwargs, use_cache=False, return_dict=True)
+        return
+    try:
+        model(**inputs, use_cache=False, return_dict=True, logits_to_keep=1)
+    except TypeError:
+        model(**inputs, use_cache=False, return_dict=True)
+
+
 @torch.no_grad()
 def collect_wanda_input_stats_qwen3(
     model: nn.Module,
@@ -157,7 +174,7 @@ def collect_wanda_input_stats_qwen3(
                 )
             inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_input_tokens)
             inputs = inputs.to(model_device(model))
-            model(**inputs, use_cache=False, return_dict=True)
+            _wanda_calibration_forward(model, inputs)
     finally:
         if use_cache is not None:
             model.config.use_cache = use_cache
