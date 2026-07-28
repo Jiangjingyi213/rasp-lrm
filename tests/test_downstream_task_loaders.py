@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 from src.data import load_gsm8k
 from src.data.load_gsm8k import (
+    _normalize_jeebench_row,
+    _normalize_livecodebench_row,
     load_competition_hf,
     load_gpqa_hf,
     _normalize_competition_row,
@@ -66,6 +68,40 @@ class DownstreamTaskLoadersTest(unittest.TestCase):
         self.assertEqual(row["answer_type"], "multiple_choice")
         self.assertIn("option letter", row["question"])
 
+    def test_livecodebench_adapter_formats_code_generation(self) -> None:
+        row = _normalize_livecodebench_row(
+            {
+                "question_id": "lcb-1",
+                "question_title": "Two Sum",
+                "question_content": "Read two integers and print their sum.",
+                "starter_code": "def solve():\n    pass",
+                "public_test_cases": [{"input": "1 2\n", "output": "3\n"}],
+            },
+            0,
+            "test",
+        )
+        self.assertEqual(row["dataset"], "livecodebench")
+        self.assertEqual(row["answer_type"], "code_generation")
+        self.assertIn("Starter code:", row["question"])
+        self.assertTrue(row["gold"].startswith("__LCB_TESTS__"))
+
+    def test_jeebench_adapter_handles_multiple_select(self) -> None:
+        row = _normalize_jeebench_row(
+            {
+                "id": "jee-1",
+                "question": "Which statements are true?",
+                "options": {"A": "first", "B": "second", "C": "third"},
+                "answer": "CA",
+                "question_type": "multiple correct",
+            },
+            0,
+            "test",
+        )
+        self.assertEqual(row["dataset"], "jeebench")
+        self.assertEqual(row["gold"], "AC")
+        self.assertEqual(row["answer_type"], "multiple_select")
+        self.assertIn("alphabetical order", row["question"])
+
     def test_load_tasks_supports_new_dataset_names(self) -> None:
         fake_rows = [
             {
@@ -86,6 +122,12 @@ class DownstreamTaskLoadersTest(unittest.TestCase):
             self.assertEqual(load_tasks({"dataset": "aime2025"})[0]["dataset"], "aime2025")
         with patch.object(load_gsm8k, "load_dataset", return_value=competition_rows):
             self.assertEqual(load_tasks({"dataset": "amc2023"})[0]["dataset"], "amc2023")
+        lcb_rows = [{"question_content": "Write solve().", "canonical_solution": "def solve(): pass"}]
+        with patch.object(load_gsm8k, "load_dataset", return_value=lcb_rows):
+            self.assertEqual(load_tasks({"dataset": "livecodebench"})[0]["dataset"], "livecodebench")
+        jee_rows = [{"question": "Compute 1+1.", "answer": "2"}]
+        with patch.object(load_gsm8k, "load_dataset", return_value=jee_rows):
+            self.assertEqual(load_tasks({"dataset": "jeebench"})[0]["dataset"], "jeebench")
 
     def test_competition_hf_falls_back_when_split_is_missing(self) -> None:
         competition_rows = [{"question": "Compute 1+1.", "answer": "2"}]

@@ -3,7 +3,13 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from src.metrics.answer_match import answer_match, extract_answer, extract_multiple_choice_answer
+from src.metrics.answer_match import (
+    answer_match,
+    extract_answer,
+    extract_code_prediction,
+    extract_multiple_choice_answer,
+    extract_multiple_select_answer,
+)
 
 
 class AnswerMatchTest(unittest.TestCase):
@@ -75,6 +81,17 @@ class AnswerMatchTest(unittest.TestCase):
             extract_multiple_choice_answer(r"[[STAGE_FINAL]] \boxed{A}. Later \boxed{B}."),
             "A",
         )
+
+    def test_multiple_select_matches_sorted_boxed_letters(self) -> None:
+        self.assertTrue(answer_match(r"[[STAGE_FINAL]] \boxed{C, A}", "AC", answer_type="multiple_select"))
+        self.assertFalse(answer_match(r"[[STAGE_FINAL]] \boxed{A}", "AC", answer_type="multiple_select"))
+        self.assertEqual(extract_multiple_select_answer(r"\boxed{B,D,A}"), "ABD")
+
+    def test_code_generation_exact_uses_final_code_block(self) -> None:
+        text = "[[STAGE_FINAL]]\n```python\nprint(1)\n```"
+        self.assertEqual(extract_code_prediction(text), "print(1)")
+        self.assertTrue(answer_match(text, "print(1)", answer_type="code_generation"))
+        self.assertFalse(answer_match(text, "__LCB_TESTS__{}", answer_type="code_generation"))
 
 
 if __name__ == "__main__":

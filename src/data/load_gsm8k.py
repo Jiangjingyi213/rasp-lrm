@@ -268,7 +268,15 @@ def _choice_pairs(choices: Any) -> list[tuple[str, str]]:
     if isinstance(choices, dict):
         labels = choices.get("label") or choices.get("labels") or []
         texts = choices.get("text") or choices.get("texts") or []
-        return [(str(label).strip(), str(text).strip()) for label, text in zip(labels, texts)]
+        if labels or texts:
+            return [(str(label).strip(), str(text).strip()) for label, text in zip(labels, texts)]
+        output = []
+        for key, value in choices.items():
+            if str(key).lower() in {"label", "labels", "text", "texts"}:
+                continue
+            if isinstance(value, (str, int, float)):
+                output.append((str(key).strip(), str(value).strip()))
+        return output
     if isinstance(choices, list):
         pairs = []
         for index, choice in enumerate(choices):
@@ -309,6 +317,218 @@ def _format_multiple_choice_question(question: str, pairs: list[tuple[str, str]]
         f"Options:\n{options}\n\n"
         "Put only the option letter in \\boxed{}."
     )
+
+
+def _format_multiple_select_question(question: str, pairs: list[tuple[str, str]]) -> str:
+    options = "\n".join(f"{label}. {text}" for label, text in pairs)
+    return (
+        f"{question.strip()}\n\n"
+        f"Options:\n{options}\n\n"
+        "If multiple options are correct, put all correct option letters in alphabetical order in \\boxed{}."
+    )
+
+
+def _serialize_jsonish(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _normalize_livecodebench_row(row: dict[str, Any], idx: int, split: str) -> dict[str, Any]:
+    question = (
+        row.get("question_content")
+        or row.get("question")
+        or row.get("prompt")
+        or row.get("content")
+        or row.get("description")
+    )
+    if not question:
+        raise ValueError(f"LiveCodeBench row {idx} is missing a question/content field")
+    title = row.get("question_title") or row.get("title") or ""
+    starter_code = row.get("starter_code") or row.get("starter") or ""
+    prompt_parts = []
+    if title:
+        prompt_parts.append(f"Title: {title}")
+    prompt_parts.append(str(question).strip())
+    if starter_code:
+        prompt_parts.append(f"Starter code:\n```python\n{str(starter_code).strip()}\n```")
+    prompt_parts.append(
+        "Write a complete Python solution. Put the final code in one fenced Python code block."
+    )
+    gold = (
+        row.get("canonical_solution")
+        or row.get("reference_solution")
+        or row.get("solution")
+        or row.get("answer")
+        or row.get("code")
+        or ""
+    )
+    if not gold:
+        tests = {
+            "public_test_cases": row.get("public_test_cases"),
+            "private_test_cases": row.get("private_test_cases"),
+            "generated_test_cases": row.get("generated_test_cases"),
+            "metadata": row.get("metadata"),
+        }
+        gold = "__LCB_TESTS__" + _serialize_jsonish({k: v for k, v in tests.items() if v not in (None, "")})
+    return {
+        "id": (
+            row.get("question_id")
+            or row.get("id")
+            or row.get("problem_id")
+            or f"livecodebench-{split}-{idx}"
+        ),
+        "dataset": "livecodebench",
+        "source_dataset": "livecodebench/code_generation_lite",
+        "question": "\n\n".join(prompt_parts),
+        "gold": str(gold),
+        "answer_type": "code_generation",
+        "grading_note": (
+            "code_generation_lite_exact_if_reference_solution_else_unexecuted_tests_available"
+        ),
+    }
+
+
+def load_livecodebench_hf(config: dict[str, Any]) -> list[dict[str, Any]]:
+    name_or_path = config.get("name_or_path", "livecodebench/code_generation_lite")
+    dataset_config = config.get("dataset_config") or config.get("config_name")
+    split = config.get("split", "test")
+    limit = _as_int_or_none(config.get("limit"))
+    offset = int(config.get("offset", 0))
+    args = [name_or_path]
+    if dataset_config:
+        args.append(str(dataset_config))
+    dataset, used_split = _load_dataset_with_split_fallback(args, split, config)
+    rows = [_normalize_livecodebench_row(dict(row), i, used_split) for i, row in enumerate(dataset)]
+    return slice_rows(rows, limit, offset)
+
+
+def load_livecodebench_local(path: str | Path, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+    path = Path(path)
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            rows.append(_normalize_livecodebench_row(json.loads(line), i, "local"))
+    return slice_rows(rows, limit, offset)
+
+
+def _normalize_jeebench_row(row: dict[str, Any], idx: int, split: str) -> dict[str, Any]:
+    question = (
+        row.get("question")
+        or row.get("problem")
+        or row.get("prompt")
+        or row.get("input")
+        or row.get("Question")
+    )
+    if not question:
+        raise ValueError(f"JEEBench row {idx} is missing a question/problem field")
+    answer = _nested_value(
+        row,
+        "answer",
+        "final_answer",
+        "target",
+        "label",
+        "gold",
+        "Answer",
+        "correct_answer",
+        "correct option",
+    )
+    if answer is None:
+        raise ValueError(f"JEEBench row {idx} is missing an answer field")
+    pairs = _choice_pairs(row.get("choices") or row.get("options") or row.get("Options"))
+    answer_text = str(answer).strip()
+    answer_kind = str(
+        row.get("answer_type")
+        or row.get("type")
+        or row.get("question_type")
+        or row.get("Question Type")
+        or ""
+    ).lower()
+    compact_letters = re.sub(r"[^A-Za-z]", "", answer_text).upper()
+    is_multiple_select = (
+        "multi" in answer_kind
+        or "multiple correct" in answer_kind
+        or bool(re.fullmatch(r"[A-E]{2,}", compact_letters))
+    )
+    is_single_choice = bool(re.fullmatch(r"[A-E]", compact_letters))
+    if pairs:
+        canonical_pairs, label_map = _canonical_choice_labels(pairs)
+        if is_multiple_select:
+            labels = [
+                _normalize_choice_answer(letter, label_map)
+                for letter in compact_letters
+            ]
+            gold = "".join(sorted(set(labels)))
+            question_text = _format_multiple_select_question(str(question), canonical_pairs)
+            normalized_type = "multiple_select"
+        else:
+            gold = _normalize_choice_answer(answer_text, label_map)
+            question_text = _format_multiple_choice_question(str(question), canonical_pairs)
+            normalized_type = "multiple_choice"
+        choices = [{"label": label, "text": text} for label, text in canonical_pairs]
+    elif is_multiple_select:
+        gold = "".join(sorted(set(compact_letters)))
+        question_text = (
+            f"{str(question).strip()}\n\n"
+            "Put all correct option letters in alphabetical order in \\boxed{}."
+        )
+        normalized_type = "multiple_select"
+        choices = None
+    elif is_single_choice:
+        gold = compact_letters
+        question_text = (
+            f"{str(question).strip()}\n\n"
+            "Put only the option letter in \\boxed{}."
+        )
+        normalized_type = "multiple_choice"
+        choices = None
+    else:
+        gold = answer_text
+        question_text = (
+            f"{str(question).strip()}\n\n"
+            "Put the final answer in \\boxed{}."
+        )
+        normalized_type = "math"
+        choices = None
+    output = {
+        "id": row.get("id") or row.get("question_id") or row.get("problem_id") or f"jeebench-{split}-{idx}",
+        "dataset": "jeebench",
+        "source_dataset": "daman1209arora/jeebench",
+        "question": question_text,
+        "gold": gold,
+        "answer_type": normalized_type,
+    }
+    if choices is not None:
+        output["choices"] = choices
+    for key in ("subject", "chapter", "year", "paper"):
+        if row.get(key) not in (None, ""):
+            output[key] = row[key]
+    return output
+
+
+def load_jeebench_hf(config: dict[str, Any]) -> list[dict[str, Any]]:
+    name_or_path = config.get("name_or_path", "daman1209arora/jeebench")
+    dataset_config = config.get("dataset_config") or config.get("config_name")
+    split = config.get("split", "test")
+    limit = _as_int_or_none(config.get("limit"))
+    offset = int(config.get("offset", 0))
+    args = [name_or_path]
+    if dataset_config:
+        args.append(str(dataset_config))
+    dataset, used_split = _load_dataset_with_split_fallback(args, split, config)
+    rows = [_normalize_jeebench_row(dict(row), i, used_split) for i, row in enumerate(dataset)]
+    return slice_rows(rows, limit, offset)
+
+
+def load_jeebench_local(path: str | Path, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+    path = Path(path)
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            rows.append(_normalize_jeebench_row(json.loads(line), i, "local"))
+    return slice_rows(rows, limit, offset)
 
 
 def _normalize_arc_row(
@@ -557,14 +777,24 @@ def load_tasks(config: dict[str, Any]) -> list[dict[str, Any]]:
         if config.get("path"):
             return load_gpqa_local(config["path"], limit, offset)
         return load_gpqa_hf(config)
+    if name in {"livecodebench", "lcb", "lcb_lite", "livecodebench_lite"}:
+        if config.get("path"):
+            return load_livecodebench_local(config["path"], limit, offset)
+        return load_livecodebench_hf(config)
+    if name in {"jeebench", "jee", "jee_bench"}:
+        if config.get("path"):
+            return load_jeebench_local(config["path"], limit, offset)
+        return load_jeebench_hf(config)
     if name in {"arc_easy", "arc-easy", "ai2_arc_easy"}:
         merged = dict(config)
         merged.setdefault("dataset", "arc_easy")
+        merged.setdefault("name_or_path", "ai2_arc")
         merged.setdefault("dataset_config", "ARC-Easy")
         return load_arc_hf(merged)
     if name in {"arc_challenge", "arc-challenge", "ai2_arc_challenge"}:
         merged = dict(config)
         merged.setdefault("dataset", "arc_challenge")
+        merged.setdefault("name_or_path", "ai2_arc")
         merged.setdefault("dataset_config", "ARC-Challenge")
         return load_arc_hf(merged)
     if name in {"bbh", "bbh_selected", "big_bench_hard"}:

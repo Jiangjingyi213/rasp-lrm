@@ -279,10 +279,24 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         target = float(method["target_pruning_ratio"])
         actual_value = float(summary["actual_average_mlp_pruning_ratio"])
         summary["target_pruning_ratio"] = target
-        summary["target_pruning_reached"] = bool(actual_value >= target)
+        min_target = float(method.get("min_target_pruning_ratio", target))
+        max_target = float(method.get("max_target_pruning_ratio", target))
+        if min_target > max_target:
+            raise ValueError(f"Invalid pruning target range: {min_target} > {max_target}")
+        summary["min_target_pruning_ratio"] = min_target
+        summary["max_target_pruning_ratio"] = max_target
+        summary["target_pruning_reached"] = bool(actual_value >= min_target)
+        summary["target_pruning_not_exceeded"] = bool(actual_value <= max_target)
+        summary["target_pruning_range_passed"] = bool(min_target <= actual_value <= max_target)
         summary["target_pruning_gap"] = actual_value - target
         summary["target_pruning_status"] = (
-            "passed" if actual_value >= target else "target_pruning_not_reached"
+            "passed"
+            if min_target <= actual_value <= max_target
+            else (
+                "target_pruning_exceeded"
+                if actual_value > max_target
+                else "target_pruning_not_reached"
+            )
         )
     if "target_pruning_label" in method:
         summary["target_pruning_label"] = method["target_pruning_label"]

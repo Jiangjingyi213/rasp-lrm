@@ -41,9 +41,9 @@ from .runtime import (
     StageMaskRuntime,
     StaticWeightPruningRuntime,
     StaticCoreResidualStageRuntime,
-    apply_adaptive_stage_griffin_qwen3,
-    apply_fixed_stage_masking_qwen3,
-    apply_griffin_prompt_qwen3,
+    apply_adaptive_stage_griffin,
+    apply_fixed_stage_masking,
+    apply_griffin_prompt,
 )
 from src.utils.io import read_jsonl
 
@@ -100,7 +100,7 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
             prune_ratio=float(method.get("prune_ratio", method["stage_ratios"].get("setup", 0.0))),
             selection_method=str(method.get("selection_method", "topk")),
         )
-        apply_griffin_prompt_qwen3(model, runtime)
+        apply_griffin_prompt(model, runtime)
         return runtime
     if method["policy"] == "wanda_official":
         wanda_summary = apply_wanda_official_qwen3(
@@ -339,7 +339,7 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
             stage_ratios=stage_ratios,
             bias_compensation=bool(method.get("bias_compensation", True)),
         )
-        apply_fixed_stage_masking_qwen3(model, runtime)
+        apply_fixed_stage_masking(model, runtime)
         return runtime
     if method["policy"] == "calibrated_stage_adaptive_griffin":
         runtime = AdaptiveStageGriffinRuntime(
@@ -353,7 +353,7 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
             bias_compensation=bool(method.get("bias_compensation", True)),
             prior_policy=str(method.get("prior_policy", "stage_specific")),
         )
-        apply_adaptive_stage_griffin_qwen3(model, runtime)
+        apply_adaptive_stage_griffin(model, runtime)
         return runtime
     if method["policy"] == "calibrated_stage_safe_dynamic_griffin":
         runtime = SafeDynamicStageGriffinRuntime(
@@ -380,7 +380,7 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
             bias_compensation=bool(method.get("bias_compensation", True)),
             prior_policy=str(method.get("prior_policy", "stage_specific")),
         )
-        apply_adaptive_stage_griffin_qwen3(model, runtime)
+        apply_adaptive_stage_griffin(model, runtime)
         return runtime
     if method["policy"] == "calibrated_stage_static_core_residual_griffin":
         runtime = StaticCoreResidualStageRuntime(
@@ -412,7 +412,7 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
             },
             bias_compensation=bool(method.get("bias_compensation", True)),
         )
-        apply_adaptive_stage_griffin_qwen3(model, runtime)
+        apply_adaptive_stage_griffin(model, runtime)
         return runtime
     runtime = StageMaskRuntime(
         bank,
@@ -420,7 +420,7 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
         stage_ratios=stage_ratios,
         bias_compensation=bool(method.get("bias_compensation", True)),
     )
-    apply_fixed_stage_masking_qwen3(model, runtime)
+    apply_fixed_stage_masking(model, runtime)
     return runtime
 
 
@@ -792,10 +792,24 @@ def evaluate_method(
         target = float(method["target_pruning_ratio"])
         actual_value = float(summary["actual_average_mlp_pruning_ratio"])
         summary["target_pruning_ratio"] = target
-        summary["target_pruning_reached"] = bool(actual_value >= target)
+        min_target = float(method.get("min_target_pruning_ratio", target))
+        max_target = float(method.get("max_target_pruning_ratio", target))
+        if min_target > max_target:
+            raise ValueError(f"Invalid pruning target range: {min_target} > {max_target}")
+        summary["min_target_pruning_ratio"] = min_target
+        summary["max_target_pruning_ratio"] = max_target
+        summary["target_pruning_reached"] = bool(actual_value >= min_target)
+        summary["target_pruning_not_exceeded"] = bool(actual_value <= max_target)
+        summary["target_pruning_range_passed"] = bool(min_target <= actual_value <= max_target)
         summary["target_pruning_gap"] = actual_value - target
         summary["target_pruning_status"] = (
-            "passed" if actual_value >= target else "target_pruning_not_reached"
+            "passed"
+            if min_target <= actual_value <= max_target
+            else (
+                "target_pruning_exceeded"
+                if actual_value > max_target
+                else "target_pruning_not_reached"
+            )
         )
     if "target_pruning_label" in method:
         summary["target_pruning_label"] = method["target_pruning_label"]

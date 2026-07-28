@@ -1233,6 +1233,19 @@ def method(
     }
 
 
+def _pruning_target_fields(row: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    if "target_pruning_ratio" in row:
+        fields["target_pruning_ratio"] = float(row["target_pruning_ratio"])
+    if "min_target_pruning_ratio" in row:
+        fields["min_target_pruning_ratio"] = float(row["min_target_pruning_ratio"])
+    if "max_target_pruning_ratio" in row:
+        fields["max_target_pruning_ratio"] = float(row["max_target_pruning_ratio"])
+    if "target_pruning_label" in row:
+        fields["target_pruning_label"] = str(row["target_pruning_label"])
+    return fields
+
+
 def _adaptive_griffin_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
     return deepcopy(cfg.get("adaptive_griffin", {}))
 
@@ -1859,16 +1872,7 @@ def _adaptive_griffin_method_from_cfg(acfg: dict[str, Any], prompt: dict[str, An
         swap_ratios=_adaptive_stage_float_map_from_cfg(acfg, "swap_ratios", 0.0),
         variant_role=str(acfg.get("variant_role", acfg.get("method_name", "adaptive"))),
         selection_note=str(acfg.get("selection_note", "")),
-        **(
-            {"target_pruning_ratio": float(acfg["target_pruning_ratio"])}
-            if "target_pruning_ratio" in acfg
-            else {}
-        ),
-        **(
-            {"target_pruning_label": str(acfg["target_pruning_label"])}
-            if "target_pruning_label" in acfg
-            else {}
-        ),
+        **_pruning_target_fields(acfg),
     )
 
 
@@ -1974,16 +1978,7 @@ def additional_fixed_stage_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
                 bias=bool(row.get("bias_compensation", True)),
                 ablation_role=str(row.get("ablation_role", "")),
                 selection_note=str(row.get("selection_note", "")),
-                **(
-                    {"target_pruning_ratio": float(row["target_pruning_ratio"])}
-                    if "target_pruning_ratio" in row
-                    else {}
-                ),
-                **(
-                    {"target_pruning_label": str(row["target_pruning_label"])}
-                    if "target_pruning_label" in row
-                    else {}
-                ),
+                **_pruning_target_fields(row),
             )
         )
     names = [row["name"] for row in methods]
@@ -3166,6 +3161,10 @@ def main() -> None:
         cfg["seed"] = int(os.environ["STAGE_SEED"])
     if os.environ.get("STAGE_WORKFLOW_ROOT"):
         cfg["workflow"]["root"] = os.environ["STAGE_WORKFLOW_ROOT"]
+    if os.environ.get("STAGE_MODEL_NAME_OR_PATH"):
+        cfg.setdefault("model", {})["name_or_path"] = os.environ["STAGE_MODEL_NAME_OR_PATH"]
+    if os.environ.get("STAGE_MODEL_DTYPE"):
+        cfg.setdefault("model", {})["dtype"] = os.environ["STAGE_MODEL_DTYPE"]
     _filter_final_datasets_for_env(cfg)
     set_seed(int(cfg["seed"]))
     p = paths(cfg)

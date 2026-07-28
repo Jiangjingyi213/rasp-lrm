@@ -594,7 +594,7 @@ def apply_fixed_stage_masking_qwen3(model: nn.Module, runtime: StageMaskRuntime)
                 mlp.runtime = runtime
             continue
         if not all(hasattr(mlp, name) for name in ("gate_proj", "up_proj", "down_proj", "act_fn")):
-            raise ValueError("Expected Qwen3 MLP")
+            raise ValueError("Expected gated MLP with gate_proj/up_proj/down_proj/act_fn")
         layer.mlp = FixedStageMaskedQwen3MLP(mlp, layer_id, runtime)
     return model
 
@@ -627,7 +627,7 @@ def apply_griffin_prompt_qwen3(model: nn.Module, runtime: GriffinPromptRuntime) 
                 mlp.runtime = runtime
             continue
         if not all(hasattr(mlp, name) for name in ("gate_proj", "up_proj", "down_proj", "act_fn")):
-            raise ValueError("Expected Qwen3 MLP")
+            raise ValueError("Expected gated MLP with gate_proj/up_proj/down_proj/act_fn")
         layer.mlp = GriffinPromptQwen3MLP(mlp, layer_id, runtime)
     return model
 
@@ -1395,6 +1395,11 @@ def apply_adaptive_stage_griffin_qwen3(
                 mlp.runtime = runtime
             continue
         if not all(hasattr(mlp, name) for name in ("gate_proj", "up_proj", "down_proj", "act_fn")):
-            raise ValueError("Expected Qwen3 MLP")
+            raise ValueError("Expected gated MLP with gate_proj/up_proj/down_proj/act_fn")
         layer.mlp = AdaptiveStageGriffinQwen3MLP(mlp, layer_id, runtime)
     return model
+
+
+apply_fixed_stage_masking = apply_fixed_stage_masking_qwen3
+apply_griffin_prompt = apply_griffin_prompt_qwen3
+apply_adaptive_stage_griffin = apply_adaptive_stage_griffin_qwen3

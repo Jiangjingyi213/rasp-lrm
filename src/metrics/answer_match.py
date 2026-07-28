@@ -190,6 +190,44 @@ def multiple_choice_answer_match(prediction: str, gold: str) -> bool:
     return bool(pred) and bool(gold_label) and bool(MULTIPLE_CHOICE_RE.fullmatch(pred)) and pred == gold_label
 
 
+def extract_multiple_select_answer(text: str) -> str:
+    boxed = extract_first_boxed_after_final_stage(text or "") or extract_last_boxed(text or "")
+    if boxed is None:
+        return ""
+    labels = sorted(set(re.findall(r"[A-Z]", clean_answer(str(boxed)).upper())))
+    return "".join(labels)
+
+
+def multiple_select_answer_match(prediction: str, gold: str) -> bool:
+    pred = extract_multiple_select_answer(prediction)
+    gold_labels = sorted(set(re.findall(r"[A-Z]", clean_answer(str(gold)).upper())))
+    return bool(pred) and bool(gold_labels) and pred == "".join(gold_labels)
+
+
+def extract_code_prediction(text: str) -> str:
+    text = text or ""
+    staged = text
+    final_start = max(text.rfind(marker) for marker in FINAL_STAGE_MARKERS)
+    if final_start >= 0:
+        marker = next(marker for marker in FINAL_STAGE_MARKERS if text.startswith(marker, final_start))
+        staged = text[final_start + len(marker) :]
+    blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", staged, flags=re.IGNORECASE | re.DOTALL)
+    if blocks:
+        return blocks[-1].strip()
+    boxed = extract_first_boxed(staged)
+    if boxed:
+        return clean_answer(boxed)
+    return staged.strip()
+
+
+def code_generation_answer_match(prediction: str, gold: str) -> bool:
+    code = extract_code_prediction(prediction)
+    gold_code = str(gold or "").strip()
+    if not code or not gold_code or gold_code.startswith("__LCB_TESTS__"):
+        return False
+    return normalize_symbolic_spacing(code) == normalize_symbolic_spacing(gold_code)
+
+
 def _as_decimal(value: str) -> Decimal | None:
     if not is_numeric_like(value):
         return None
@@ -234,8 +272,15 @@ def answer_match(
     use_math_verify: bool = True,
     answer_type: str | None = None,
 ) -> bool:
-    if str(answer_type or "").lower() == "multiple_choice":
+    normalized_answer_type = str(answer_type or "").lower()
+    if normalized_answer_type == "multiple_choice":
         return multiple_choice_answer_match(prediction, gold)
+    if normalized_answer_type in {"multiple_select", "multi_select", "multi_choice"}:
+        return multiple_select_answer_match(prediction, gold)
+    if normalized_answer_type in {"code_generation", "code"}:
+        return code_generation_answer_match(prediction, gold)
+    if normalized_answer_type == "exact":
+        return extract_answer(prediction).strip().lower() == str(gold).strip().lower()
     pred = extract_answer(prediction)
     gold_answer = extract_answer(gold)
     pred_num = _as_decimal(pred)
