@@ -316,7 +316,16 @@ def _filter_final_datasets_for_env(cfg: dict[str, Any]) -> None:
 
 def _protected_final_tasks(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     tasks: list[dict[str, Any]] = []
+    skip_env = os.environ.get("STAGE_PROTECTED_SKIP_DATASETS", "")
+    skip_names = {value.strip() for value in skip_env.split(",") if value.strip()}
     for dataset_cfg in _final_dataset_configs(cfg):
+        candidates = {
+            _final_dataset_name(dataset_cfg),
+            str(dataset_cfg.get("dataset", "")),
+            str(dataset_cfg.get("dataset_label", "")),
+        }
+        if candidates & skip_names:
+            continue
         tasks.extend(load_tasks(dataset_cfg))
     return tasks
 
