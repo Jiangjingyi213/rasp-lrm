@@ -7,7 +7,7 @@ cd "${ROOT_DIR}"
 export PYTHON="${PYTHON:-/home/cike/jjy/envs/rasp_qwen3_eval/bin/python}"
 export STAGE_MODEL_NAME_OR_PATH="${STAGE_MODEL_NAME_OR_PATH:-/home/cike/models/unsloth_Llama-3.1-8B-Instruct}"
 export STAGE_MODEL_DTYPE="${STAGE_MODEL_DTYPE:-float16}"
-export STAGE_FINAL_METHODS="${STAGE_FINAL_METHODS:-ordinary_dense,structured_dense,static_t40_0p48,rasp_t40_safe_under}"
+export STAGE_FINAL_METHODS="${STAGE_FINAL_METHODS:-rasp_t40_safe_under}"
 
 # Important: keep commas. This launches one worker that sees all seven P100s,
 # letting Transformers device_map=auto shard the 8B model across GPUs.
