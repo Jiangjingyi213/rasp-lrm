@@ -97,6 +97,18 @@ def qwen3_wanda_linear_modules(
     return modules
 
 
+def assert_wanda_weights_materialized(modules: dict[str, nn.Linear]) -> None:
+    meta_modules = [name for name, module in modules.items() if module.weight.is_meta]
+    if meta_modules:
+        preview = ", ".join(meta_modules[:5])
+        raise RuntimeError(
+            "Wanda requires materialized Linear weights, but some Qwen3 target weights "
+            f"are still on the meta device: {preview}. Set `model.device_map: null` "
+            "for Wanda configs so the model is loaded onto the current CUDA device "
+            "before Wanda applies weight masks."
+        )
+
+
 @torch.no_grad()
 def collect_wanda_input_stats_qwen3(
     model: nn.Module,
@@ -111,6 +123,7 @@ def collect_wanda_input_stats_qwen3(
     target_modules: Iterable[str] = DEFAULT_QWEN3_WANDA_TARGETS,
 ) -> dict[str, WandaInputStats]:
     modules = qwen3_wanda_linear_modules(model, target_modules)
+    assert_wanda_weights_materialized(modules)
     stats = {name: WandaInputStats(module) for name, module in modules.items()}
     handles = []
 
@@ -164,6 +177,7 @@ def apply_wanda_unstructured_masks_qwen3(
     if not 0.0 <= float(sparsity_ratio) < 1.0:
         raise ValueError(f"Wanda sparsity_ratio must be in [0, 1), got {sparsity_ratio}")
     modules = qwen3_wanda_linear_modules(model, target_modules)
+    assert_wanda_weights_materialized(modules)
     missing = sorted(set(modules) - set(stats))
     if missing:
         raise ValueError(f"Missing Wanda activation stats for modules: {missing[:5]}")

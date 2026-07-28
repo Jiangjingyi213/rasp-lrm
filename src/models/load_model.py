@@ -31,14 +31,21 @@ def load_model_bundle(config: dict[str, Any]) -> ModelBundle:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    device_map = config.get("device_map", "auto")
+    if isinstance(device_map, str) and device_map.lower() in {"none", "null", ""}:
+        device_map = None
     model_kwargs = {
         "torch_dtype": dtype,
-        "device_map": config.get("device_map", "auto"),
         "trust_remote_code": config.get("trust_remote_code", True),
     }
+    if device_map is not None:
+        model_kwargs["device_map"] = device_map
     if config.get("attn_implementation"):
         model_kwargs["attn_implementation"] = config["attn_implementation"]
     model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+    if device_map is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(device)
     adapter = config.get("adapter")
     if adapter:
         if adapter in {

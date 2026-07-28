@@ -1,0 +1,157 @@
+seed: 3
+
+workflow:
+  profile: pilot
+  root: runs/08_stage_calibrated_pruning/main_{profile}_fixed_global_t30_baseline_qwen3_1p7b_priority_suite
+
+stages: [setup, reasoning, verify, final]
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float32
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  ordinary:
+    use_chat_template: true
+    enable_thinking: true
+    answer_format: boxed
+  structured:
+    use_chat_template: true
+    enable_thinking: true
+    explicit_stage_protocol: true
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
+
+generation:
+  max_input_tokens: 4096
+  max_new_tokens: 16384
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+
+calibration_pool:
+  allowed_sources: ["*"]
+  excluded_sources: [GSM8k, GSM8K, MATH, Omni-MATH, amc_aime, cn_k12]
+
+selection:
+  difficulty_filter: any_correct
+
+calibration:
+  forward_chunk_tokens: 1024
+
+masks:
+  metric: WIFV
+  structure: UL-UM
+  ratios: [0.00, 0.10, 0.15, 0.20]
+  c4_samples: 0
+  bias_compensation: true
+
+adaptive_griffin:
+  enabled: true
+  policy: calibrated_stage_safe_dynamic_griffin
+  score_mode: protected_core_safe_prune
+  runtime_weight: 0.25
+  prior_weight: 0.75
+  warmup_tokens:
+    setup: 0
+    reasoning: 16
+    verify: 16
+    final: 0
+  stage_ratios:
+    setup: 0.42
+    reasoning: 0.38
+    verify: 0.38
+    final: 0.38
+  protected_core_ratios:
+    setup: 0.35
+    reasoning: 0.40
+    verify: 0.45
+    final: 0.45
+  refresh_intervals:
+    setup: 192
+    reasoning: 192
+    verify: 192
+    final: 0
+  window_tokens:
+    setup: 192
+    reasoning: 192
+    verify: 192
+    final: 1
+  prior_policy: stage_specific
+  static_matched_ratio: 0.37
+  static_matched_to: t30_math_safe
+  additional_fixed_stage_methods:
+    - name: fixed_global_t30_ratios
+      policy: trajectory_global
+      ablation_role: baseline_global_same_t30_stage_ratios
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30_fixed_global
+      stage_ratios:
+        setup: 0.42
+        reasoning: 0.38
+        verify: 0.38
+        final: 0.38
+      selection_note: "Fixed-global baseline: trajectory-global WIFV mask with t30_math_safe stage ratios; no runtime activation or stage-conditioned prior."
+  bias_compensation: true
+  backend: logical_mask
+  variants:
+    - method_name: t30_math_safe
+      variant_role: target_30_math_safe_reference_not_run_by_default
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30
+      runtime_weight: 0.25
+      prior_weight: 0.75
+      stage_ratios:
+        setup: 0.42
+        reasoning: 0.38
+        verify: 0.38
+        final: 0.38
+      protected_core_ratios:
+        setup: 0.35
+        reasoning: 0.40
+        verify: 0.45
+        final: 0.45
+      refresh_intervals:
+        setup: 192
+        reasoning: 192
+        verify: 192
+        final: 0
+      window_tokens:
+        setup: 192
+        reasoning: 192
+        verify: 192
+        final: 1
+      selection_note: "Reference RASP method; excluded by default final_methods for this fixed-global baseline run."
+
+evaluation:
+  allow_final_without_dev: true
+  math500_name_or_path: HuggingFaceH4/MATH-500
+  final_datasets:
+    - dataset: amc2023
+      name_or_path: zwhe99/amc23
+      split: train
+    - dataset: gpqa_diamond
+      name_or_path: zai-org/glm-simple-evals-dataset
+      data_files: gpqa/gpqa_diamond.csv
+      split: train
+      choice_seed: 17
+    - dataset: arc_challenge
+      name_or_path: allenai/ai2_arc
+      dataset_config: ARC-Challenge
+      split: test
+
+profiles:
+  smoke:
+    final_eval_limit: 16
+    final_seeds: [3]
+    reuse_existing_method_summaries: true
+    final_methods:
+      - fixed_global_t30_ratios
+  pilot:
+    final_eval_limit: -1
+    final_seeds: [3]
+    reuse_existing_method_summaries: true
+    final_methods:
+      - fixed_global_t30_ratios

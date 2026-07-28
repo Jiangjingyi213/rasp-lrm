@@ -9,7 +9,7 @@ stages: [setup, reasoning, verify, final]
 model:
   name_or_path: Qwen/Qwen3-1.7B
   dtype: float32
-  device_map: auto
+  device_map: null
   trust_remote_code: true
   attn_implementation: eager
 
