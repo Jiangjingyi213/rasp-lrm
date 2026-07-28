@@ -268,6 +268,42 @@ class StaticWeightPruningRuntime(DenseStageRuntime):
         return output
 
 
+class StaticMlpChannelPruningRuntime(DenseStageRuntime):
+    def __init__(
+        self,
+        *,
+        policy: str,
+        backend: str,
+        baseline_type: str,
+        pruning_granularity: str,
+        mlp_channel_pruning_ratio: float,
+        extra_summary: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(policy=policy)
+        self.backend = str(backend)
+        self.baseline_type = str(baseline_type)
+        self.pruning_granularity = str(pruning_granularity)
+        self.mlp_channel_pruning_ratio = float(mlp_channel_pruning_ratio)
+        self.extra_summary = dict(extra_summary or {})
+
+    def summary(self) -> dict[str, Any]:
+        output = super().summary()
+        output.update(self.extra_summary)
+        output.update(
+            {
+                "backend": self.backend,
+                "baseline_type": self.baseline_type,
+                "policy": self.policy,
+                "pruning_granularity": self.pruning_granularity,
+                "flap_actual_mlp_channel_pruning_ratio": self.mlp_channel_pruning_ratio,
+                "theoretical_average_mlp_pruning_ratio": self.mlp_channel_pruning_ratio,
+                "actual_average_mlp_pruning_ratio": self.mlp_channel_pruning_ratio,
+                "actual_pruning_accounting": "static_mlp_channel_pruning_ratio",
+            }
+        )
+        return output
+
+
 class StaticLayerPruningRuntime(DenseStageRuntime):
     def __init__(
         self,

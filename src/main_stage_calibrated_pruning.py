@@ -1273,6 +1273,30 @@ def _shortgpt_enabled(cfg: dict[str, Any]) -> bool:
     return bool(_shortgpt_cfg(cfg).get("enabled", False))
 
 
+def _limits_layer_pruning_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    return deepcopy(cfg.get("limits_layer_pruning", {}))
+
+
+def _limits_layer_pruning_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(_limits_layer_pruning_cfg(cfg).get("enabled", False))
+
+
+def _flap_mlp_official_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    return deepcopy(cfg.get("flap_mlp_official", {}))
+
+
+def _flap_mlp_official_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(_flap_mlp_official_cfg(cfg).get("enabled", False))
+
+
+def _llm_pruner_mlp_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    return deepcopy(cfg.get("llm_pruner_mlp_static_width", {}))
+
+
+def _llm_pruner_mlp_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(_llm_pruner_mlp_cfg(cfg).get("enabled", False))
+
+
 def _griffin_prompt_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> dict[str, Any]:
     prune_ratio = float(row.get("prune_ratio", row.get("ratio", 0.0)))
     name = str(row.get("method_name", row.get("name", f"griffin_prompt_{prune_ratio:.4f}".replace(".", "p"))))
@@ -1509,6 +1533,7 @@ def _shortgpt_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> di
         "protected_first_layers",
         "protected_last_layers",
         "pruned_layers",
+        "selection_method",
     ):
         if key in row:
             extra[key] = deepcopy(row[key])
@@ -1563,6 +1588,207 @@ def shortgpt_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     if len(names) != len(set(names)):
         duplicates = sorted({name for name in names if names.count(name) > 1})
         raise ValueError(f"ShortGPT method names must be unique: {duplicates}")
+    return methods
+
+
+def _limits_layer_pruning_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> dict[str, Any]:
+    prune_ratio = float(row.get("prune_ratio", row.get("ratio", 0.0)))
+    name = str(row.get("method_name", row.get("name", f"limits_reverse_{prune_ratio:.4f}".replace(".", "p"))))
+    extra: dict[str, Any] = {}
+    for key in (
+        "candidate_layers",
+        "protected_first_layers",
+        "protected_last_layers",
+        "pruned_layers",
+        "selection_method",
+    ):
+        if key in row:
+            extra[key] = deepcopy(row[key])
+    return method(
+        name,
+        "limits_layer_pruning",
+        uniform_ratios(prune_ratio),
+        prompt,
+        bias=False,
+        prune_ratio=prune_ratio,
+        density=1.0 - prune_ratio,
+        calibration_path=_shortgpt_calibration_path(row),
+        calibration_samples=int(row.get("calibration_samples", 0)),
+        calibration_max_input_tokens=int(row.get("calibration_max_input_tokens", 2048)),
+        baseline_type=str(row.get("baseline_type", "limits_reverse_depth_pruning")),
+        pruning_granularity="decoder_layer_logical_skip",
+        matched_rasp_reference=str(row.get("matched_rasp_reference", "")),
+        variant_role=str(row.get("variant_role", name)),
+        selection_note=str(row.get("selection_note", "")),
+        **extra,
+        **(
+            {"target_pruning_ratio": float(row["target_pruning_ratio"])}
+            if "target_pruning_ratio" in row
+            else {}
+        ),
+        **(
+            {"target_pruning_label": str(row["target_pruning_label"])}
+            if "target_pruning_label" in row
+            else {}
+        ),
+    )
+
+
+def limits_layer_pruning_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    lcfg = _limits_layer_pruning_cfg(cfg)
+    variants = lcfg.get("variants")
+    if variants is None:
+        if not lcfg:
+            return []
+        variants = [lcfg]
+    if not isinstance(variants, list) or not variants:
+        raise ValueError("limits_layer_pruning.variants must be a non-empty list when provided")
+    methods = []
+    for index, row in enumerate(variants):
+        if not isinstance(row, dict):
+            raise ValueError(f"limits_layer_pruning.variants[{index}] must be a mapping")
+        merged = deepcopy(lcfg)
+        merged.pop("variants", None)
+        merged.setdefault("selection_method", "reverse")
+        merged.update(deepcopy(row))
+        methods.append(_limits_layer_pruning_method_from_cfg(merged, structured_prompt(cfg)))
+    names = [row["name"] for row in methods]
+    if len(names) != len(set(names)):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"Limits layer pruning method names must be unique: {duplicates}")
+    return methods
+
+
+def _flap_mlp_calibration_path(row: dict[str, Any]) -> str:
+    if row.get("calibration_path"):
+        return str(row["calibration_path"])
+    source_root = os.environ.get(
+        "SOURCE_ROOT",
+        "runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3",
+    )
+    return str(Path(source_root) / "03_selected" / "calibration.jsonl")
+
+
+def _flap_mlp_official_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> dict[str, Any]:
+    prune_ratio = float(row.get("prune_ratio", row.get("ratio", 0.0)))
+    name = str(row.get("method_name", row.get("name", f"flap_mlp_official_{prune_ratio:.4f}".replace(".", "p"))))
+    extra: dict[str, Any] = {}
+    if "layers" in row:
+        extra["layers"] = deepcopy(row["layers"])
+    return method(
+        name,
+        "flap_mlp_official",
+        uniform_ratios(prune_ratio),
+        prompt,
+        bias=bool(row.get("bias_compensation", False)),
+        prune_ratio=prune_ratio,
+        density=1.0 - prune_ratio,
+        calibration_path=_flap_mlp_calibration_path(row),
+        calibration_dataset=str(row.get("calibration_dataset", "mixed_calibration")),
+        calibration_samples=int(row.get("calibration_samples", 128)),
+        calibration_max_input_tokens=int(row.get("calibration_max_input_tokens", 2048)),
+        metric=str(row.get("metric", "WIFV")),
+        structure=str(row.get("structure", "AL-AM")),
+        baseline_type="official_style_flap_mlp_qwen3_port",
+        pruning_granularity="mlp_channel_structured",
+        matched_rasp_reference=str(row.get("matched_rasp_reference", "")),
+        variant_role=str(row.get("variant_role", name)),
+        selection_note=str(row.get("selection_note", "")),
+        **extra,
+        **(
+            {"target_pruning_ratio": float(row["target_pruning_ratio"])}
+            if "target_pruning_ratio" in row
+            else {}
+        ),
+        **(
+            {"target_pruning_label": str(row["target_pruning_label"])}
+            if "target_pruning_label" in row
+            else {}
+        ),
+    )
+
+
+def flap_mlp_official_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    fcfg = _flap_mlp_official_cfg(cfg)
+    variants = fcfg.get("variants")
+    if variants is None:
+        if not fcfg:
+            return []
+        variants = [fcfg]
+    if not isinstance(variants, list) or not variants:
+        raise ValueError("flap_mlp_official.variants must be a non-empty list when provided")
+    methods = []
+    for index, row in enumerate(variants):
+        if not isinstance(row, dict):
+            raise ValueError(f"flap_mlp_official.variants[{index}] must be a mapping")
+        merged = deepcopy(fcfg)
+        merged.pop("variants", None)
+        merged.update(deepcopy(row))
+        methods.append(_flap_mlp_official_method_from_cfg(merged, structured_prompt(cfg)))
+    names = [row["name"] for row in methods]
+    if len(names) != len(set(names)):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"FLAP MLP official method names must be unique: {duplicates}")
+    return methods
+
+
+def _llm_pruner_mlp_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> dict[str, Any]:
+    prune_ratio = float(row.get("prune_ratio", row.get("ratio", 0.0)))
+    name = str(row.get("method_name", row.get("name", f"llm_pruner_mlp_{prune_ratio:.4f}".replace(".", "p"))))
+    extra: dict[str, Any] = {}
+    if "layers" in row:
+        extra["layers"] = deepcopy(row["layers"])
+    return method(
+        name,
+        "llm_pruner_mlp_static_width",
+        uniform_ratios(prune_ratio),
+        prompt,
+        bias=False,
+        prune_ratio=prune_ratio,
+        density=1.0 - prune_ratio,
+        importance=str(row.get("importance", "l2")),
+        structure=str(row.get("structure", "UL-UM")),
+        physical_pruning=bool(row.get("physical_pruning", True)),
+        baseline_type="llm_pruner_style_static_width_qwen3_mlp_no_recovery",
+        pruning_granularity="mlp_channel_structured",
+        matched_rasp_reference=str(row.get("matched_rasp_reference", "")),
+        variant_role=str(row.get("variant_role", name)),
+        selection_note=str(row.get("selection_note", "")),
+        **extra,
+        **(
+            {"target_pruning_ratio": float(row["target_pruning_ratio"])}
+            if "target_pruning_ratio" in row
+            else {}
+        ),
+        **(
+            {"target_pruning_label": str(row["target_pruning_label"])}
+            if "target_pruning_label" in row
+            else {}
+        ),
+    )
+
+
+def llm_pruner_mlp_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    pcfg = _llm_pruner_mlp_cfg(cfg)
+    variants = pcfg.get("variants")
+    if variants is None:
+        if not pcfg:
+            return []
+        variants = [pcfg]
+    if not isinstance(variants, list) or not variants:
+        raise ValueError("llm_pruner_mlp_static_width.variants must be a non-empty list when provided")
+    methods = []
+    for index, row in enumerate(variants):
+        if not isinstance(row, dict):
+            raise ValueError(f"llm_pruner_mlp_static_width.variants[{index}] must be a mapping")
+        merged = deepcopy(pcfg)
+        merged.pop("variants", None)
+        merged.update(deepcopy(row))
+        methods.append(_llm_pruner_mlp_method_from_cfg(merged, structured_prompt(cfg)))
+    names = [row["name"] for row in methods]
+    if len(names) != len(set(names)):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"LLM-Pruner MLP method names must be unique: {duplicates}")
     return methods
 
 
@@ -1876,6 +2102,16 @@ def _run_methods(cfg, p, tasks, bank, bundle, methods, output_dir, seed: int | N
         raise RuntimeError(
             "SparseGPT official loads pruned weights in-place; run exactly one SparseGPT "
             "method per process via STAGE_FINAL_METHODS to avoid stacked pruning."
+        )
+    if any(row.get("policy") == "flap_mlp_official" for row in methods) and len(methods) != 1:
+        raise RuntimeError(
+            "FLAP-MLP official physically prunes MLP channels in-place; run exactly one FLAP "
+            "method per process via STAGE_FINAL_METHODS to avoid stacked pruning."
+        )
+    if any(row.get("policy") == "llm_pruner_mlp_static_width" for row in methods) and len(methods) != 1:
+        raise RuntimeError(
+            "LLM-Pruner-style MLP width pruning mutates MLP channels in-place; run exactly one "
+            "LLM-Pruner MLP method per process via STAGE_FINAL_METHODS to avoid stacked pruning."
         )
     for value in methods:
         suffix = f"_seed{seed}"
@@ -2491,6 +2727,9 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         or _wanda_official_enabled(cfg)
         or _sparsegpt_official_enabled(cfg)
         or _shortgpt_enabled(cfg)
+        or _limits_layer_pruning_enabled(cfg)
+        or _flap_mlp_official_enabled(cfg)
+        or _llm_pruner_mlp_enabled(cfg)
     )
     if p["dev_summary"].exists():
         dev_summary = read_json(p["dev_summary"])
@@ -2503,6 +2742,9 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             "wanda_official_baseline_frozen": _wanda_official_enabled(cfg),
             "sparsegpt_official_baseline_frozen": _sparsegpt_official_enabled(cfg),
             "shortgpt_baseline_frozen": _shortgpt_enabled(cfg),
+            "limits_layer_pruning_baseline_frozen": _limits_layer_pruning_enabled(cfg),
+            "flap_mlp_official_baseline_frozen": _flap_mlp_official_enabled(cfg),
+            "llm_pruner_mlp_baseline_frozen": _llm_pruner_mlp_enabled(cfg),
         }
     else:
         raise RuntimeError(
@@ -2522,6 +2764,9 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         or _wanda_official_enabled(cfg)
         or _sparsegpt_official_enabled(cfg)
         or _shortgpt_enabled(cfg)
+        or _limits_layer_pruning_enabled(cfg)
+        or _flap_mlp_official_enabled(cfg)
+        or _llm_pruner_mlp_enabled(cfg)
     ):
         requested_final_methods = set()
         env_final_methods = os.environ.get("STAGE_FINAL_METHODS")
@@ -2556,6 +2801,12 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             methods.extend(sparsegpt_official_methods(cfg))
         if _shortgpt_enabled(cfg):
             methods.extend(shortgpt_methods(cfg))
+        if _limits_layer_pruning_enabled(cfg):
+            methods.extend(limits_layer_pruning_methods(cfg))
+        if _flap_mlp_official_enabled(cfg):
+            methods.extend(flap_mlp_official_methods(cfg))
+        if _llm_pruner_mlp_enabled(cfg):
+            methods.extend(llm_pruner_mlp_methods(cfg))
     else:
         frozen = read_json(p["frozen"]) if p["frozen"].exists() else {}
         stage_budget = frozen["stage_budget"]

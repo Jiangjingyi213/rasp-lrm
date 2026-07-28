@@ -6,7 +6,7 @@ export RUN_ROOT="${RUN_ROOT:-runs/08_stage_calibrated_pruning/main_pilot_shortgp
 export STAGE_FINAL_METHODS="${STAGE_FINAL_METHODS:-shortgpt_t20_matched,shortgpt_t30_matched}"
 export RUN_LABEL="${RUN_LABEL:-shortgpt_qwen3_1p7b_full}"
 
-SOURCE_ROOT="${SOURCE_ROOT:-runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3_t30_math_safe_full}"
+SOURCE_ROOT="${SOURCE_ROOT:-runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3}"
 if [[ ! -f "${SOURCE_ROOT}/03_selected/calibration.jsonl" ]]; then
   echo "Missing ShortGPT calibration file: ${SOURCE_ROOT}/03_selected/calibration.jsonl" >&2
   echo "Set SOURCE_ROOT to an existing mixed pilot run with 03_selected/calibration.jsonl." >&2

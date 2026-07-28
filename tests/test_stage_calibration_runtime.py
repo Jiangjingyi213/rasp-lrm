@@ -18,8 +18,14 @@ try:
         GriffinPromptRuntime,
         SafeDynamicStageGriffinRuntime,
         StageMaskRuntime,
+        StaticLayerPruningRuntime,
         StaticCoreResidualStageRuntime,
         griffin_activation_score,
+    )
+    from src.baselines.shortgpt_qwen3 import (
+        apply_shortgpt_layer_skip_hooks,
+        select_reverse_layers,
+        select_shortgpt_layers,
     )
 
     TORCH_AVAILABLE = True
@@ -37,6 +43,30 @@ if TORCH_AVAILABLE:
             self.up_proj = nn.Linear(2, 4, bias=False)
             self.down_proj = nn.Linear(4, 2, bias=False)
             self.act_fn = nn.Identity()
+
+
+    class TinyAddLayer(nn.Module):
+        def __init__(self, delta: float) -> None:
+            super().__init__()
+            self.delta = float(delta)
+
+        def forward(self, hidden_states: torch.Tensor):
+            return (hidden_states + self.delta,)
+
+
+    class TinyDecoderModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.model = nn.Module()
+            self.model.layers = nn.ModuleList(
+                [TinyAddLayer(1.0), TinyAddLayer(2.0), TinyAddLayer(3.0)]
+            )
+
+        def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+            for layer in self.model.layers:
+                output = layer(hidden_states)
+                hidden_states = output[0] if isinstance(output, tuple) else output
+            return hidden_states
 
 
 def tiny_bank():
@@ -327,6 +357,47 @@ class StageCalibrationRuntimeTest(unittest.TestCase):
         self.assertEqual(summary["fallback_reason"], "invalid")
         self.assertEqual(summary["dense_observation_tokens_by_stage"]["dense"], 1)
         self.assertNotIn("setup", summary.get("masked_tokens_by_stage", {}))
+
+    def test_shortgpt_selects_lowest_bi_layers(self) -> None:
+        selected = select_shortgpt_layers(
+            {0: 0.9, 1: 0.1, 2: 0.4, 3: 0.2},
+            prune_ratio=0.5,
+            total_layers=4,
+        )
+        self.assertEqual(selected, [1, 3])
+
+    def test_reverse_layer_pruning_selects_last_layers(self) -> None:
+        selected = select_reverse_layers(prune_ratio=10 / 28, total_layers=28)
+        self.assertEqual(selected, list(range(18, 28)))
+
+    def test_shortgpt_layer_skip_hooks_are_removable(self) -> None:
+        model = TinyDecoderModel()
+        value = torch.zeros(1, 1, 1)
+        self.assertTrue(torch.allclose(model(value), torch.full_like(value, 6.0)))
+        handles = apply_shortgpt_layer_skip_hooks(model, [1])
+        try:
+            self.assertTrue(torch.allclose(model(value), torch.full_like(value, 4.0)))
+        finally:
+            for handle in handles:
+                handle.remove()
+        self.assertTrue(torch.allclose(model(value), torch.full_like(value, 6.0)))
+
+    def test_static_layer_runtime_closes_hooks(self) -> None:
+        model = TinyDecoderModel()
+        handles = apply_shortgpt_layer_skip_hooks(model, [1])
+        runtime = StaticLayerPruningRuntime(
+            policy="shortgpt",
+            backend="shortgpt_layer_skip_logical_v1",
+            baseline_type="shortgpt_depth_pruning",
+            pruning_granularity="decoder_layer_logical_skip",
+            total_layers=3,
+            pruned_layers=[1],
+            handles=handles,
+        )
+        self.assertAlmostEqual(runtime.summary()["layer_pruning_ratio"], 1.0 / 3.0)
+        runtime.close()
+        value = torch.zeros(1, 1, 1)
+        self.assertTrue(torch.allclose(model(value), torch.full_like(value, 6.0)))
 
 
 if __name__ == "__main__":

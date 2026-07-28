@@ -65,7 +65,13 @@ class StageFinalShardsTest(unittest.TestCase):
             "policy": "trajectory_global",
             "stage_ratios": {"setup": 0.3, "reasoning": 0.3, "verify": 0.3, "final": 0.3},
         }
+        flap = {
+            "name": "flap_mlp",
+            "policy": "flap_mlp_official",
+            "stage_ratios": {"setup": 0.35, "reasoning": 0.35, "verify": 0.35, "final": 0.35},
+        }
         self.assertFalse(method_requires_mask_bank(griffin))
+        self.assertFalse(method_requires_mask_bank(flap))
         self.assertFalse(method_requires_mask_bank(dense))
         self.assertTrue(method_requires_mask_bank(static))
 

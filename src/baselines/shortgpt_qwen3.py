@@ -78,6 +78,24 @@ def _pruned_layer_count(total_candidates: int, prune_ratio: float) -> int:
     return min(total_candidates, max(1, int(round(total_candidates * float(prune_ratio)))))
 
 
+def select_reverse_layers(
+    *,
+    prune_ratio: float,
+    total_layers: int,
+    candidate_layers: Iterable[int] | None = None,
+    protected_first_layers: int = 0,
+    protected_last_layers: int = 0,
+) -> list[int]:
+    candidates = _candidate_layers(
+        total_layers,
+        candidate_layers=candidate_layers,
+        protected_first_layers=protected_first_layers,
+        protected_last_layers=protected_last_layers,
+    )
+    prune = _pruned_layer_count(len(candidates), prune_ratio)
+    return sorted(sorted(candidates, reverse=True)[:prune])
+
+
 @torch.no_grad()
 def collect_shortgpt_block_influence_qwen3(
     model: nn.Module,
@@ -182,6 +200,7 @@ def prepare_shortgpt_qwen3(
     calibration_path: str,
     prompt_config: dict[str, Any],
     prune_ratio: float,
+    selection_method: str = "block_influence",
     calibration_samples: int = 128,
     max_input_tokens: int = 2048,
     candidate_layers: Iterable[int] | None = None,
@@ -200,25 +219,38 @@ def prepare_shortgpt_qwen3(
         protected_last_layers=protected_last_layers,
     )
     if pruned_layers is None:
-        calibration_rows = read_jsonl(calibration_path)
-        sample_count = min(int(calibration_samples), len(calibration_rows))
-        if sample_count <= 0:
-            raise ValueError(f"No ShortGPT calibration rows found at {calibration_path}")
-        block_influence = collect_shortgpt_block_influence_qwen3(
-            model,
-            tokenizer,
-            calibration_rows,
-            prompt_config=prompt_config,
-            calibration_samples=sample_count,
-            max_input_tokens=int(max_input_tokens),
-        )
-        selected = select_shortgpt_layers(
-            block_influence,
-            prune_ratio=float(prune_ratio),
-            total_layers=total_layers,
-            candidate_layers=candidates,
-        )
-        selection_method = "block_influence_lowest"
+        normalized_selection = str(selection_method).lower()
+        if normalized_selection in {"reverse", "reverse_order", "tail", "last_layers"}:
+            sample_count = 0
+            block_influence = {}
+            selected = select_reverse_layers(
+                prune_ratio=float(prune_ratio),
+                total_layers=total_layers,
+                candidate_layers=candidates,
+            )
+            selection_method = "reverse_order_tail_layers"
+        elif normalized_selection in {"block_influence", "bi", "shortgpt_bi"}:
+            calibration_rows = read_jsonl(calibration_path)
+            sample_count = min(int(calibration_samples), len(calibration_rows))
+            if sample_count <= 0:
+                raise ValueError(f"No ShortGPT calibration rows found at {calibration_path}")
+            block_influence = collect_shortgpt_block_influence_qwen3(
+                model,
+                tokenizer,
+                calibration_rows,
+                prompt_config=prompt_config,
+                calibration_samples=sample_count,
+                max_input_tokens=int(max_input_tokens),
+            )
+            selected = select_shortgpt_layers(
+                block_influence,
+                prune_ratio=float(prune_ratio),
+                total_layers=total_layers,
+                candidate_layers=candidates,
+            )
+            selection_method = "block_influence_lowest"
+        else:
+            raise ValueError(f"Unsupported layer pruning selection_method: {selection_method}")
     else:
         selected = _validate_layer_ids(pruned_layers, total_layers, name="pruned_layers")
         sample_count = 0

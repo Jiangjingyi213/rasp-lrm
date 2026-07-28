@@ -5,10 +5,19 @@ from collections import Counter
 from typing import Any
 
 import torch
+from datasets import load_dataset
 from tqdm import tqdm
 
 from src.data.format_prompt import build_prompt, forced_assistant_prefix
 from src.metrics.answer_match import answer_match, extract_answer
+from src.baselines.flap_mlp_qwen3 import (
+    apply_flap_mlp_pruning_qwen3,
+    summary_to_dict as flap_summary_to_dict,
+)
+from src.baselines.llm_pruner_mlp_qwen3 import (
+    apply_llm_pruner_mlp_pruning_qwen3,
+    summary_to_dict as llm_pruner_mlp_summary_to_dict,
+)
 from src.baselines.sparsegpt_official_qwen3 import (
     apply_sparsegpt_official_qwen3_artifact,
     summary_to_dict as sparsegpt_summary_to_dict,
@@ -28,6 +37,7 @@ from .runtime import (
     GriffinPromptRuntime,
     SafeDynamicStageGriffinRuntime,
     StaticLayerPruningRuntime,
+    StaticMlpChannelPruningRuntime,
     StageMaskRuntime,
     StaticWeightPruningRuntime,
     StaticCoreResidualStageRuntime,
@@ -35,6 +45,7 @@ from .runtime import (
     apply_fixed_stage_masking_qwen3,
     apply_griffin_prompt_qwen3,
 )
+from src.utils.io import read_jsonl
 
 
 def uniform_ratios(ratio: float) -> dict[str, float]:
@@ -44,7 +55,43 @@ def uniform_ratios(ratio: float) -> dict[str, float]:
 def method_requires_mask_bank(method: dict[str, Any]) -> bool:
     if all(float(value) <= 0.0 for value in method.get("stage_ratios", {}).values()):
         return False
-    return method.get("policy") not in {"griffin_prompt", "wanda_official", "sparsegpt_official", "shortgpt"}
+    return method.get("policy") not in {
+        "griffin_prompt",
+        "wanda_official",
+        "sparsegpt_official",
+        "shortgpt",
+        "limits_layer_pruning",
+        "flap_mlp_official",
+        "llm_pruner_mlp_static_width",
+    }
+
+
+def _flap_calibration_texts(tokenizer, method: dict[str, Any], sample_count: int) -> list[str]:
+    source = str(method.get("calibration_dataset", "mixed_calibration"))
+    max_input_tokens = int(method.get("calibration_max_input_tokens", 2048))
+    if source == "wikitext2":
+        dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+        text = " ".join(str(row.get("text", "")).strip() for row in dataset if str(row.get("text", "")).strip())
+        token_ids = tokenizer(text, return_tensors="pt", add_special_tokens=False).input_ids[0]
+        if int(token_ids.numel()) <= max_input_tokens:
+            return [text]
+        rng = random.Random(int(method.get("calibration_seed", 3)))
+        chunks = []
+        upper = int(token_ids.numel()) - max_input_tokens - 1
+        for _ in range(sample_count):
+            start = rng.randint(0, upper)
+            chunk_ids = token_ids[start : start + max_input_tokens]
+            chunks.append(tokenizer.decode(chunk_ids, skip_special_tokens=True))
+        return chunks
+
+    calibration_rows = read_jsonl(str(method["calibration_path"]))
+    if not calibration_rows:
+        raise ValueError(f"No FLAP calibration rows found at {method['calibration_path']}")
+    prompt_config = dict(method.get("prompt", {}))
+    return [
+        build_prompt(str(row["question"]), tokenizer, prompt_config)
+        for row in calibration_rows[:sample_count]
+    ]
 
 
 def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, Any]):
@@ -125,13 +172,110 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
                 "real_speedup_claimed": False,
             },
         )
-    if method["policy"] == "shortgpt":
+    if method["policy"] == "flap_mlp_official":
+        source = str(method.get("calibration_dataset", "mixed_calibration"))
+        if source == "wikitext2":
+            sample_count = int(method.get("calibration_samples", 128))
+        else:
+            calibration_rows = read_jsonl(str(method["calibration_path"]))
+            sample_count = min(int(method.get("calibration_samples", 128)), len(calibration_rows))
+        if sample_count <= 0:
+            raise ValueError(f"No FLAP calibration rows found at {method['calibration_path']}")
+        calibration_texts = _flap_calibration_texts(method["tokenizer"], method, sample_count)
+        flap_summary = apply_flap_mlp_pruning_qwen3(
+            model,
+            method["tokenizer"],
+            calibration_texts=calibration_texts,
+            ratio=float(method.get("prune_ratio", method["stage_ratios"].get("setup", 0.0))),
+            calibration_dataset=str(method.get("calibration_dataset", "mixed_calibration")),
+            metric=str(method.get("metric", "WIFV")),
+            structure=str(method.get("structure", "AL-AM")),
+            calibration_samples=sample_count,
+            max_input_tokens=int(method.get("calibration_max_input_tokens", 2048)),
+            layers=method.get("layers"),
+            bias_compensation=bool(method.get("bias_compensation", False)),
+        )
+        summary = flap_summary_to_dict(flap_summary)
+        total_pruned = sum(int(value) for value in summary["pruned_channels_per_layer"].values())
+        total_channels = int(summary["original_intermediate_size"]) * len(summary["pruned_layers"])
+        actual_ratio = total_pruned / total_channels if total_channels else 0.0
+        return StaticMlpChannelPruningRuntime(
+            policy="flap_mlp_official",
+            backend="flap_mlp_qwen3_physical_channel_pruning_v1",
+            baseline_type="official_style_flap_mlp_qwen3_port",
+            pruning_granularity="mlp_channel_structured",
+            mlp_channel_pruning_ratio=actual_ratio,
+            extra_summary={
+                "flap_mlp_official_summary": summary,
+                "flap_metric": str(summary["metric"]),
+                "flap_structure": str(summary["structure"]),
+                "flap_prune_ratio": float(summary["ratio"]),
+                "flap_calibration_dataset": str(summary["calibration_dataset"]),
+                "flap_calibration_samples": int(summary["calibration_samples"]),
+                "flap_calibration_source": str(method["calibration_path"]),
+                "flap_bias_compensation": bool(summary["bias_compensation"]),
+                "flap_physical_pruning": bool(summary["physical_pruning"]),
+                "flap_target": str(summary["target"]),
+                "flap_kept_channels_per_layer": dict(summary["kept_channels_per_layer"]),
+                "flap_pruned_channels_per_layer": dict(summary["pruned_channels_per_layer"]),
+                "flap_actual_mlp_channel_pruning_ratio": actual_ratio,
+                "matched_rasp_reference": str(method.get("matched_rasp_reference", "")),
+                "target_matched_to_rasp_actual_mlp_pruning": (
+                    float(method["target_pruning_ratio"])
+                    if "target_pruning_ratio" in method
+                    else None
+                ),
+                "real_speedup_claimed": False,
+            },
+        )
+    if method["policy"] == "llm_pruner_mlp_static_width":
+        llm_pruner_summary = apply_llm_pruner_mlp_pruning_qwen3(
+            model,
+            ratio=float(method.get("prune_ratio", method["stage_ratios"].get("setup", 0.0))),
+            importance=str(method.get("importance", "l2")),
+            structure=str(method.get("structure", "UL-UM")),
+            layers=method.get("layers"),
+            physical_pruning=bool(method.get("physical_pruning", True)),
+        )
+        summary = llm_pruner_mlp_summary_to_dict(llm_pruner_summary)
+        total_pruned = sum(int(value) for value in summary["pruned_channels_per_layer"].values())
+        total_channels = int(summary["original_intermediate_size"]) * len(summary["pruned_layers"])
+        actual_ratio = total_pruned / total_channels if total_channels else 0.0
+        return StaticMlpChannelPruningRuntime(
+            policy="llm_pruner_mlp_static_width",
+            backend="llm_pruner_mlp_qwen3_physical_channel_pruning_v1"
+            if bool(summary["physical_pruning"])
+            else "llm_pruner_mlp_qwen3_logical_channel_mask_v1",
+            baseline_type="llm_pruner_style_static_width_qwen3_mlp_no_recovery",
+            pruning_granularity="mlp_channel_structured",
+            mlp_channel_pruning_ratio=actual_ratio,
+            extra_summary={
+                "llm_pruner_mlp_summary": summary,
+                "llm_pruner_importance": str(summary["importance"]),
+                "llm_pruner_structure": str(summary["structure"]),
+                "llm_pruner_prune_ratio": float(summary["ratio"]),
+                "llm_pruner_physical_pruning": bool(summary["physical_pruning"]),
+                "llm_pruner_target": str(summary["target"]),
+                "llm_pruner_kept_channels_per_layer": dict(summary["kept_channels_per_layer"]),
+                "llm_pruner_pruned_channels_per_layer": dict(summary["pruned_channels_per_layer"]),
+                "llm_pruner_actual_mlp_channel_pruning_ratio": actual_ratio,
+                "matched_rasp_reference": str(method.get("matched_rasp_reference", "")),
+                "target_matched_to_rasp_actual_mlp_pruning": (
+                    float(method["target_pruning_ratio"])
+                    if "target_pruning_ratio" in method
+                    else None
+                ),
+                "real_speedup_claimed": False,
+            },
+        )
+    if method["policy"] in {"shortgpt", "limits_layer_pruning"}:
         shortgpt_summary, handles = prepare_shortgpt_qwen3(
             model,
             method["tokenizer"],
             calibration_path=str(method["calibration_path"]),
             prompt_config=dict(method.get("prompt", {})),
             prune_ratio=float(method.get("prune_ratio", method["stage_ratios"].get("setup", 0.0))),
+            selection_method=str(method.get("selection_method", "block_influence")),
             calibration_samples=int(method.get("calibration_samples", 128)),
             max_input_tokens=int(method.get("calibration_max_input_tokens", 2048)),
             candidate_layers=method.get("candidate_layers"),
@@ -146,10 +290,17 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
             ),
         )
         summary = shortgpt_summary_to_dict(shortgpt_summary)
+        policy = str(method["policy"])
+        baseline_type = str(method.get("baseline_type", summary["baseline_type"]))
+        backend = (
+            "limits_reverse_layer_skip_logical_v1"
+            if policy == "limits_layer_pruning"
+            else "shortgpt_layer_skip_logical_v1"
+        )
         return StaticLayerPruningRuntime(
-            policy="shortgpt",
-            backend="shortgpt_layer_skip_logical_v1",
-            baseline_type="shortgpt_depth_pruning",
+            policy=policy,
+            backend=backend,
+            baseline_type=baseline_type,
             pruning_granularity="decoder_layer_logical_skip",
             total_layers=int(summary["total_layers"]),
             pruned_layers=list(summary["pruned_layers"]),
@@ -167,6 +318,7 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
                 "shortgpt_candidate_layers": list(summary["candidate_layers"]),
                 "shortgpt_pruned_layers": list(summary["pruned_layers"]),
                 "shortgpt_block_influence_by_layer": dict(summary["block_influence_by_layer"]),
+                "layer_pruning_selection_method": str(summary["selection_method"]),
                 "matched_rasp_reference": str(summary["matched_rasp_reference"]),
                 "target_matched_to_rasp_actual_mlp_pruning": summary[
                     "target_matched_to_rasp_actual_mlp_pruning"
@@ -285,7 +437,12 @@ def evaluate_method(
     torch.manual_seed(seed)
     random.seed(seed)
     method = dict(method)
-    if method.get("policy") in {"wanda_official", "shortgpt"}:
+    if method.get("policy") in {
+        "wanda_official",
+        "shortgpt",
+        "limits_layer_pruning",
+        "flap_mlp_official",
+    }:
         method["tokenizer"] = tokenizer
     runtime = _runtime_for_method(model, bank, method)
     method.pop("tokenizer", None)
@@ -375,6 +532,26 @@ def evaluate_method(
     shortgpt_pruned_layers = None
     shortgpt_block_influence_by_layer = None
     shortgpt_layer_pruning_ratio = None
+    flap_metric = None
+    flap_structure = None
+    flap_prune_ratio = None
+    flap_calibration_dataset = None
+    flap_calibration_samples = None
+    flap_calibration_source = None
+    flap_bias_compensation = None
+    flap_physical_pruning = None
+    flap_target = None
+    flap_kept_channels_per_layer = None
+    flap_pruned_channels_per_layer = None
+    flap_actual_mlp_channel_pruning_ratio = None
+    llm_pruner_importance = None
+    llm_pruner_structure = None
+    llm_pruner_prune_ratio = None
+    llm_pruner_physical_pruning = None
+    llm_pruner_target = None
+    llm_pruner_kept_channels_per_layer = None
+    llm_pruner_pruned_channels_per_layer = None
+    llm_pruner_actual_mlp_channel_pruning_ratio = None
     weight_sparsity_by_module = None
     matched_rasp_reference = None
     target_matched_to_rasp_actual_mlp_pruning = None
@@ -468,6 +645,72 @@ def evaluate_method(
             shortgpt_layer_pruning_ratio
             if shortgpt_layer_pruning_ratio is not None
             else runtime_summary.get("shortgpt_layer_pruning_ratio")
+        )
+        flap_metric = flap_metric or runtime_summary.get("flap_metric")
+        flap_structure = flap_structure or runtime_summary.get("flap_structure")
+        flap_prune_ratio = (
+            flap_prune_ratio
+            if flap_prune_ratio is not None
+            else runtime_summary.get("flap_prune_ratio")
+        )
+        flap_calibration_dataset = (
+            flap_calibration_dataset or runtime_summary.get("flap_calibration_dataset")
+        )
+        flap_calibration_samples = (
+            flap_calibration_samples
+            if flap_calibration_samples is not None
+            else runtime_summary.get("flap_calibration_samples")
+        )
+        flap_calibration_source = (
+            flap_calibration_source or runtime_summary.get("flap_calibration_source")
+        )
+        flap_bias_compensation = (
+            flap_bias_compensation
+            if flap_bias_compensation is not None
+            else runtime_summary.get("flap_bias_compensation")
+        )
+        flap_physical_pruning = (
+            flap_physical_pruning
+            if flap_physical_pruning is not None
+            else runtime_summary.get("flap_physical_pruning")
+        )
+        flap_target = flap_target or runtime_summary.get("flap_target")
+        flap_kept_channels_per_layer = (
+            flap_kept_channels_per_layer or runtime_summary.get("flap_kept_channels_per_layer")
+        )
+        flap_pruned_channels_per_layer = (
+            flap_pruned_channels_per_layer or runtime_summary.get("flap_pruned_channels_per_layer")
+        )
+        flap_actual_mlp_channel_pruning_ratio = (
+            flap_actual_mlp_channel_pruning_ratio
+            if flap_actual_mlp_channel_pruning_ratio is not None
+            else runtime_summary.get("flap_actual_mlp_channel_pruning_ratio")
+        )
+        llm_pruner_importance = llm_pruner_importance or runtime_summary.get("llm_pruner_importance")
+        llm_pruner_structure = llm_pruner_structure or runtime_summary.get("llm_pruner_structure")
+        llm_pruner_prune_ratio = (
+            llm_pruner_prune_ratio
+            if llm_pruner_prune_ratio is not None
+            else runtime_summary.get("llm_pruner_prune_ratio")
+        )
+        llm_pruner_physical_pruning = (
+            llm_pruner_physical_pruning
+            if llm_pruner_physical_pruning is not None
+            else runtime_summary.get("llm_pruner_physical_pruning")
+        )
+        llm_pruner_target = llm_pruner_target or runtime_summary.get("llm_pruner_target")
+        llm_pruner_kept_channels_per_layer = (
+            llm_pruner_kept_channels_per_layer
+            or runtime_summary.get("llm_pruner_kept_channels_per_layer")
+        )
+        llm_pruner_pruned_channels_per_layer = (
+            llm_pruner_pruned_channels_per_layer
+            or runtime_summary.get("llm_pruner_pruned_channels_per_layer")
+        )
+        llm_pruner_actual_mlp_channel_pruning_ratio = (
+            llm_pruner_actual_mlp_channel_pruning_ratio
+            if llm_pruner_actual_mlp_channel_pruning_ratio is not None
+            else runtime_summary.get("llm_pruner_actual_mlp_channel_pruning_ratio")
         )
         weight_sparsity_by_module = (
             weight_sparsity_by_module or runtime_summary.get("weight_sparsity_by_module")
@@ -614,6 +857,48 @@ def evaluate_method(
         summary["shortgpt_block_influence_by_layer"] = shortgpt_block_influence_by_layer
     if shortgpt_layer_pruning_ratio is not None:
         summary["shortgpt_layer_pruning_ratio"] = shortgpt_layer_pruning_ratio
+    if flap_metric:
+        summary["flap_metric"] = flap_metric
+    if flap_structure:
+        summary["flap_structure"] = flap_structure
+    if flap_prune_ratio is not None:
+        summary["flap_prune_ratio"] = flap_prune_ratio
+    if flap_calibration_dataset:
+        summary["flap_calibration_dataset"] = flap_calibration_dataset
+    if flap_calibration_samples is not None:
+        summary["flap_calibration_samples"] = flap_calibration_samples
+    if flap_calibration_source:
+        summary["flap_calibration_source"] = flap_calibration_source
+    if flap_bias_compensation is not None:
+        summary["flap_bias_compensation"] = flap_bias_compensation
+    if flap_physical_pruning is not None:
+        summary["flap_physical_pruning"] = flap_physical_pruning
+    if flap_target:
+        summary["flap_target"] = flap_target
+    if flap_kept_channels_per_layer:
+        summary["flap_kept_channels_per_layer"] = flap_kept_channels_per_layer
+    if flap_pruned_channels_per_layer:
+        summary["flap_pruned_channels_per_layer"] = flap_pruned_channels_per_layer
+    if flap_actual_mlp_channel_pruning_ratio is not None:
+        summary["flap_actual_mlp_channel_pruning_ratio"] = flap_actual_mlp_channel_pruning_ratio
+    if llm_pruner_importance:
+        summary["llm_pruner_importance"] = llm_pruner_importance
+    if llm_pruner_structure:
+        summary["llm_pruner_structure"] = llm_pruner_structure
+    if llm_pruner_prune_ratio is not None:
+        summary["llm_pruner_prune_ratio"] = llm_pruner_prune_ratio
+    if llm_pruner_physical_pruning is not None:
+        summary["llm_pruner_physical_pruning"] = llm_pruner_physical_pruning
+    if llm_pruner_target:
+        summary["llm_pruner_target"] = llm_pruner_target
+    if llm_pruner_kept_channels_per_layer:
+        summary["llm_pruner_kept_channels_per_layer"] = llm_pruner_kept_channels_per_layer
+    if llm_pruner_pruned_channels_per_layer:
+        summary["llm_pruner_pruned_channels_per_layer"] = llm_pruner_pruned_channels_per_layer
+    if llm_pruner_actual_mlp_channel_pruning_ratio is not None:
+        summary["llm_pruner_actual_mlp_channel_pruning_ratio"] = (
+            llm_pruner_actual_mlp_channel_pruning_ratio
+        )
     if weight_sparsity_by_module:
         summary["weight_sparsity_by_module"] = weight_sparsity_by_module
     if matched_rasp_reference:
