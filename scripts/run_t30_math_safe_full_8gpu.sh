@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+unset HF_DATASETS_OFFLINE
+unset TRANSFORMERS_OFFLINE
+unset HF_HUB_OFFLINE
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
@@ -40,6 +44,7 @@ HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
 HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
 HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}" \
 STAGE_SEED="${SEED}" \
+STAGE_WORKFLOW_ROOT="${RUN_ROOT}" \
 "${PYTHON_BIN}" -m src.main_stage_calibrated_pruning \
   --config "${CONFIG_PATH}" \
   --profile "${PROFILE}" \
@@ -73,6 +78,7 @@ for shard_index in $(seq 0 $((SHARD_COUNT - 1))); do
   HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
   HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}" \
   STAGE_SEED="${SEED}" \
+  STAGE_WORKFLOW_ROOT="${RUN_ROOT}" \
   STAGE_FINAL_EVAL_LIMIT="${FINAL_EVAL_LIMIT}" \
   STAGE_FINAL_METHODS="${FINAL_METHODS}" \
   STAGE_FINAL_SHARD_INDEX="${shard_index}" \
@@ -100,6 +106,7 @@ fi
 echo "START merge_final_shards"
 HF_ENDPOINT="${HF_ENDPOINT}" \
 STAGE_SEED="${SEED}" \
+STAGE_WORKFLOW_ROOT="${RUN_ROOT}" \
 STAGE_FINAL_EVAL_LIMIT="${FINAL_EVAL_LIMIT}" \
 STAGE_FINAL_SHARD_COUNT="${SHARD_COUNT}" \
 "${PYTHON_BIN}" -m src.main_stage_calibrated_pruning \

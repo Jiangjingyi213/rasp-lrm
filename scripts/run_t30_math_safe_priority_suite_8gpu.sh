@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+unset HF_DATASETS_OFFLINE
+unset TRANSFORMERS_OFFLINE
+unset HF_HUB_OFFLINE
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 

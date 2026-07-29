@@ -563,17 +563,57 @@ def load_arc_hf(config: dict[str, Any]) -> list[dict[str, Any]]:
     split = config.get("split", "test")
     limit = _as_int_or_none(config.get("limit"))
     offset = int(config.get("offset", 0))
-    try:
-        dataset = load_dataset(name_or_path, dataset_config, split=split)
-    except Exception:
-        if str(name_or_path) == "ai2_arc":
-            dataset = load_dataset("allenai/ai2_arc", dataset_config, split=split)
-        elif str(name_or_path) == "allenai/ai2_arc":
-            dataset = load_dataset("ai2_arc", dataset_config, split=split)
-        else:
-            raise
-    rows = [_normalize_arc_row(dict(row), i, split, dataset_label) for i, row in enumerate(dataset)]
-    return slice_rows(rows, limit, offset)
+    candidates: list[tuple[list[str], dict[str, Any], str, str]] = []
+    if config.get("data_files"):
+        candidates.append(([str(name_or_path)], {"data_files": config["data_files"]}, "train", split))
+    candidates.append(([str(name_or_path), str(dataset_config)], {}, split, split))
+    if str(name_or_path) == "ai2_arc":
+        candidates.append((["allenai/ai2_arc", str(dataset_config)], {}, split, split))
+
+    # Some datasets/huggingface_hub versions fail to parse the legacy ai2_arc
+    # dataset-script URI. The public allenai/ai2_arc repository also exposes
+    # small parquet files, so use them as a robust fallback.
+    safe_split = {"train": "train", "validation": "validation", "test": "test"}.get(str(split), "test")
+    candidates.extend(
+        [
+            (
+                ["parquet"],
+                {
+                    "data_files": (
+                        f"hf://datasets/allenai/ai2_arc/{dataset_config}/"
+                        f"{safe_split}-00000-of-00001.parquet"
+                    )
+                },
+                "train",
+                safe_split,
+            ),
+            (
+                ["parquet"],
+                {
+                    "data_files": (
+                        f"hf://datasets/allenai/ai2_arc/{dataset_config}/"
+                        f"ai2_arc-{safe_split}.parquet"
+                    )
+                },
+                "train",
+                safe_split,
+            ),
+        ]
+    )
+
+    errors = []
+    for args, kwargs, candidate_split, output_split in candidates:
+        try:
+            dataset = load_dataset(*args, split=candidate_split, **kwargs)
+            rows = [
+                _normalize_arc_row(dict(row), i, output_split, dataset_label)
+                for i, row in enumerate(dataset)
+            ]
+            return slice_rows(rows, limit, offset)
+        except Exception as exc:
+            errors.append(f"{args}: {type(exc).__name__}: {exc}")
+            continue
+    raise FileNotFoundError("Unable to load ARC from any configured source:\n" + "\n".join(errors))
 
 
 _CHOICE_ANSWER_RE = re.compile(r"^\(?\s*([A-Z])\s*\)?$")
@@ -788,13 +828,13 @@ def load_tasks(config: dict[str, Any]) -> list[dict[str, Any]]:
     if name in {"arc_easy", "arc-easy", "ai2_arc_easy"}:
         merged = dict(config)
         merged.setdefault("dataset", "arc_easy")
-        merged.setdefault("name_or_path", "ai2_arc")
+        merged.setdefault("name_or_path", "allenai/ai2_arc")
         merged.setdefault("dataset_config", "ARC-Easy")
         return load_arc_hf(merged)
     if name in {"arc_challenge", "arc-challenge", "ai2_arc_challenge"}:
         merged = dict(config)
         merged.setdefault("dataset", "arc_challenge")
-        merged.setdefault("name_or_path", "ai2_arc")
+        merged.setdefault("name_or_path", "allenai/ai2_arc")
         merged.setdefault("dataset_config", "ARC-Challenge")
         return load_arc_hf(merged)
     if name in {"bbh", "bbh_selected", "big_bench_hard"}:

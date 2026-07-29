@@ -248,6 +248,14 @@ def apply_wanda_official_qwen3(
     sample_count = min(int(calibration_samples), len(calibration_rows))
     if sample_count <= 0:
         raise ValueError(f"No Wanda calibration rows found at {calibration_path}")
+    resolved_prompt_mode = str(calibration_prompt_mode)
+    if (
+        resolved_prompt_mode in ("structured_prompt", "prompt")
+        and calibration_rows
+        and "question" not in calibration_rows[0]
+        and calibration_text_field in calibration_rows[0]
+    ):
+        resolved_prompt_mode = "raw_text"
     stats = collect_wanda_input_stats_qwen3(
         model,
         tokenizer,
@@ -255,7 +263,7 @@ def apply_wanda_official_qwen3(
         prompt_config=prompt_config,
         calibration_samples=sample_count,
         max_input_tokens=int(max_input_tokens),
-        calibration_prompt_mode=str(calibration_prompt_mode),
+        calibration_prompt_mode=resolved_prompt_mode,
         calibration_text_field=str(calibration_text_field),
         target_modules=target_modules,
     )
@@ -274,7 +282,7 @@ def apply_wanda_official_qwen3(
         calibration_path=str(calibration_path),
         calibration_samples=sample_count,
         calibration_max_input_tokens=int(max_input_tokens),
-        calibration_prompt_mode=str(calibration_prompt_mode),
+        calibration_prompt_mode=resolved_prompt_mode,
         calibration_text_field=str(calibration_text_field),
         calibration_seed=calibration_seed,
         target_modules=target_modules,

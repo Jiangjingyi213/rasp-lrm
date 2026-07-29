@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+unset HF_DATASETS_OFFLINE
+unset TRANSFORMERS_OFFLINE
+unset HF_HUB_OFFLINE
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
@@ -194,7 +198,7 @@ try_merge_dataset() {
 }
 
 if [[ "${job_count}" -eq 0 ]]; then
-  echo "No new GRIFFIN priority suite shards to run."
+  echo "No new ${BASELINE_LABEL} priority suite shards to run."
   write_suite_summaries
   echo "ALL DONE: ${SUITE_ROOT}/aggregate_summary.md"
   exit 0
@@ -274,7 +278,7 @@ for pid in "${pids[@]}"; do
   fi
 done
 if [[ "${failed}" -ne 0 ]] || compgen -G "${QUEUE_DIR}/failed_*" > /dev/null; then
-  echo "At least one GRIFFIN priority worker failed. Check ${LOG_DIR}/${LOG_PREFIX}_worker*_gpu*.log and shard logs." >&2
+  echo "At least one ${BASELINE_LABEL} priority worker failed. Check ${LOG_DIR}/${LOG_PREFIX}_worker*_gpu*.log and shard logs." >&2
   exit 1
 fi
 

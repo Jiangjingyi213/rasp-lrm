@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import gzip
+import json
+import os
 import random
 from pathlib import Path
 from typing import Any
+from urllib.request import Request, urlopen
 
 from src.utils.io import ensure_dir, write_json, write_jsonl
 
@@ -11,6 +15,34 @@ from src.utils.io import ensure_dir, write_json, write_jsonl
 def _nonempty_text(row: dict[str, Any], text_field: str) -> str:
     text = str(row.get(text_field, "")).strip()
     return " ".join(text.split())
+
+
+def _c4_direct_url(seed: int) -> str:
+    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
+    shard_index = int(seed) % 1024
+    return (
+        f"{endpoint}/datasets/allenai/c4/resolve/main/en/"
+        f"c4-train.{shard_index:05d}-of-01024.json.gz"
+    )
+
+
+def _iter_c4_direct_rows(seed: int) -> Any:
+    url = os.environ.get("C4_DIRECT_URL") or _c4_direct_url(seed)
+    request = Request(url, headers={"User-Agent": "rasp-lrm-c4-calibration"})
+    with urlopen(request, timeout=int(os.environ.get("C4_DOWNLOAD_TIMEOUT", "300"))) as response:
+        with gzip.GzipFile(fileobj=response) as gz:
+            for line in gz:
+                if not line.strip():
+                    continue
+                yield json.loads(line.decode("utf-8"))
+
+
+def _iter_c4_dataset_rows(seed: int, buffer_size: int) -> Any:
+    from datasets import load_dataset
+
+    data_files = {"train": f"en/c4-train.{int(seed) % 1024:05d}-of-01024.json.gz"}
+    stream = load_dataset("allenai/c4", data_files=data_files, split="train", streaming=True)
+    return stream.shuffle(seed=int(seed), buffer_size=int(buffer_size))
 
 
 def build_c4_calibration(
@@ -28,10 +60,19 @@ def build_c4_calibration(
     output = Path(output)
     ensure_dir(output.parent)
 
-    from datasets import load_dataset
-
-    stream = load_dataset("allenai/c4", "en", split="train", streaming=True)
-    stream = stream.shuffle(seed=int(seed), buffer_size=int(buffer_size))
+    source_mode = os.environ.get("C4_SOURCE_MODE", "direct")
+    if source_mode == "datasets":
+        stream = _iter_c4_dataset_rows(seed, buffer_size)
+        source_dataset = "allenai/c4/en/train via datasets streaming"
+    else:
+        try:
+            stream = _iter_c4_direct_rows(seed)
+            source_dataset = _c4_direct_url(seed)
+        except Exception:
+            if source_mode == "direct":
+                raise
+            stream = _iter_c4_dataset_rows(seed, buffer_size)
+            source_dataset = "allenai/c4/en/train via datasets streaming"
 
     rows: list[dict[str, Any]] = []
     rng = random.Random(seed)
@@ -43,7 +84,7 @@ def build_c4_calibration(
             {
                 "id": f"c4-seed{seed}-{len(rows):05d}",
                 "dataset": "c4",
-                "source_dataset": "allenai/c4/en/train",
+                "source_dataset": source_dataset,
                 "text": text,
                 "seed": int(seed),
                 "stream_index_hint": int(index),
@@ -64,6 +105,8 @@ def build_c4_calibration(
             "dataset": "allenai/c4",
             "dataset_config": "en",
             "split": "train",
+            "source_dataset": source_dataset,
+            "source_mode": source_mode,
             "streaming": True,
             "samples": len(rows),
             "seed": int(seed),
