@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, deque
+import hashlib
 from typing import Any
 
 import numpy as np
@@ -100,6 +101,22 @@ def _topk_within_mask(scores: torch.Tensor, candidates: torch.Tensor, count: int
         local_scores = scores.float()[candidate_indices]
         output[candidate_indices[torch.topk(local_scores, k=count, largest=True).indices]] = True
     return output
+
+
+def _safe_dynamic_score_mode(value: str) -> str:
+    """Normalise legacy safe-dynamic names without changing old configs."""
+
+    aliases = {
+        "activation": "activation",
+        "activation_keep": "activation",
+        "protected_core_safe_prune": "activation",
+        "current_safe": "activation",
+        "output_aware": "output_aware",
+    }
+    try:
+        return aliases[str(value)]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported safe-dynamic score mode: {value}") from exc
 
 
 class StageMaskRuntime:
@@ -836,6 +853,8 @@ class SafeDynamicStageGriffinRuntime:
         bias_compensation: bool = True,
         prior_policy: str = "stage_specific",
         fallback_behavior: str = "dense_after_error",
+        score_mode: str = "activation",
+        max_mask_swap_fraction: float = 1.0,
     ) -> None:
         validate_mask_bank(bank)
         if prior_policy not in bank["policies"]:
@@ -849,6 +868,10 @@ class SafeDynamicStageGriffinRuntime:
             raise ValueError("runtime_weight and prior_weight must be non-negative")
         if self.runtime_weight + self.prior_weight <= 0.0:
             raise ValueError("At least one safe-dynamic score weight must be positive")
+        self.score_mode = _safe_dynamic_score_mode(score_mode)
+        self.max_mask_swap_fraction = float(max_mask_swap_fraction)
+        if not 0.0 <= self.max_mask_swap_fraction <= 1.0:
+            raise ValueError("max_mask_swap_fraction must be in [0, 1]")
         warmup_tokens = warmup_tokens or {}
         protected_core_ratios = protected_core_ratios or {}
         refresh_intervals = refresh_intervals or {}
@@ -889,6 +912,13 @@ class SafeDynamicStageGriffinRuntime:
         self._actual_pruning_denominator = 0
         self._actual_pruning_weighted_sum_by_stage: Counter[str] = Counter()
         self._actual_pruning_denominator_by_stage: Counter[str] = Counter()
+        self._output_norms: dict[int, torch.Tensor] = {}
+        self._output_norm_hash: str | None = None
+        self._previous_masks: dict[int, torch.Tensor] = {}
+        self._mask_swap_pairs_by_stage_layer: Counter[str] = Counter()
+        self._mask_swap_candidates_by_stage_layer: Counter[str] = Counter()
+        self._mask_jaccard_sum_by_stage_layer: Counter[str] = Counter()
+        self._mask_jaccard_count_by_stage_layer: Counter[str] = Counter()
 
     @property
     def alpha(self) -> float:
@@ -914,8 +944,14 @@ class SafeDynamicStageGriffinRuntime:
         self._actual_pruning_denominator = 0
         self._actual_pruning_weighted_sum_by_stage.clear()
         self._actual_pruning_denominator_by_stage.clear()
+        self._previous_masks.clear()
+        self._mask_swap_pairs_by_stage_layer.clear()
+        self._mask_swap_candidates_by_stage_layer.clear()
+        self._mask_jaccard_sum_by_stage_layer.clear()
+        self._mask_jaccard_count_by_stage_layer.clear()
 
     def set_stage(self, stage: str) -> None:
+        previous = self.active_stage
         if stage not in STAGES:
             self.fallback_dense(f"unknown_stage:{stage}")
             return
@@ -923,6 +959,8 @@ class SafeDynamicStageGriffinRuntime:
             self.active_stage = stage
             self._current_single_stage = None
             self._current_single_observe = False
+            if previous != stage and self.max_mask_swap_fraction < 1.0:
+                self._clear_stage_cache(stage)
 
     def fallback_dense(self, reason: str) -> None:
         if self.fallback_reason is None:
@@ -936,12 +974,12 @@ class SafeDynamicStageGriffinRuntime:
         self.tokens_by_stage[self.active_stage or "dense"] += 1
 
     def _accumulate_prompt(self, layer_id: int, intermediate: torch.Tensor) -> None:
-        score_sq = griffin_activation_score(intermediate).square()
+        score_sq = self._runtime_channel_score(layer_id, intermediate)
         previous = self._prompt_scores.get(layer_id)
         self._prompt_scores[layer_id] = score_sq if previous is None else previous.to(score_sq.device) + score_sq
 
     def _append_recent(self, stage: str, layer_id: int, intermediate: torch.Tensor) -> None:
-        score_sq = griffin_activation_score(intermediate).square()
+        score_sq = self._runtime_channel_score(layer_id, intermediate)
         by_layer = self._recent_scores[stage]
         queue = by_layer.get(layer_id)
         if queue is None:
@@ -957,6 +995,38 @@ class SafeDynamicStageGriffinRuntime:
             current_sum = current_sum - queue.popleft().to(score_sq.device)
         queue.append(score_sq.detach().cpu())
         self._recent_sums[stage][layer_id] = current_sum + score_sq
+
+    def set_output_norms(self, output_norms: dict[int, torch.Tensor]) -> None:
+        """Attach channel norms read from the frozen model's down projections."""
+
+        expected_layers = {int(layer_id) for layer_id in self.bank["layers"]}
+        if set(output_norms) != expected_layers:
+            raise ValueError("Output norms must cover exactly the mask-bank layers")
+        digest = hashlib.sha256()
+        prepared: dict[int, torch.Tensor] = {}
+        for layer_id in sorted(expected_layers):
+            norm = output_norms[layer_id].detach().float().contiguous().cpu()
+            expected_width = int(
+                self.bank["policies"][self.prior_policy][STAGES[0]][layer_id]["metric"].numel()
+            )
+            if int(norm.numel()) != expected_width:
+                raise ValueError(f"Output-norm width mismatch for layer {layer_id}")
+            digest.update(str(layer_id).encode("ascii"))
+            digest.update(norm.numpy().tobytes())
+            prepared[layer_id] = norm
+        self._output_norms = prepared
+        self._output_norm_hash = digest.hexdigest()
+
+    def _runtime_channel_score(self, layer_id: int, intermediate: torch.Tensor) -> torch.Tensor:
+        if self.score_mode == "activation":
+            return griffin_activation_score(intermediate).square()
+        output_norm = self._output_norms.get(layer_id)
+        if output_norm is None:
+            raise RuntimeError(
+                "output_aware safe-dynamic scoring requires down_proj norms from the frozen model"
+            )
+        activation_energy = intermediate.detach().float().square().mean(dim=(0, 1))
+        return activation_energy * output_norm.to(device=activation_energy.device, dtype=torch.float32)
 
     def observe_prompt(self, layer_id: int, intermediate: torch.Tensor) -> None:
         self._accumulate_prompt(layer_id, intermediate)
@@ -1038,7 +1108,9 @@ class SafeDynamicStageGriffinRuntime:
             runtime_score = self._prompt_scores.get(layer_id)
         if runtime_score is None:
             runtime_score = torch.ones_like(prior)
-        runtime_score = runtime_score.to(device=prior.device, dtype=torch.float32).sqrt()
+        runtime_score = runtime_score.to(device=prior.device, dtype=torch.float32)
+        if self.score_mode == "activation":
+            runtime_score = runtime_score.sqrt()
         protected = _topk_mask(prior, self.protected_core_ratios[stage])
         prune_score = self.prior_weight * _zscore(-prior) + self.runtime_weight * _zscore(-runtime_score)
         mask = _prune_mask_from_scores(
@@ -1046,10 +1118,66 @@ class SafeDynamicStageGriffinRuntime:
             self.stage_ratios[stage],
             protected_mask=protected,
         )
+        mask = self._limit_mask_swaps(stage, layer_id, mask, protected, -prune_score)
         self._mask_cache[key] = mask
         if layer_id == 0:
             self.mask_refresh_count_by_stage[stage] += 1
         return mask
+
+    def _limit_mask_swaps(
+        self,
+        stage: str,
+        layer_id: int,
+        candidate: torch.Tensor,
+        protected: torch.Tensor,
+        keep_score: torch.Tensor,
+    ) -> torch.Tensor:
+        """Limit optional replacements while preserving the candidate keep count."""
+
+        previous = self._previous_masks.get(layer_id)
+        key = f"{stage}:{layer_id}"
+        if previous is None or previous.numel() != candidate.numel():
+            self._previous_masks[layer_id] = candidate.detach().cpu()
+            return candidate
+
+        previous = previous.to(device=candidate.device, dtype=torch.bool)
+        target_keep = int(candidate.sum().item())
+        current = previous.clone()
+        protected = protected.to(device=current.device, dtype=torch.bool)
+        union = torch.logical_or(previous, candidate).sum().item()
+        self._mask_jaccard_sum_by_stage_layer[key] += (
+            float(torch.logical_and(previous, candidate).sum().item() / union) if union else 1.0
+        )
+        self._mask_jaccard_count_by_stage_layer[key] += 1
+
+        # Protection and target cardinality take precedence over continuity.
+        current |= protected
+        if int(current.sum().item()) > target_keep:
+            removable = current & ~protected
+            remove_count = int(current.sum().item()) - target_keep
+            drop = _topk_within_mask(-keep_score, removable, remove_count)
+            current[drop] = False
+        elif int(current.sum().item()) < target_keep:
+            add_count = target_keep - int(current.sum().item())
+            add = _topk_within_mask(keep_score, ~current, add_count)
+            current[add] = True
+
+        drop_candidates = current & ~candidate & ~protected
+        add_candidates = ~current & candidate
+        candidate_pairs = min(
+            int(drop_candidates.sum().item()), int(add_candidates.sum().item())
+        )
+        self._mask_swap_candidates_by_stage_layer[key] += candidate_pairs
+        allowed_pairs = int(candidate.numel() * self.max_mask_swap_fraction)
+        swap_count = min(candidate_pairs, allowed_pairs)
+        if swap_count:
+            drop = _topk_within_mask(-keep_score, drop_candidates, swap_count)
+            add = _topk_within_mask(keep_score, add_candidates, swap_count)
+            current[drop] = False
+            current[add] = True
+        self._mask_swap_pairs_by_stage_layer[key] += swap_count
+        self._previous_masks[layer_id] = current.detach().cpu()
+        return current
 
     def entry(self, stage: str, layer_id: int) -> dict[str, Any]:
         return self.bank["policies"][self.prior_policy][stage][layer_id]
@@ -1074,7 +1202,7 @@ class SafeDynamicStageGriffinRuntime:
             "backend": "calibrated_stage_safe_dynamic_griffin_logical_v2",
             "real_speedup_claimed": False,
             "policy": "calibrated_stage_safe_dynamic_griffin",
-            "score_mode": "protected_core_safe_prune",
+            "score_mode": self.score_mode,
             "alpha": self.alpha,
             "runtime_weight": self.runtime_weight,
             "prior_weight": self.prior_weight,
@@ -1090,6 +1218,21 @@ class SafeDynamicStageGriffinRuntime:
             "active_stage": self.active_stage,
             "fallback_reason": self.fallback_reason,
             "fallback_behavior": self.fallback_behavior,
+            "max_mask_swap_fraction": self.max_mask_swap_fraction,
+            "output_norm_source": (
+                "frozen_model_down_proj" if self._output_norm_hash is not None else None
+            ),
+            "output_norm_hash": self._output_norm_hash,
+            "output_norm_layers": sorted(self._output_norms),
+            "mask_swap_pairs_by_stage_layer": dict(self._mask_swap_pairs_by_stage_layer),
+            "mask_swap_candidates_by_stage_layer": dict(
+                self._mask_swap_candidates_by_stage_layer
+            ),
+            "mean_mask_jaccard_by_stage_layer": {
+                key: self._mask_jaccard_sum_by_stage_layer[key]
+                / max(1, self._mask_jaccard_count_by_stage_layer[key])
+                for key in self._mask_jaccard_count_by_stage_layer
+            },
             "theoretical_average_mlp_pruning_ratio": weighted / total if total else 0.0,
             "actual_average_mlp_pruning_ratio": (
                 self._actual_pruning_weighted_sum / self._actual_pruning_denominator
@@ -1173,7 +1316,7 @@ class StageRiskAdaptiveRuntime(SafeDynamicStageGriffinRuntime):
         }
         self.target_actual_pruning = float(target_actual_pruning)
         self.max_mask_swap_fraction = float(max_mask_swap_fraction)
-        self.score_mode = score_mode
+        self.score_mode = _safe_dynamic_score_mode(score_mode)
         self.fallback_behavior = fallback_behavior
         self._decode_entropy = 0.0
         self._decode_confidence = 1.0
@@ -1714,6 +1857,14 @@ def apply_adaptive_stage_griffin_qwen3(
     layers = get_decoder_layers(model)
     if len(layers) != len(runtime.bank["layers"]):
         raise ValueError("Mask bank layer count does not match model")
+    if isinstance(runtime, SafeDynamicStageGriffinRuntime) and runtime.score_mode == "output_aware":
+        output_norms: dict[int, torch.Tensor] = {}
+        for layer_id, layer in enumerate(layers):
+            mlp = getattr(layer, "mlp", None)
+            if not hasattr(mlp, "down_proj"):
+                raise ValueError("Expected down_proj while configuring output-aware safe-dynamic scoring")
+            output_norms[layer_id] = mlp.down_proj.weight.detach().float().square().sum(dim=0)
+        runtime.set_output_norms(output_norms)
     for layer_id, layer in enumerate(layers):
         mlp = getattr(layer, "mlp", None)
         if isinstance(mlp, AdaptiveStageGriffinQwen3MLP):

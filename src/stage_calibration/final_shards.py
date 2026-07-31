@@ -110,6 +110,12 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
     runtime_static_core_ratios = None
     runtime_swap_ratios = None
     runtime_actual_swapped_channels = None
+    runtime_max_mask_swap_fraction = None
+    runtime_output_norm_hash = None
+    runtime_output_norm_source = None
+    runtime_mask_swap_pairs = Counter()
+    runtime_mask_swap_candidates = Counter()
+    runtime_mask_jaccards: dict[str, list[float]] = defaultdict(list)
     runtime_baseline_type = None
     runtime_selection_method = None
     runtime_prune_ratio = None
@@ -243,6 +249,17 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
             runtime_actual_swapped_channels
             or runtime.get("actual_swapped_channels_by_stage_layer")
         )
+        runtime_max_mask_swap_fraction = (
+            runtime_max_mask_swap_fraction
+            if runtime_max_mask_swap_fraction is not None
+            else runtime.get("max_mask_swap_fraction")
+        )
+        runtime_output_norm_hash = runtime_output_norm_hash or runtime.get("output_norm_hash")
+        runtime_output_norm_source = runtime_output_norm_source or runtime.get("output_norm_source")
+        runtime_mask_swap_pairs.update(runtime.get("mask_swap_pairs_by_stage_layer", {}))
+        runtime_mask_swap_candidates.update(runtime.get("mask_swap_candidates_by_stage_layer", {}))
+        for key, value in runtime.get("mean_mask_jaccard_by_stage_layer", {}).items():
+            runtime_mask_jaccards[str(key)].append(float(value))
         stage_tokens.update(runtime.get("tokens_by_stage", {}))
         dense_observation_tokens.update(runtime.get("dense_observation_tokens_by_stage", {}))
         masked_tokens.update(runtime.get("masked_tokens_by_stage", {}))
@@ -406,6 +423,20 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         summary["adaptive_swap_ratios"] = runtime_swap_ratios
     if runtime_actual_swapped_channels is not None:
         summary["adaptive_actual_swapped_channels_by_stage_layer"] = runtime_actual_swapped_channels
+    if runtime_max_mask_swap_fraction is not None:
+        summary["adaptive_max_mask_swap_fraction"] = runtime_max_mask_swap_fraction
+    if runtime_output_norm_source is not None:
+        summary["adaptive_output_norm_source"] = runtime_output_norm_source
+    if runtime_output_norm_hash is not None:
+        summary["adaptive_output_norm_hash"] = runtime_output_norm_hash
+    if runtime_mask_swap_pairs:
+        summary["adaptive_mask_swap_pairs_by_stage_layer"] = dict(runtime_mask_swap_pairs)
+    if runtime_mask_swap_candidates:
+        summary["adaptive_mask_swap_candidates_by_stage_layer"] = dict(runtime_mask_swap_candidates)
+    if runtime_mask_jaccards:
+        summary["adaptive_mean_mask_jaccard_by_stage_layer"] = {
+            key: sum(values) / len(values) for key, values in runtime_mask_jaccards.items()
+        }
     return summary
 
 

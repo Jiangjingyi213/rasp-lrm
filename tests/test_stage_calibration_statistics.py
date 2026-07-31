@@ -29,10 +29,21 @@ class StageCalibrationStatisticsTest(unittest.TestCase):
     def test_mask_bank_validates_ratio_and_stage_layout(self) -> None:
         sources = ("c4", "prompt_only", "trajectory", *STAGES)
         metrics = {source: {0: torch.arange(20, dtype=torch.float32)} for source in sources}
+        metrics["setup"] = {0: torch.arange(20, 0, -1, dtype=torch.float32)}
         means = {source: {0: torch.zeros(20)} for source in sources}
         bank = build_mask_bank(metadata={}, metrics=metrics, means=means, ratios=[0.0, 0.1, 0.2])
         validate_mask_bank(bank)
         self.assertIn("stage_specific_al_am", bank["policies"])
+        self.assertIn("stage_residual_025", bank["policies"])
+        self.assertIn("stage_residual_050", bank["policies"])
+        global_metric = bank["policies"]["trajectory_global"]["setup"][0]["metric"]
+        stage_metric = bank["policies"]["stage_specific"]["setup"][0]["metric"]
+        residual = bank["policies"]["stage_residual_025"]["setup"][0]
+        expected = global_metric + 0.25 * (stage_metric - global_metric)
+        self.assertTrue(torch.allclose(residual["metric"], expected))
+        self.assertEqual(residual["residual_strength"], 0.25)
+        self.assertIn("trajectory_global", residual["parent_policy_hash"])
+        self.assertTrue(residual["bank_hash"])
 
     def test_mask_bank_rejects_metadata_mismatch(self) -> None:
         sources = ("c4", "prompt_only", "trajectory", *STAGES)

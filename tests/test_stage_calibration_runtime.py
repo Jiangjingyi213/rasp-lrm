@@ -329,6 +329,65 @@ class StageCalibrationRuntimeTest(unittest.TestCase):
         self.assertGreaterEqual(summary["mask_refresh_count_by_stage"]["setup"], 2)
         self.assertEqual(summary["refresh_intervals"]["setup"], 2)
 
+    def test_safe_dynamic_output_aware_uses_down_proj_channel_norms(self) -> None:
+        runtime = SafeDynamicStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={stage: 0.5 for stage in STAGES},
+            protected_core_ratios={stage: 0.0 for stage in STAGES},
+            runtime_weight=1.0,
+            prior_weight=0.0,
+            score_mode="output_aware",
+        )
+        runtime.set_output_norms({0: torch.tensor([1.0, 100.0, 1.0, 1.0])})
+        runtime.set_stage("setup")
+        runtime.observe_or_mask(0, torch.tensor([[[2.0, 0.1, 0.1, 0.1]]]))
+        mask = runtime.keep_mask("setup", 0)
+        self.assertTrue(bool(mask[0]))
+        self.assertTrue(bool(mask[1]))
+        summary = runtime.summary()
+        self.assertEqual(summary["score_mode"], "output_aware")
+        self.assertEqual(summary["output_norm_source"], "frozen_model_down_proj")
+        self.assertEqual(summary["output_norm_layers"], [0])
+
+    def test_safe_dynamic_continuity_limits_optional_swaps(self) -> None:
+        runtime = SafeDynamicStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={stage: 0.5 for stage in STAGES},
+            protected_core_ratios={stage: 0.0 for stage in STAGES},
+            runtime_weight=1.0,
+            prior_weight=0.0,
+            window_tokens={stage: 1 for stage in STAGES},
+            max_mask_swap_fraction=0.25,
+        )
+        runtime.set_stage("setup")
+        runtime.observe_or_mask(0, torch.tensor([[[3.0, 2.0, 0.0, 0.0]]]))
+        first = runtime.keep_mask("setup", 0).clone()
+        runtime._clear_stage_cache("setup")
+        runtime.observe_or_mask(0, torch.tensor([[[0.0, 0.0, 3.0, 2.0]]]))
+        second = runtime.keep_mask("setup", 0)
+        self.assertEqual(int(first.sum().item()), int(second.sum().item()))
+        self.assertLessEqual(int((first != second).sum().item()), 2)
+        summary = runtime.summary()
+        self.assertLessEqual(summary["mask_swap_pairs_by_stage_layer"]["setup:0"], 1)
+        self.assertIn("setup:0", summary["mean_mask_jaccard_by_stage_layer"])
+
+    def test_safe_dynamic_default_continuity_preserves_legacy_mask(self) -> None:
+        kwargs = {
+            "stage_ratios": {stage: 0.5 for stage in STAGES},
+            "protected_core_ratios": {stage: 0.0 for stage in STAGES},
+            "runtime_weight": 1.0,
+            "prior_weight": 0.0,
+        }
+        legacy = SafeDynamicStageGriffinRuntime(tiny_bank(), **kwargs)
+        explicit = SafeDynamicStageGriffinRuntime(
+            tiny_bank(), max_mask_swap_fraction=1.0, **kwargs
+        )
+        values = torch.tensor([[[0.0, 1.0, 2.0, 3.0]]])
+        for runtime in (legacy, explicit):
+            runtime.set_stage("setup")
+            runtime.observe_or_mask(0, values)
+        self.assertTrue(torch.equal(legacy.keep_mask("setup", 0), explicit.keep_mask("setup", 0)))
+
     def test_safe_dynamic_final_ratio_zero_is_dense_equivalent(self) -> None:
         original = TinyMlp()
         runtime = SafeDynamicStageGriffinRuntime(

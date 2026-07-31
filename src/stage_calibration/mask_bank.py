@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,28 @@ from .statistics import keep_mask, stage_balanced_metric
 
 def ratio_key(ratio: float) -> str:
     return f"{float(ratio):.4f}"
+
+
+def _tensor_hash(value: torch.Tensor) -> str:
+    """Return a deterministic fingerprint without serialising an entire bank."""
+
+    tensor = value.detach().contiguous().cpu()
+    digest = hashlib.sha256()
+    digest.update(str(tuple(tensor.shape)).encode("ascii"))
+    digest.update(str(tensor.dtype).encode("ascii"))
+    digest.update(tensor.numpy().tobytes())
+    return digest.hexdigest()
+
+
+def _policy_hash(policy: dict[str, Any]) -> str:
+    digest = hashlib.sha256()
+    for stage in STAGES:
+        for layer_id in sorted(policy[stage]):
+            digest.update(stage.encode("ascii"))
+            digest.update(str(layer_id).encode("ascii"))
+            digest.update(_tensor_hash(policy[stage][layer_id]["metric"]).encode("ascii"))
+            digest.update(_tensor_hash(policy[stage][layer_id]["mean"]).encode("ascii"))
+    return digest.hexdigest()
 
 
 def _al_am_masks(layer_metrics: dict[int, torch.Tensor], ratios: list[float]) -> dict[int, dict[str, torch.Tensor]]:
@@ -162,7 +185,7 @@ def build_mask_bank(
             }
             for layer_id in layers
         }
-    return {
+    bank = {
         "schema": "stage_calibrated_mask_bank_v1",
         "metadata": metadata,
         "ratios": [float(value) for value in ratios],
@@ -174,6 +197,63 @@ def build_mask_bank(
         },
         "shuffled_stage_mapping": shuffled,
     }
+    add_stage_residual_policies(bank)
+    return bank
+
+
+def add_stage_residual_policies(
+    bank: dict[str, Any],
+    strengths: tuple[float, ...] = (0.25, 0.50),
+) -> dict[str, Any]:
+    """Derive bounded stage corrections from an existing compatible mask bank."""
+
+    policies = bank["policies"]
+    required = {"trajectory_global", "stage_specific"}
+    missing = required - set(policies)
+    if missing:
+        raise ValueError(f"Cannot build stage residual policies; missing {sorted(missing)}")
+    ratios = [float(value) for value in bank["ratios"]]
+    layers = [int(layer_id) for layer_id in bank["layers"]]
+    global_hash = _policy_hash(policies["trajectory_global"])
+    stage_hash = _policy_hash(policies["stage_specific"])
+    source_bank_hash = hashlib.sha256(
+        f"{global_hash}:{stage_hash}:{','.join(ratio_key(value) for value in ratios)}".encode("ascii")
+    ).hexdigest()
+    policy_structures = bank.setdefault("policy_structures", {})
+    for strength in strengths:
+        strength = float(strength)
+        if not 0.0 < strength < 1.0:
+            raise ValueError("Stage residual strengths must be strictly between 0 and 1")
+        name = f"stage_residual_{int(round(strength * 100)):03d}"
+        policy: dict[str, Any] = {}
+        for stage in STAGES:
+            policy[stage] = {}
+            for layer_id in layers:
+                global_entry = policies["trajectory_global"][stage][layer_id]
+                stage_entry = policies["stage_specific"][stage][layer_id]
+                metric = global_entry["metric"].float() + strength * (
+                    stage_entry["metric"].float() - global_entry["metric"].float()
+                )
+                mean = global_entry["mean"].float() + strength * (
+                    stage_entry["mean"].float() - global_entry["mean"].float()
+                )
+                entry = {
+                    "metric": metric.cpu(),
+                    "mean": mean.cpu(),
+                    "masks": {ratio_key(ratio): keep_mask(metric, ratio) for ratio in ratios},
+                    "residual_strength": strength,
+                    "parent_policy_hash": {
+                        "trajectory_global": global_hash,
+                        "stage_specific": stage_hash,
+                    },
+                    "bank_hash": source_bank_hash,
+                }
+                if "output_norm" in global_entry:
+                    entry["output_norm"] = global_entry["output_norm"].float().cpu()
+                policy[stage][layer_id] = entry
+        policies[name] = policy
+        policy_structures[name] = "UL-UM"
+    return bank
 
 
 def save_mask_bank(path: str | Path, bank: dict[str, Any]) -> None:
