@@ -1125,7 +1125,7 @@ def command_calibrate_masks(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     rows = read_jsonl(p["calibration"])
     bundle = load_model_bundle(cfg["model"])
     c4_samples = _effective_c4_samples(cfg)
-    metrics, means, stats_summary = collect_stage_statistics(
+    metrics, means, output_norms, stats_summary = collect_stage_statistics(
         bundle.model,
         bundle.tokenizer,
         rows,
@@ -1145,6 +1145,7 @@ def command_calibrate_masks(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         metrics=metrics,
         means=means,
         ratios=[float(value) for value in cfg["masks"]["ratios"]],
+        output_norms=output_norms,
     )
     save_mask_bank(p["bank"], bank)
     write_json(p["bank_summary"], {"schema": "stage_calibrated_mask_summary_v1", **bank_metadata, **stats_summary})
@@ -1888,6 +1889,8 @@ def _adaptive_griffin_method_from_cfg(acfg: dict[str, Any], prompt: dict[str, An
         swap_ratios=_adaptive_stage_float_map_from_cfg(acfg, "swap_ratios", 0.0),
         variant_role=str(acfg.get("variant_role", acfg.get("method_name", "adaptive"))),
         selection_note=str(acfg.get("selection_note", "")),
+        fallback_behavior=str(acfg.get("fallback_behavior", "dense_after_error")),
+        stage_risk_controller=deepcopy(acfg.get("stage_risk_controller", {})),
         **_pruning_target_fields(acfg),
     )
 
@@ -1994,6 +1997,7 @@ def additional_fixed_stage_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
                 bias=bool(row.get("bias_compensation", True)),
                 ablation_role=str(row.get("ablation_role", "")),
                 selection_note=str(row.get("selection_note", "")),
+                fallback_behavior=str(row.get("fallback_behavior", "dense_after_error")),
                 **_pruning_target_fields(row),
             )
         )
@@ -2762,6 +2766,14 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             "Development summary is missing. Run evaluate_dev first, or set "
             "evaluation.allow_final_without_dev=true for an adaptive diagnostic run."
         )
+    stage_risk_cfg = _adaptive_griffin_cfg(cfg)
+    if str(stage_risk_cfg.get("policy")) == "stage_risk_adaptive":
+        gate_path = stage_risk_cfg.get("stage_risk_controller", {}).get("dev_gate_path")
+        if not gate_path:
+            raise RuntimeError("Stage-risk full evaluation requires stage_risk_controller.dev_gate_path")
+        gate = read_json(gate_path)
+        if not bool(gate.get("full_evaluation_allowed")):
+            raise RuntimeError("Stage-risk dev gate failed; full evaluation is forbidden")
     policy_selection_path = _policy_selection_path(cfg)
     policy_methods = None
     policy_selection = None

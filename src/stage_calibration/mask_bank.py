@@ -42,12 +42,15 @@ def build_mask_bank(
     metrics: dict[str, dict[int, torch.Tensor]],
     means: dict[str, dict[int, torch.Tensor]],
     ratios: list[float],
+    output_norms: dict[int, torch.Tensor] | None = None,
 ) -> dict[str, Any]:
     required = {"c4", "prompt_only", "trajectory", *STAGES}
     missing = required - set(metrics)
     if missing:
         raise ValueError(f"Missing calibration metrics: {sorted(missing)}")
     layers = sorted(metrics["trajectory"])
+    if output_norms is not None and set(output_norms) != set(layers):
+        raise ValueError("Output norms must cover exactly the calibrated layers")
     policies: dict[str, Any] = {}
 
     def global_policy(source: str) -> dict[str, Any]:
@@ -56,6 +59,11 @@ def build_mask_bank(
                 layer_id: {
                     "metric": metrics[source][layer_id].float().cpu(),
                     "mean": means[source][layer_id].float().cpu(),
+                    **(
+                        {"output_norm": output_norms[layer_id].float().cpu()}
+                        if output_norms is not None
+                        else {}
+                    ),
                     "masks": {
                         ratio_key(ratio): keep_mask(metrics[source][layer_id], ratio)
                         for ratio in ratios
@@ -84,6 +92,11 @@ def build_mask_bank(
             layer_id: {
                 "metric": balanced_metrics[layer_id].cpu(),
                 "mean": balanced_means[layer_id].cpu(),
+                **(
+                    {"output_norm": output_norms[layer_id].float().cpu()}
+                    if output_norms is not None
+                    else {}
+                ),
                 "masks": {
                     ratio_key(ratio): keep_mask(balanced_metrics[layer_id], ratio)
                     for ratio in ratios
@@ -98,6 +111,11 @@ def build_mask_bank(
             layer_id: {
                 "metric": metrics[stage][layer_id].float().cpu(),
                 "mean": means[stage][layer_id].float().cpu(),
+                **(
+                    {"output_norm": output_norms[layer_id].float().cpu()}
+                    if output_norms is not None
+                    else {}
+                ),
                 "masks": {
                     ratio_key(ratio): keep_mask(metrics[stage][layer_id], ratio)
                     for ratio in ratios
@@ -117,6 +135,11 @@ def build_mask_bank(
             layer_id: {
                 "metric": metrics["trajectory"][layer_id].float().cpu(),
                 "mean": means["trajectory"][layer_id].float().cpu(),
+                **(
+                    {"output_norm": output_norms[layer_id].float().cpu()}
+                    if output_norms is not None
+                    else {}
+                ),
                 "masks": trajectory_al_am[layer_id],
             }
             for layer_id in layers
@@ -130,6 +153,11 @@ def build_mask_bank(
             layer_id: {
                 "metric": metrics[stage][layer_id].float().cpu(),
                 "mean": means[stage][layer_id].float().cpu(),
+                **(
+                    {"output_norm": output_norms[layer_id].float().cpu()}
+                    if output_norms is not None
+                    else {}
+                ),
                 "masks": stage_masks[layer_id],
             }
             for layer_id in layers
@@ -186,6 +214,8 @@ def validate_mask_bank(bank: dict[str, Any]) -> None:
             for layer_id in bank["layers"]:
                 entry = policy[stage][layer_id]
                 masks = entry["masks"]
+                if "output_norm" in entry and int(entry["output_norm"].numel()) != int(entry["metric"].numel()):
+                    raise ValueError(f"Output-norm width mismatch in {policy_name}/{stage}/{layer_id}")
                 if set(masks) != {ratio_key(value) for value in ratios}:
                     raise ValueError(f"Mask ratio grid mismatch in {policy_name}/{stage}/{layer_id}")
                 channels = int(entry["metric"].numel())

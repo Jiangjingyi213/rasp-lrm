@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter, deque
 from typing import Any
 
+import numpy as np
 import torch
 from torch import nn
 
@@ -10,6 +11,7 @@ from src.models.hooks import get_decoder_layers
 
 from .mask_bank import ratio_key, validate_mask_bank
 from .protocol import STAGES
+from .stage_risk import StageRiskController, stage_risk_features
 
 
 def griffin_activation_score(intermediate_states: torch.Tensor) -> torch.Tensor:
@@ -101,7 +103,14 @@ def _topk_within_mask(scores: torch.Tensor, candidates: torch.Tensor, count: int
 
 
 class StageMaskRuntime:
-    def __init__(self, bank: dict[str, Any], policy: str, stage_ratios: dict[str, float], bias_compensation: bool = True) -> None:
+    def __init__(
+        self,
+        bank: dict[str, Any],
+        policy: str,
+        stage_ratios: dict[str, float],
+        bias_compensation: bool = True,
+        fallback_behavior: str = "dense_after_error",
+    ) -> None:
         validate_mask_bank(bank)
         if policy not in bank["policies"]:
             raise ValueError(f"Unknown mask policy: {policy}")
@@ -109,6 +118,9 @@ class StageMaskRuntime:
         self.policy = policy
         self.stage_ratios = {stage: float(stage_ratios.get(stage, 0.0)) for stage in STAGES}
         self.bias_compensation = bool(bias_compensation)
+        if fallback_behavior not in {"dense_after_error", "keep_masking_after_error"}:
+            raise ValueError("Unsupported fallback behavior")
+        self.fallback_behavior = str(fallback_behavior)
         self.active_stage: str | None = None
         self.fallback_reason: str | None = None
         self.tokens_by_stage: Counter[str] = Counter()
@@ -130,7 +142,8 @@ class StageMaskRuntime:
     def fallback_dense(self, reason: str) -> None:
         if self.fallback_reason is None:
             self.fallback_reason = str(reason)
-        self.active_stage = None
+        if self.fallback_behavior == "dense_after_error":
+            self.active_stage = None
 
     def active_ratio(self) -> float:
         return self.stage_ratios[self.active_stage] if self.active_stage else 0.0
@@ -184,6 +197,7 @@ class StageMaskRuntime:
             "stage_ratios": self.stage_ratios,
             "active_stage": self.active_stage,
             "fallback_reason": self.fallback_reason,
+            "fallback_behavior": self.fallback_behavior,
             "tokens_by_stage": dict(self.tokens_by_stage),
             "theoretical_average_mlp_pruning_ratio": weighted / total if total else 0.0,
             "actual_average_mlp_pruning_ratio": actual_weighted / total if total else 0.0,
@@ -642,6 +656,7 @@ class AdaptiveStageGriffinRuntime:
         warmup_tokens: dict[str, int] | None = None,
         bias_compensation: bool = True,
         prior_policy: str = "stage_specific",
+        fallback_behavior: str = "dense_after_error",
     ) -> None:
         validate_mask_bank(bank)
         if prior_policy not in bank["policies"]:
@@ -655,6 +670,9 @@ class AdaptiveStageGriffinRuntime:
         warmup_tokens = warmup_tokens or {}
         self.warmup_tokens = {stage: int(warmup_tokens.get(stage, 0)) for stage in STAGES}
         self.bias_compensation = bool(bias_compensation)
+        if fallback_behavior not in {"dense_after_error", "keep_masking_after_error"}:
+            raise ValueError("Unsupported fallback behavior")
+        self.fallback_behavior = str(fallback_behavior)
         self.active_stage: str | None = None
         self.fallback_reason: str | None = None
         self.tokens_by_stage: Counter[str] = Counter()
@@ -694,9 +712,10 @@ class AdaptiveStageGriffinRuntime:
     def fallback_dense(self, reason: str) -> None:
         if self.fallback_reason is None:
             self.fallback_reason = str(reason)
-        self.active_stage = None
-        self._current_single_stage = None
-        self._current_single_observe = False
+        if self.fallback_behavior == "dense_after_error":
+            self.active_stage = None
+            self._current_single_stage = None
+            self._current_single_observe = False
 
     def record_token(self) -> None:
         self.tokens_by_stage[self.active_stage or "dense"] += 1
@@ -735,7 +754,7 @@ class AdaptiveStageGriffinRuntime:
             self.observe_prompt(layer_id, intermediate)
             return None
         stage, observe = self._single_token_mode(layer_id, token_count)
-        if self.fallback_reason is not None or stage not in STAGES:
+        if (self.fallback_reason is not None and self.fallback_behavior == "dense_after_error") or stage not in STAGES:
             if layer_id == 0:
                 self.dense_observation_tokens_by_stage["dense"] += token_count
             return None
@@ -797,6 +816,7 @@ class AdaptiveStageGriffinRuntime:
             "mask_refresh_count_by_stage": dict(self.mask_refresh_count_by_stage),
             "active_stage": self.active_stage,
             "fallback_reason": self.fallback_reason,
+            "fallback_behavior": self.fallback_behavior,
             "theoretical_average_mlp_pruning_ratio": weighted / total if total else 0.0,
         }
 
@@ -815,6 +835,7 @@ class SafeDynamicStageGriffinRuntime:
         window_tokens: dict[str, int] | None = None,
         bias_compensation: bool = True,
         prior_policy: str = "stage_specific",
+        fallback_behavior: str = "dense_after_error",
     ) -> None:
         validate_mask_bank(bank)
         if prior_policy not in bank["policies"]:
@@ -847,6 +868,9 @@ class SafeDynamicStageGriffinRuntime:
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"Invalid protected core ratio for {stage}: {value}")
         self.bias_compensation = bool(bias_compensation)
+        if fallback_behavior not in {"dense_after_error", "keep_masking_after_error"}:
+            raise ValueError("Unsupported fallback behavior")
+        self.fallback_behavior = str(fallback_behavior)
         self.active_stage: str | None = None
         self.fallback_reason: str | None = None
         self.tokens_by_stage: Counter[str] = Counter()
@@ -903,9 +927,10 @@ class SafeDynamicStageGriffinRuntime:
     def fallback_dense(self, reason: str) -> None:
         if self.fallback_reason is None:
             self.fallback_reason = str(reason)
-        self.active_stage = None
-        self._current_single_stage = None
-        self._current_single_observe = False
+        if self.fallback_behavior == "dense_after_error":
+            self.active_stage = None
+            self._current_single_stage = None
+            self._current_single_observe = False
 
     def record_token(self) -> None:
         self.tokens_by_stage[self.active_stage or "dense"] += 1
@@ -1064,6 +1089,7 @@ class SafeDynamicStageGriffinRuntime:
             "mask_refresh_count_by_stage": dict(self.mask_refresh_count_by_stage),
             "active_stage": self.active_stage,
             "fallback_reason": self.fallback_reason,
+            "fallback_behavior": self.fallback_behavior,
             "theoretical_average_mlp_pruning_ratio": weighted / total if total else 0.0,
             "actual_average_mlp_pruning_ratio": (
                 self._actual_pruning_weighted_sum / self._actual_pruning_denominator
@@ -1073,6 +1099,306 @@ class SafeDynamicStageGriffinRuntime:
             "actual_pruning_ratio_by_stage": actual_by_stage,
             "actual_pruning_accounting": "actual_mask_sparsity_layer_token_weighted",
         }
+
+
+class StageRiskAdaptiveRuntime(SafeDynamicStageGriffinRuntime):
+    """Stage-conditioned budget controller over the safe dynamic channel mask.
+
+    Stage remains an explicit, causal conditioning variable.  The learned
+    controller only selects a safe budget for a stage-local decode window; it
+    never predicts or replaces the stage protocol itself.
+    """
+
+    def __init__(
+        self,
+        bank: dict[str, Any],
+        *,
+        stage_ratios: dict[str, float],
+        controller_checkpoint_path: str,
+        action_ratios: list[float],
+        risk_thresholds: dict[str, float],
+        stage_ratio_caps: dict[str, float],
+        min_warmup_tokens: dict[str, int] | None = None,
+        decision_window_tokens: int = 64,
+        target_actual_pruning: float = 0.34,
+        max_mask_swap_fraction: float = 0.05,
+        score_mode: str = "current_safe",
+        fallback_behavior: str = "dense_after_error",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            bank,
+            stage_ratios=stage_ratios,
+            fallback_behavior=fallback_behavior,
+            **kwargs,
+        )
+        self.action_ratios = tuple(sorted({float(value) for value in action_ratios}))
+        if not self.action_ratios or self.action_ratios[0] != 0.0:
+            raise ValueError("Stage-risk action ratios must start with dense ratio 0.0")
+        if any(not 0.0 <= value < 1.0 for value in self.action_ratios):
+            raise ValueError("Invalid stage-risk action ratio")
+        if decision_window_tokens < 1:
+            raise ValueError("Stage-risk decision window must be positive")
+        if not 0.0 <= target_actual_pruning < 1.0:
+            raise ValueError("Invalid stage-risk pruning target")
+        if not 0.0 <= max_mask_swap_fraction <= 1.0:
+            raise ValueError("Invalid mask swap fraction")
+        if score_mode not in {"current_safe", "output_aware"}:
+            raise ValueError("Unsupported stage-risk score mode")
+        if fallback_behavior not in {"dense_after_error", "keep_masking_after_error"}:
+            raise ValueError("Unsupported stage-risk fallback behavior")
+        self.controller = StageRiskController(
+            controller_checkpoint_path,
+            tuple(self.action_ratios),
+            {stage: float(risk_thresholds[stage]) for stage in STAGES},
+        )
+        if score_mode == "output_aware":
+            missing = [
+                (stage, layer_id)
+                for stage in STAGES
+                for layer_id in self.bank["layers"]
+                if "output_norm" not in self.bank["policies"][self.prior_policy][stage][layer_id]
+            ]
+            if missing:
+                raise ValueError(
+                    "output_aware requires a v1 stage-risk bank with explicit down_proj output norms"
+                )
+        self.stage_ratio_caps = {stage: float(stage_ratio_caps[stage]) for stage in STAGES}
+        if any(value < 0.0 or value >= 1.0 for value in self.stage_ratio_caps.values()):
+            raise ValueError("Invalid stage-risk stage cap")
+        self.decision_window_tokens = int(decision_window_tokens)
+        min_warmup_tokens = min_warmup_tokens or kwargs.get("warmup_tokens") or {}
+        self.min_warmup_tokens = {
+            stage: max(0, int(min_warmup_tokens.get(stage, 0))) for stage in STAGES
+        }
+        self.target_actual_pruning = float(target_actual_pruning)
+        self.max_mask_swap_fraction = float(max_mask_swap_fraction)
+        self.score_mode = score_mode
+        self.fallback_behavior = fallback_behavior
+        self._decode_entropy = 0.0
+        self._decode_confidence = 1.0
+        self._stage_local_tokens: Counter[str] = Counter()
+        self._tokens_since_decision: Counter[str] = Counter()
+        self._selected_ratios: dict[str, float] = {stage: 0.0 for stage in STAGES}
+        self._previous_masks: dict[tuple[str, int], torch.Tensor] = {}
+        self._previous_runtime_scores: dict[str, torch.Tensor] = {}
+        self._decision_log: list[dict[str, Any]] = []
+        self._selected_ratio_tokens: Counter[str] = Counter()
+        self._mask_swap_count = 0
+        self._mask_swap_candidates = 0
+        self._mask_jaccards: list[float] = []
+        self._budget_dual = 0.0
+
+    def reset(self) -> None:
+        super().reset()
+        self._decode_entropy = 0.0
+        self._decode_confidence = 1.0
+        self._stage_local_tokens.clear()
+        self._tokens_since_decision.clear()
+        self._selected_ratios = {stage: 0.0 for stage in STAGES}
+        self._previous_masks.clear()
+        self._previous_runtime_scores.clear()
+        self._decision_log.clear()
+        self._selected_ratio_tokens.clear()
+        self._mask_swap_count = 0
+        self._mask_swap_candidates = 0
+        self._mask_jaccards.clear()
+        self._budget_dual = 0.0
+
+    def set_decode_observation(self, *, entropy: float, confidence: float) -> None:
+        if torch.isfinite(torch.tensor([entropy, confidence])).all():
+            self._decode_entropy = float(entropy)
+            self._decode_confidence = float(confidence)
+
+    def set_stage(self, stage: str) -> None:
+        previous = self.active_stage
+        super().set_stage(stage)
+        if self.active_stage != previous and self.active_stage in STAGES:
+            self._tokens_since_decision[self.active_stage] = self.decision_window_tokens
+
+    def fallback_dense(self, reason: str) -> None:
+        if self.fallback_behavior == "keep_masking_after_error" and self.active_stage in STAGES:
+            if self.fallback_reason is None:
+                self.fallback_reason = str(reason)
+            return
+        super().fallback_dense(reason)
+
+    def _runtime_features(self, stage: str, layer_id: int, intermediate: torch.Tensor, ratio: float) -> np.ndarray:
+        entry = self.bank["policies"][self.prior_policy][stage][layer_id]
+        prior = entry["metric"].to(device=intermediate.device, dtype=torch.float32)
+        activation_energy = intermediate.detach().float().square().mean(dim=(0, 1))
+        raw = activation_energy
+        if self.score_mode == "output_aware":
+            raw = raw * entry["output_norm"].to(device=raw.device, dtype=torch.float32)
+        normalized_raw = _zscore(raw)
+        activation_ood = float((_zscore(raw) - _zscore(prior)).abs().mean().item())
+        previous = self._previous_runtime_scores.get(stage)
+        activation_drift = (
+            0.0
+            if previous is None
+            else float(1.0 - torch.nn.functional.cosine_similarity(
+                normalized_raw.unsqueeze(0), previous.to(normalized_raw.device).unsqueeze(0)
+            ).item())
+        )
+        self._previous_runtime_scores[stage] = normalized_raw.detach().cpu()
+        protected = _topk_mask(prior, self.protected_core_ratios[stage])
+        prune_score = self.prior_weight * _zscore(-prior) + self.runtime_weight * _zscore(-raw)
+        candidates = prune_score[~protected]
+        count = min(max(1, int(round(prune_score.numel() * ratio))), int(candidates.numel()))
+        ordered = torch.sort(candidates).values
+        margin = 0.0 if count >= ordered.numel() else float((ordered[count] - ordered[count - 1]).abs().item())
+        return stage_risk_features(
+            stage_local_tokens=int(self._stage_local_tokens[stage]),
+            entropy=self._decode_entropy,
+            confidence=self._decode_confidence,
+            activation_ood=activation_ood,
+            activation_drift=activation_drift,
+            mask_score_margin=margin,
+            candidate_ratio=ratio,
+        )
+
+    def _minimum_budget_ratio(self) -> float:
+        observed = max(1, self._actual_pruning_denominator)
+        achieved = self._actual_pruning_weighted_sum / observed
+        gap = self.target_actual_pruning - achieved
+        # A bounded dual variable pushes safe later windows to repay pruning
+        # budget borrowed by dense high-risk windows. It never overrides risk.
+        self._budget_dual = float(np.clip(self._budget_dual + 0.10 * gap, 0.0, 1.0))
+        return min(self.action_ratios[-1], max(0.0, gap * 1.5 + 0.20 * self._budget_dual))
+
+    def _select_ratio(self, stage: str, intermediate: torch.Tensor) -> None:
+        cap = self.stage_ratio_caps[stage]
+        candidates = [
+            (ratio, self._runtime_features(stage, 0, intermediate, ratio))
+            for ratio in self.action_ratios
+            if 0.0 < ratio <= cap + 1e-12
+        ]
+        selected, detail = self.controller.choose_ratio(
+            stage=stage,
+            candidates=candidates,
+            minimum_ratio=self._minimum_budget_ratio(),
+        )
+        self._selected_ratios[stage] = selected
+        self._clear_stage_cache(stage)
+        self._tokens_since_decision[stage] = 0
+        self._decision_log.append(
+            {
+                "stage": stage,
+                "stage_local_tokens": int(self._stage_local_tokens[stage]),
+                "selected_ratio": selected,
+                "score_mode": self.score_mode,
+                **detail,
+            }
+        )
+
+    def _limit_mask_swaps(self, stage: str, layer_id: int, mask: torch.Tensor, score: torch.Tensor) -> torch.Tensor:
+        key = (stage, layer_id)
+        previous = self._previous_masks.get(key)
+        if previous is None or previous.numel() != mask.numel():
+            self._previous_masks[key] = mask.detach().cpu()
+            return mask
+        previous = previous.to(mask.device)
+        union = torch.logical_or(previous, mask).sum().item()
+        self._mask_jaccards.append(
+            float(torch.logical_and(previous, mask).sum().item() / union) if union else 1.0
+        )
+        changed = torch.nonzero(previous != mask, as_tuple=False).flatten()
+        self._mask_swap_candidates += int(changed.numel())
+        allowed = int(round(mask.numel() * self.max_mask_swap_fraction))
+        if changed.numel() > allowed:
+            keep_changes = torch.topk(score[changed].abs(), k=max(0, allowed), largest=True).indices
+            accepted = changed[keep_changes]
+            limited = previous.clone()
+            limited[accepted] = mask[accepted]
+            mask = limited
+            changed = accepted
+        self._mask_swap_count += int(changed.numel())
+        self._previous_masks[key] = mask.detach().cpu()
+        return mask
+
+    def observe_or_mask(self, layer_id: int, intermediate: torch.Tensor) -> torch.Tensor | None:
+        token_count = int(intermediate.shape[1])
+        if token_count > 1:
+            self.observe_prompt(layer_id, intermediate)
+            return None
+        stage = self.active_stage
+        if self.fallback_reason is not None and self.fallback_behavior == "dense_after_error":
+            self._record_actual_pruning("dense", layer_id, token_count, None)
+            return None
+        if stage not in STAGES:
+            self._record_actual_pruning("dense", layer_id, token_count, None)
+            return None
+        self._append_recent(stage, layer_id, intermediate)
+        if layer_id == 0:
+            self._stage_local_tokens[stage] += token_count
+            self._tokens_since_decision[stage] += token_count
+            if self._stage_local_tokens[stage] <= self.min_warmup_tokens[stage]:
+                self.dense_observation_tokens_by_stage[stage] += token_count
+            elif self._tokens_since_decision[stage] >= self.decision_window_tokens:
+                self._select_ratio(stage, intermediate)
+        ratio = self._selected_ratios[stage]
+        if self._stage_local_tokens[stage] <= self.min_warmup_tokens[stage] or ratio <= 0.0:
+            self._record_actual_pruning(stage, layer_id, token_count, None)
+            return None
+        if layer_id == 0:
+            self.masked_tokens_by_stage[stage] += token_count
+            self._selected_ratio_tokens[f"{stage}:{ratio:.2f}"] += token_count
+        mask = self.keep_mask(stage, layer_id)
+        self._record_actual_pruning(stage, layer_id, token_count, mask)
+        return mask
+
+    def keep_mask(self, stage: str, layer_id: int) -> torch.Tensor:
+        key = (stage, layer_id)
+        cached = self._mask_cache.get(key)
+        if cached is not None:
+            return cached
+        entry = self.bank["policies"][self.prior_policy][stage][layer_id]
+        prior = entry["metric"].float()
+        runtime_score = self._recent_sums[stage].get(layer_id)
+        if runtime_score is None:
+            runtime_score = self._prompt_scores.get(layer_id, torch.ones_like(prior))
+        runtime_score = runtime_score.to(prior.device, dtype=torch.float32).sqrt()
+        if self.score_mode == "output_aware":
+            runtime_score = runtime_score.square() * entry["output_norm"].to(
+                device=prior.device, dtype=torch.float32
+            )
+        protected = _topk_mask(prior, self.protected_core_ratios[stage])
+        prune_score = self.prior_weight * _zscore(-prior) + self.runtime_weight * _zscore(-runtime_score)
+        mask = _prune_mask_from_scores(prune_score, self._selected_ratios[stage], protected_mask=protected)
+        mask = self._limit_mask_swaps(stage, layer_id, mask, prune_score)
+        self._mask_cache[key] = mask
+        if layer_id == 0:
+            self.mask_refresh_count_by_stage[stage] += 1
+        return mask
+
+    def summary(self) -> dict[str, Any]:
+        output = super().summary()
+        output.update(
+            {
+                "backend": "stage_risk_adaptive_logical_v1",
+                "policy": "stage_risk_adaptive",
+                "controller_checkpoint": str(self.controller.checkpoint_path),
+                "action_ratios": list(self.action_ratios),
+                "decision_window_tokens": self.decision_window_tokens,
+                "target_actual_pruning": self.target_actual_pruning,
+                "stage_ratio_caps": self.stage_ratio_caps,
+                "min_warmup_tokens": self.min_warmup_tokens,
+                "fallback_behavior": self.fallback_behavior,
+                "score_mode": self.score_mode,
+                "stage_local_tokens": dict(self._stage_local_tokens),
+                "selected_ratio_tokens": dict(self._selected_ratio_tokens),
+                "controller_decisions": list(self._decision_log),
+                "mask_swap_count": self._mask_swap_count,
+                "mask_swap_candidates": self._mask_swap_candidates,
+                "mean_mask_jaccard": (
+                    sum(self._mask_jaccards) / len(self._mask_jaccards)
+                    if self._mask_jaccards
+                    else 1.0
+                ),
+                "budget_dual": self._budget_dual,
+            }
+        )
+        return output
 
 
 class StaticCoreResidualStageRuntime:

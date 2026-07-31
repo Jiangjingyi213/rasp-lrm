@@ -16,5 +16,7 @@
 - `05_phase_b/03_phase_b25/`：Phase B2.5 与 B2.5b。
 - `06_phase_b3_online/`：当前 uncertainty paired online 验证。
 - `07_stage_aware/`：Stage-aware hidden controller 主线。
+- `08_stage_calibrated_pruning/`：当前 RASP-LRM stage-calibrated structured pruning 主线；后期核心整理结果见 `_late_core_2026_07_31/`，server165 同步整理结果见 `_server165_import_2026_07_31/`。
+  - `09_stage_risk_adaptive_v1/`：新的阶段条件风险控制主线；目录、日志与生成配置独立，`07_stage_aware/` 仅保留为历史诊断。
 
 使用 `bash scripts/56_organize_experiment_artifacts.sh` 可重复整理从服务器同步回来的旧顶层产物。

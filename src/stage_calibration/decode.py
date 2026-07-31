@@ -35,6 +35,13 @@ def _sample(logits: torch.Tensor, temperature: float, top_p: float, top_k: int) 
     return torch.multinomial(probs, num_samples=1).squeeze(-1)
 
 
+def _logit_stats(logits: torch.Tensor) -> tuple[float, float]:
+    probabilities = torch.softmax(logits.float(), dim=-1)
+    entropy = -(probabilities * probabilities.clamp_min(1e-12).log()).sum(dim=-1)
+    confidence = probabilities.max(dim=-1).values
+    return float(entropy.item()), float(confidence.item())
+
+
 def _final_stage_start(tracker: StageTokenTracker) -> int | None:
     for start, _end, stage in reversed(tracker.marker_positions):
         if stage == "final":
@@ -109,6 +116,9 @@ def decode_with_stage_masks(
     decode_check_interval = 8
     illegal_check_window = 256
     for _ in range(max_new_tokens):
+        if hasattr(runtime, "set_decode_observation"):
+            entropy, confidence = _logit_stats(outputs.logits[:, -1, :])
+            runtime.set_decode_observation(entropy=entropy, confidence=confidence)
         token = _sample(outputs.logits[:, -1, :], temperature, top_p, top_k)
         token_id = int(token.item())
         sampled_tokens += 1

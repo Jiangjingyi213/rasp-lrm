@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from collections import Counter
+from collections import defaultdict
 from typing import Any
 
 import torch
@@ -30,12 +31,14 @@ from src.baselines.wanda_official_qwen3 import apply_wanda_official_qwen3, summa
 
 from .decode import decode_with_stage_masks
 from .protocol import STAGES
+from .artifacts import file_sha256, stable_hash
 from .runtime import (
     AdaptiveStageGriffinRuntime,
     AlwaysOnStaticMaskRuntime,
     DenseStageRuntime,
     GriffinPromptRuntime,
     SafeDynamicStageGriffinRuntime,
+    StageRiskAdaptiveRuntime,
     StaticLayerPruningRuntime,
     StaticMlpChannelPruningRuntime,
     StageMaskRuntime,
@@ -362,6 +365,7 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
             },
             bias_compensation=bool(method.get("bias_compensation", True)),
             prior_policy=str(method.get("prior_policy", "stage_specific")),
+            fallback_behavior=str(method.get("fallback_behavior", "dense_after_error")),
         )
         apply_adaptive_stage_griffin(model, runtime)
         return runtime
@@ -387,6 +391,38 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
                 stage: int(method.get("window_tokens", {}).get(stage, 1))
                 for stage in STAGES
             },
+            bias_compensation=bool(method.get("bias_compensation", True)),
+            prior_policy=str(method.get("prior_policy", "stage_specific")),
+            fallback_behavior=str(method.get("fallback_behavior", "dense_after_error")),
+        )
+        apply_adaptive_stage_griffin(model, runtime)
+        return runtime
+    if method["policy"] == "stage_risk_adaptive":
+        controller_cfg = dict(method.get("stage_risk_controller", {}))
+        runtime = StageRiskAdaptiveRuntime(
+            bank,
+            stage_ratios=stage_ratios,
+            controller_checkpoint_path=str(controller_cfg["checkpoint_path"]),
+            action_ratios=[float(value) for value in controller_cfg["action_ratios"]],
+            risk_thresholds={stage: float(controller_cfg["risk_thresholds"][stage]) for stage in STAGES},
+            stage_ratio_caps={stage: float(controller_cfg["stage_ratio_caps"][stage]) for stage in STAGES},
+            min_warmup_tokens={
+                stage: int(controller_cfg.get("min_warmup_tokens", {}).get(stage, method.get("warmup_tokens", {}).get(stage, 0)))
+                for stage in STAGES
+            },
+            decision_window_tokens=int(controller_cfg.get("decision_window_tokens", 64)),
+            target_actual_pruning=float(controller_cfg.get("target_actual_pruning", 0.34)),
+            max_mask_swap_fraction=float(controller_cfg.get("max_mask_swap_fraction", 0.05)),
+            score_mode=str(controller_cfg.get("score_mode", "current_safe")),
+            fallback_behavior=str(
+                controller_cfg.get("fallback_behavior", method.get("fallback_behavior", "dense_after_error"))
+            ),
+            runtime_weight=float(method.get("runtime_weight", 0.4)),
+            prior_weight=float(method.get("prior_weight", 0.6)),
+            warmup_tokens={stage: int(method.get("warmup_tokens", {}).get(stage, 0)) for stage in STAGES},
+            protected_core_ratios={stage: float(method.get("protected_core_ratios", {}).get(stage, 0.0)) for stage in STAGES},
+            refresh_intervals={stage: int(method.get("refresh_intervals", {}).get(stage, 0)) for stage in STAGES},
+            window_tokens={stage: int(method.get("window_tokens", {}).get(stage, 1)) for stage in STAGES},
             bias_compensation=bool(method.get("bias_compensation", True)),
             prior_policy=str(method.get("prior_policy", "stage_specific")),
         )
@@ -429,6 +465,7 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
         policy=str(method["policy"]),
         stage_ratios=stage_ratios,
         bias_compensation=bool(method.get("bias_compensation", True)),
+        fallback_behavior=str(method.get("fallback_behavior", "dense_after_error")),
     )
     apply_fixed_stage_masking(model, runtime)
     return runtime
@@ -569,6 +606,13 @@ def evaluate_method(
     matched_rasp_reference = None
     target_matched_to_rasp_actual_mlp_pruning = None
     pruning_granularity = None
+    stage_risk_actions = Counter()
+    stage_risk_ratio_tokens = Counter()
+    stage_risk_risks: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    stage_risk_checkpoints = set()
+    stage_risk_mask_swaps = 0
+    stage_risk_mask_swap_candidates = 0
+    stage_risk_mask_jaccards = []
     for row in rows:
         runtime_summary = row["runtime_stage_mask"]
         runtime_backend = runtime_backend or runtime_summary.get("backend")
@@ -776,6 +820,19 @@ def evaluate_method(
             runtime_actual_swapped_channels
             or runtime_summary.get("actual_swapped_channels_by_stage_layer")
         )
+        checkpoint = runtime_summary.get("controller_checkpoint")
+        if checkpoint:
+            stage_risk_checkpoints.add(str(checkpoint))
+        stage_risk_ratio_tokens.update(runtime_summary.get("selected_ratio_tokens", {}))
+        stage_risk_mask_swaps += int(runtime_summary.get("mask_swap_count", 0))
+        stage_risk_mask_swap_candidates += int(runtime_summary.get("mask_swap_candidates", 0))
+        if "mean_mask_jaccard" in runtime_summary:
+            stage_risk_mask_jaccards.append(float(runtime_summary["mean_mask_jaccard"]))
+        for decision in runtime_summary.get("controller_decisions", []):
+            stage = str(decision["stage"])
+            stage_risk_actions[stage] += 1
+            for ratio, risk in decision.get("risks", {}).items():
+                stage_risk_risks[stage][str(ratio)].append(float(risk))
         stage_tokens.update(runtime_summary["tokens_by_stage"])
         dense_observation_tokens.update(runtime_summary.get("dense_observation_tokens_by_stage", {}))
         masked_tokens.update(runtime_summary.get("masked_tokens_by_stage", {}))
@@ -814,6 +871,48 @@ def evaluate_method(
         "actual_average_mlp_pruning_ratio": sum(actual) / len(actual) if actual else 0.0,
         "actual_pruning_accounting": actual_pruning_accounting or "estimated_from_stage_ratios",
     }
+    protocol_valid = [row for row in rows if bool(row["stage_protocol"]["valid"])]
+    fallback_rows = [row for row in rows if not bool(row["stage_protocol"]["valid"])]
+    summary["protocol_valid_accuracy"] = (
+        sum(int(row["correct"]) for row in protocol_valid) / len(protocol_valid)
+        if protocol_valid else None
+    )
+    summary["fallback_accuracy"] = (
+        sum(int(row["correct"]) for row in fallback_rows) / len(fallback_rows)
+        if fallback_rows else None
+    )
+    summary["protocol_valid_problems"] = len(protocol_valid)
+    summary["fallback_problems"] = len(fallback_rows)
+    if stage_risk_checkpoints:
+        if len(stage_risk_checkpoints) != 1:
+            raise RuntimeError("A single method evaluation cannot mix stage-risk controller checkpoints")
+        checkpoint = next(iter(stage_risk_checkpoints))
+        summary["stage_risk_adaptive"] = {
+            "actions_by_stage": dict(stage_risk_actions),
+            "ratio_token_distribution": dict(stage_risk_ratio_tokens),
+            "mean_risk_by_stage_ratio": {
+                stage: {ratio: sum(values) / len(values) for ratio, values in ratios.items() if values}
+                for stage, ratios in stage_risk_risks.items()
+            },
+            "dense_rate_by_stage": {
+                stage: (
+                    float(dense_observation_tokens[stage])
+                    / float(dense_observation_tokens[stage] + masked_tokens[stage])
+                    if dense_observation_tokens[stage] + masked_tokens[stage]
+                    else None
+                )
+                for stage in STAGES
+            },
+            "mask_swap_count": stage_risk_mask_swaps,
+            "mask_swap_candidates": stage_risk_mask_swap_candidates,
+            "mean_mask_jaccard": (
+                sum(stage_risk_mask_jaccards) / len(stage_risk_mask_jaccards)
+                if stage_risk_mask_jaccards else None
+            ),
+            "controller_checkpoint": checkpoint,
+            "controller_checkpoint_hash": file_sha256(checkpoint),
+            "method_config_hash": stable_hash(method),
+        }
     if "target_pruning_ratio" in method:
         target = float(method["target_pruning_ratio"])
         actual_value = float(summary["actual_average_mlp_pruning_ratio"])

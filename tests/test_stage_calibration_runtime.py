@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 
 from src.stage_calibration.protocol import STAGES, illegal_stage_tag_reason
 
@@ -17,11 +19,17 @@ try:
         GriffinPromptQwen3MLP,
         GriffinPromptRuntime,
         SafeDynamicStageGriffinRuntime,
+        StageRiskAdaptiveRuntime,
         StageMaskRuntime,
         StaticLayerPruningRuntime,
         StaticCoreResidualStageRuntime,
         griffin_activation_score,
     )
+    from src.stage_calibration.stage_risk import STAGE_RISK_CHECKPOINT_SCHEMA, STAGE_RISK_FEATURE_NAMES
+    import joblib
+    import numpy as np
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
     from src.baselines.shortgpt_qwen3 import (
         apply_shortgpt_layer_skip_hooks,
         select_reverse_layers,
@@ -78,8 +86,59 @@ def tiny_bank():
     return build_mask_bank(metadata={}, metrics=metrics, means=means, ratios=[0.0, 0.5])
 
 
+def tiny_stage_risk_checkpoint(path: Path) -> None:
+    """Write the smallest valid, already-gated controller fixture."""
+
+    rng = np.random.default_rng(1)
+    design = rng.normal(size=(16, len(STAGE_RISK_FEATURE_NAMES) * 5 + 4))
+    labels = np.asarray([0, 1] * 8)
+    scaler = StandardScaler().fit(design)
+    model = LogisticRegression(max_iter=200).fit(scaler.transform(design), labels)
+    raw = model.decision_function(scaler.transform(design))
+    platt = LogisticRegression(C=1e6, max_iter=200).fit(raw.reshape(-1, 1), labels)
+    joblib.dump(
+        {
+            "schema": STAGE_RISK_CHECKPOINT_SCHEMA,
+            "feature_names": STAGE_RISK_FEATURE_NAMES,
+            "stages": STAGES,
+            "action_ratios": (0.2, 0.3, 0.4),
+            "calibration": "grouped_training_fold_platt",
+            "mechanism_gate_passed": True,
+            "scaler": scaler,
+            "model": model,
+            "platt_model": platt,
+        },
+        path,
+    )
+
+
 @unittest.skipUnless(TORCH_AVAILABLE, "torch is required for stage calibration runtime tests")
 class StageCalibrationRuntimeTest(unittest.TestCase):
+    def test_stage_risk_runtime_uses_gated_controller_and_reports_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = Path(tmp) / "controller.joblib"
+            tiny_stage_risk_checkpoint(checkpoint)
+            runtime = StageRiskAdaptiveRuntime(
+                tiny_bank(),
+                stage_ratios={stage: 0.4 for stage in STAGES},
+                controller_checkpoint_path=str(checkpoint),
+                action_ratios=[0.0, 0.2, 0.3, 0.4],
+                risk_thresholds={stage: 1.0 for stage in STAGES},
+                stage_ratio_caps={stage: 0.4 for stage in STAGES},
+                min_warmup_tokens={stage: 0 for stage in STAGES},
+                decision_window_tokens=64,
+                target_actual_pruning=0.34,
+                protected_core_ratios={stage: 0.0 for stage in STAGES},
+            )
+            runtime.set_stage("setup")
+            runtime.set_decode_observation(entropy=1.0, confidence=0.5)
+            mask = runtime.observe_or_mask(0, torch.ones(1, 1, 4))
+            self.assertIsNotNone(mask)
+            summary = runtime.summary()
+            self.assertEqual(summary["policy"], "stage_risk_adaptive")
+            self.assertEqual(len(summary["controller_decisions"]), 1)
+            self.assertIn("setup:0.40", summary["selected_ratio_tokens"])
+
     def test_ratio_zero_is_dense_equivalent(self) -> None:
         original = TinyMlp()
         runtime = StageMaskRuntime(tiny_bank(), "stage_specific", {stage: 0.0 for stage in STAGES})

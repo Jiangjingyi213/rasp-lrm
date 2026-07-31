@@ -29,7 +29,12 @@ def collect_stage_statistics(
     c4_samples: int,
     max_input_tokens: int,
     forward_chunk_tokens: int = 1024,
-) -> tuple[dict[str, dict[int, torch.Tensor]], dict[str, dict[int, torch.Tensor]], dict[str, Any]]:
+) -> tuple[
+    dict[str, dict[int, torch.Tensor]],
+    dict[str, dict[int, torch.Tensor]],
+    dict[int, torch.Tensor],
+    dict[str, Any],
+]:
     layers = get_decoder_layers(model)
     channels = {layer_id: int(_mlp(layer).down_proj.weight.shape[1]) for layer_id, layer in enumerate(layers)}
     sources = ("c4", "prompt_only", "trajectory", *STAGES)
@@ -134,4 +139,11 @@ def collect_stage_statistics(
         source: {str(layer_id): moment.count for layer_id, moment in layer_moments.items()}
         for source, layer_moments in moments.items()
     }
-    return metrics, means, {"token_counts": counts, "sources": list(sources)}
+    # Keep this model-derived quantity separate from WIFV.  The runtime
+    # output-aware ablation needs ||W_down[:, j]||^2 rather than a proxy
+    # reconstructed from the calibration importance metric.
+    output_norms = {
+        layer_id: _mlp(layer).down_proj.weight.detach().float().square().sum(dim=0).cpu()
+        for layer_id, layer in enumerate(layers)
+    }
+    return metrics, means, output_norms, {"token_counts": counts, "sources": list(sources)}
