@@ -1,8 +1,8 @@
-seed: 1
+seed: 3
 
 workflow:
   profile: pilot
-  root: runs/09_stage_residual_rasp_v2/02_stage_residual_dev/seed_{seed}
+  root: runs/10_stage_budget_output_aware_v1/01_budget_only_dev/seed_{seed}
 
 stages: [setup, reasoning, verify, final]
 
@@ -21,38 +21,25 @@ prompt:
     explicit_stage_protocol: true
     forced_assistant_prefix: "[[STAGE_SETUP]]\n"
 
-generation:
-  max_input_tokens: 4096
-  max_new_tokens: 16384
-  temperature: 0.6
-  top_p: 0.95
-  top_k: 20
-
+generation: {max_input_tokens: 4096, max_new_tokens: 16384, temperature: 0.6, top_p: 0.95, top_k: 20}
 calibration_pool:
   allowed_sources: ["*"]
   excluded_sources: [GSM8k, GSM8K, MATH, Omni-MATH, amc_aime, cn_k12]
-
 selection: {difficulty_filter: any_correct}
 calibration: {forward_chunk_tokens: 1024}
-masks:
-  metric: WIFV
-  structure: UL-UM
-  ratios: [0.00, 0.10, 0.15, 0.20]
-  c4_samples: 0
-  bias_compensation: true
+masks: {metric: WIFV, structure: UL-UM, ratios: [0.00, 0.10, 0.15, 0.20], c4_samples: 0, bias_compensation: true}
 
 adaptive_griffin:
   enabled: true
   policy: calibrated_stage_safe_dynamic_griffin
   score_mode: activation
-  max_mask_swap_fraction: 1.0
   target_pruning_ratio: 0.34
   min_target_pruning_ratio: 0.335
   max_target_pruning_ratio: 0.345
   target_pruning_label: t30_actual_matched
   runtime_weight: 0.25
   prior_weight: 0.75
-  prior_policy: stage_specific
+  prior_policy: trajectory_global
   warmup_tokens: {setup: 0, reasoning: 16, verify: 16, final: 0}
   stage_ratios: {setup: 0.42, reasoning: 0.38, verify: 0.38, final: 0.38}
   protected_core_ratios: {setup: 0.35, reasoning: 0.40, verify: 0.45, final: 0.45}
@@ -60,38 +47,46 @@ adaptive_griffin:
   window_tokens: {setup: 192, reasoning: 192, verify: 192, final: 1}
   bias_compensation: true
   backend: logical_mask
+  stage_budget_controller:
+    enabled: false
+    target_actual_pruning: 0.34
+    decision_window_tokens: 128
+    action_ratios: [0.00, 0.20, 0.30, 0.40]
+    stage_ratio_bounds:
+      setup: [0.20, 0.42]
+      reasoning: [0.20, 0.38]
+      verify: [0.10, 0.34]
+      final: [0.00, 0.20]
   variants:
-    - method_name: dynamic_global_activation
-      variant_role: global_prior_control
+    - method_name: dynamic_global_activation_fixed_t30
+      variant_role: phase_a_fixed_budget_control
       prior_policy: trajectory_global
-    - method_name: dynamic_stage_specific_activation
-      variant_role: raw_stage_prior_historical_control
+      score_mode: activation
+      stage_budget_controller: {enabled: false}
+    - method_name: dynamic_global_activation_budgeted
+      variant_role: phase_a_stage_budget_controller
+      prior_policy: trajectory_global
+      score_mode: activation
+      stage_budget_controller:
+        enabled: true
+        target_actual_pruning: 0.34
+        decision_window_tokens: 128
+        action_ratios: [0.00, 0.20, 0.30, 0.40]
+        stage_ratio_bounds:
+          setup: [0.20, 0.42]
+          reasoning: [0.20, 0.38]
+          verify: [0.10, 0.34]
+          final: [0.00, 0.20]
+    - method_name: current_t30_math_safe
+      variant_role: old_mainline_reference
       prior_policy: stage_specific
-    - method_name: dynamic_stage_residual_025_activation
-      variant_role: stage_residual_main_candidate
-      prior_policy: stage_residual_025
-    - method_name: dynamic_stage_residual_050_activation
-      variant_role: stage_residual_main_candidate
-      prior_policy: stage_residual_050
-    - method_name: dynamic_shuffled_prior_activation
-      variant_role: shuffled_stage_negative_control
-      prior_policy: shuffled_stage
-  additional_fixed_stage_methods:
-    - name: strict_static_matched_t30
-      policy: trajectory_global
-      ablation_role: strict_static_matched_control
-      target_pruning_ratio: 0.34
-      min_target_pruning_ratio: 0.335
-      max_target_pruning_ratio: 0.345
-      target_pruning_label: t30_actual_matched
-      stage_ratios: {setup: 0.37, reasoning: 0.37, verify: 0.37, final: 0.37}
+      score_mode: activation
+      stage_budget_controller: {enabled: false}
 
 evaluation:
   allow_final_without_dev: true
   math500_name_or_path: HuggingFaceH4/MATH-500
-  final_datasets:
-    - {dataset: gsm8k, split: test}
-    - {dataset: math500, name_or_path: HuggingFaceH4/MATH-500, split: test}
+  final_datasets: [{dataset: gsm8k, split: test}, {dataset: math500, name_or_path: HuggingFaceH4/MATH-500, split: test}]
 
 profiles:
   pilot:
@@ -116,4 +111,4 @@ profiles:
     run_no_bias_compensation_ablation: false
     diagnostic_budget_search_on_gate_failure: false
     reuse_existing_method_summaries: true
-    final_methods: [structured_dense, strict_static_matched_t30, dynamic_global_activation, dynamic_stage_specific_activation, dynamic_stage_residual_025_activation, dynamic_stage_residual_050_activation, dynamic_shuffled_prior_activation]
+    final_methods: [dynamic_global_activation_fixed_t30, dynamic_global_activation_budgeted, current_t30_math_safe]

@@ -855,6 +855,7 @@ class SafeDynamicStageGriffinRuntime:
         fallback_behavior: str = "dense_after_error",
         score_mode: str = "activation",
         max_mask_swap_fraction: float = 1.0,
+        stage_budget_controller: dict[str, Any] | None = None,
     ) -> None:
         validate_mask_bank(bank)
         if prior_policy not in bank["policies"]:
@@ -872,6 +873,9 @@ class SafeDynamicStageGriffinRuntime:
         self.max_mask_swap_fraction = float(max_mask_swap_fraction)
         if not 0.0 <= self.max_mask_swap_fraction <= 1.0:
             raise ValueError("max_mask_swap_fraction must be in [0, 1]")
+        budget_cfg = dict(stage_budget_controller or {})
+        self.stage_budget_controller_enabled = bool(budget_cfg.get("enabled", False))
+        self.stage_budget_controller = self._prepare_stage_budget_controller(budget_cfg)
         warmup_tokens = warmup_tokens or {}
         protected_core_ratios = protected_core_ratios or {}
         refresh_intervals = refresh_intervals or {}
@@ -919,6 +923,93 @@ class SafeDynamicStageGriffinRuntime:
         self._mask_swap_candidates_by_stage_layer: Counter[str] = Counter()
         self._mask_jaccard_sum_by_stage_layer: Counter[str] = Counter()
         self._mask_jaccard_count_by_stage_layer: Counter[str] = Counter()
+        self._budget_selected_ratios: dict[str, float] = {
+            stage: self._initial_budget_ratio(stage) for stage in STAGES
+        }
+        self._budget_tokens_since_decision: Counter[str] = Counter()
+        self._budget_decision_log: list[dict[str, Any]] = []
+        self._budget_ratio_tokens: Counter[str] = Counter()
+        self._budget_base_risks: dict[str, list[float]] = {stage: [] for stage in STAGES}
+        self._budget_margin_risks: dict[str, list[float]] = {stage: [] for stage in STAGES}
+        self._budget_volatility_risks: dict[str, list[float]] = {stage: [] for stage in STAGES}
+        self._budget_debts: list[float] = []
+        self._budget_previous_scores: dict[str, torch.Tensor] = {}
+
+    def _prepare_stage_budget_controller(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        action_ratios = tuple(
+            sorted({float(value) for value in cfg.get("action_ratios", [0.0, 0.2, 0.3, 0.4])})
+        )
+        if not action_ratios or action_ratios[0] != 0.0:
+            raise ValueError("stage_budget_controller.action_ratios must include dense ratio 0.0")
+        if any(value < 0.0 or value >= 1.0 for value in action_ratios):
+            raise ValueError("Invalid stage budget action ratio")
+        target = float(cfg.get("target_actual_pruning", 0.34))
+        if not 0.0 <= target < 1.0:
+            raise ValueError("Invalid stage budget pruning target")
+        raw_bounds = cfg.get("stage_ratio_bounds", {})
+        default_bounds = {
+            "setup": (0.20, 0.42),
+            "reasoning": (0.20, 0.38),
+            "verify": (0.10, 0.34),
+            "final": (0.00, 0.20),
+        }
+        bounds: dict[str, tuple[float, float]] = {}
+        for stage in STAGES:
+            values = raw_bounds.get(stage, default_bounds[stage])
+            if isinstance(values, dict):
+                low = float(values.get("floor", default_bounds[stage][0]))
+                high = float(values.get("cap", default_bounds[stage][1]))
+            else:
+                low, high = [float(value) for value in values]
+            if low < 0.0 or high >= 1.0 or low > high:
+                raise ValueError(f"Invalid stage budget bounds for {stage}: {values}")
+            bounds[stage] = (low, high)
+        stage_risk_bias = {
+            "setup": -0.05,
+            "reasoning": 0.00,
+            "verify": 0.08,
+            "final": 0.15,
+        }
+        stage_risk_bias.update({stage: float(value) for stage, value in cfg.get("stage_risk_bias", {}).items()})
+        return {
+            "enabled": bool(cfg.get("enabled", False)),
+            "target_actual_pruning": target,
+            "decision_window_tokens": max(1, int(cfg.get("decision_window_tokens", 128))),
+            "action_ratios": action_ratios,
+            "stage_ratio_bounds": bounds,
+            "stage_risk_bias": {stage: float(stage_risk_bias.get(stage, 0.0)) for stage in STAGES},
+            "risk_dense_threshold": float(cfg.get("risk_dense_threshold", 0.85)),
+            "risk_reduce_threshold": float(cfg.get("risk_reduce_threshold", 0.62)),
+            "risk_safe_threshold": float(cfg.get("risk_safe_threshold", 0.35)),
+            "budget_debt_gain": float(cfg.get("budget_debt_gain", 0.75)),
+            "budget_catchup_threshold": float(cfg.get("budget_catchup_threshold", 0.015)),
+            "risk_ratio_penalty": float(cfg.get("risk_ratio_penalty", 0.10)),
+        }
+
+    def _initial_budget_ratio(self, stage: str) -> float:
+        if not self.stage_budget_controller_enabled:
+            return self.stage_ratios.get(stage, 0.0)
+        floor, cap = self.stage_budget_controller["stage_ratio_bounds"][stage]
+        candidates = self._stage_budget_candidates(stage, include_dense=False)
+        if not candidates:
+            return 0.0
+        desired = min(cap, max(floor, float(self.stage_ratios.get(stage, 0.0))))
+        return min(candidates, key=lambda value: (abs(value - desired), -value))
+
+    def _stage_budget_candidates(self, stage: str, *, include_dense: bool = True) -> list[float]:
+        if not self.stage_budget_controller_enabled:
+            return [self.stage_ratios.get(stage, 0.0)]
+        floor, cap = self.stage_budget_controller["stage_ratio_bounds"][stage]
+        output = [
+            ratio for ratio in self.stage_budget_controller["action_ratios"]
+            if (ratio == 0.0 and include_dense) or (floor - 1e-12 <= ratio <= cap + 1e-12)
+        ]
+        return sorted(set(float(value) for value in output))
+
+    def _active_stage_ratio(self, stage: str) -> float:
+        if self.stage_budget_controller_enabled:
+            return float(self._budget_selected_ratios.get(stage, 0.0))
+        return float(self.stage_ratios.get(stage, 0.0))
 
     @property
     def alpha(self) -> float:
@@ -949,6 +1040,17 @@ class SafeDynamicStageGriffinRuntime:
         self._mask_swap_candidates_by_stage_layer.clear()
         self._mask_jaccard_sum_by_stage_layer.clear()
         self._mask_jaccard_count_by_stage_layer.clear()
+        self._budget_selected_ratios = {
+            stage: self._initial_budget_ratio(stage) for stage in STAGES
+        }
+        self._budget_tokens_since_decision.clear()
+        self._budget_decision_log.clear()
+        self._budget_ratio_tokens.clear()
+        self._budget_base_risks = {stage: [] for stage in STAGES}
+        self._budget_margin_risks = {stage: [] for stage in STAGES}
+        self._budget_volatility_risks = {stage: [] for stage in STAGES}
+        self._budget_debts.clear()
+        self._budget_previous_scores.clear()
 
     def set_stage(self, stage: str) -> None:
         previous = self.active_stage
@@ -959,6 +1061,10 @@ class SafeDynamicStageGriffinRuntime:
             self.active_stage = stage
             self._current_single_stage = None
             self._current_single_observe = False
+            if previous != stage and self.stage_budget_controller_enabled:
+                self._budget_tokens_since_decision[stage] = int(
+                    self.stage_budget_controller["decision_window_tokens"]
+                )
             if previous != stage and self.max_mask_swap_fraction < 1.0:
                 self._clear_stage_cache(stage)
 
@@ -1038,7 +1144,7 @@ class SafeDynamicStageGriffinRuntime:
         if layer_id == 0:
             stage = self.active_stage
             observe = False
-            if stage in STAGES and self.stage_ratios[stage] > 0.0:
+            if stage in STAGES and self._active_stage_ratio(stage) > 0.0:
                 observe = self._stage_observed_tokens[stage] < self.warmup_tokens[stage]
                 if observe:
                     self._stage_observed_tokens[stage] += int(token_count)
@@ -1066,6 +1172,124 @@ class SafeDynamicStageGriffinRuntime:
         self._actual_pruning_weighted_sum_by_stage[key] += ratio * count
         self._actual_pruning_denominator_by_stage[key] += count
 
+    def _budget_achieved_pruning(self) -> float:
+        if self._actual_pruning_denominator <= 0:
+            return 0.0
+        return float(self._actual_pruning_weighted_sum / self._actual_pruning_denominator)
+
+    def _budget_score_components(self, stage: str, layer_id: int, candidate_ratio: float) -> dict[str, float]:
+        entry = self.bank["policies"][self.prior_policy][stage][layer_id]
+        prior = entry["metric"].float()
+        runtime_score = self._recent_sums[stage].get(layer_id)
+        if runtime_score is None:
+            runtime_score = self._prompt_scores.get(layer_id)
+        if runtime_score is None:
+            runtime_score = torch.ones_like(prior)
+        runtime_score = runtime_score.to(device=prior.device, dtype=torch.float32)
+        current_score = runtime_score.sqrt() if self.score_mode == "activation" else runtime_score
+        normalized = _zscore(current_score).detach().cpu()
+        previous = self._budget_previous_scores.get(stage)
+        if previous is None or previous.numel() != normalized.numel():
+            volatility = 0.0
+        else:
+            volatility = float(
+                1.0
+                - torch.nn.functional.cosine_similarity(
+                    normalized.unsqueeze(0),
+                    previous.to(normalized.device).unsqueeze(0),
+                ).item()
+            )
+        self._budget_previous_scores[stage] = normalized
+        protected = _topk_mask(prior, self.protected_core_ratios[stage])
+        prune_score = (
+            self.prior_weight * _zscore(-prior)
+            + self.runtime_weight * _zscore(-current_score.to(device=prior.device))
+        )
+        candidates = prune_score[~protected.to(device=prune_score.device, dtype=torch.bool)]
+        prune_count = min(
+            max(0, int(round(prune_score.numel() * float(candidate_ratio)))),
+            int(candidates.numel()),
+        )
+        if prune_count <= 0 or candidates.numel() <= 1 or prune_count >= candidates.numel():
+            margin = 1.0
+        else:
+            ordered = torch.sort(candidates, descending=True).values
+            margin = float((ordered[prune_count - 1] - ordered[prune_count]).abs().item())
+        margin_risk = float(1.0 / (1.0 + max(0.0, margin)))
+        volatility_risk = float(max(0.0, min(1.0, volatility)))
+        base_risk = float(
+            max(
+                0.0,
+                min(
+                    1.0,
+                    0.45 * margin_risk
+                    + 0.35 * volatility_risk
+                    + float(self.stage_budget_controller["stage_risk_bias"][stage]),
+                ),
+            )
+        )
+        return {
+            "base_risk": base_risk,
+            "margin_risk": margin_risk,
+            "volatility_risk": volatility_risk,
+        }
+
+    def _choose_budget_ratio(self, stage: str, layer_id: int) -> dict[str, Any]:
+        candidates = self._stage_budget_candidates(stage)
+        if not candidates:
+            selected = 0.0
+            return {"selected_ratio": selected, "reason": "no_valid_budget_candidate"}
+        achieved = self._budget_achieved_pruning()
+        target = float(self.stage_budget_controller["target_actual_pruning"])
+        debt = target - achieved
+        nonzero_candidates = [ratio for ratio in candidates if ratio > 0.0]
+        probe_ratio = max(nonzero_candidates) if nonzero_candidates else 0.0
+        risks = self._budget_score_components(stage, layer_id, probe_ratio)
+        desired = target + float(self.stage_budget_controller["budget_debt_gain"]) * debt
+        if risks["base_risk"] <= float(self.stage_budget_controller["risk_safe_threshold"]):
+            desired += 0.05
+        elif risks["base_risk"] >= float(self.stage_budget_controller["risk_reduce_threshold"]):
+            desired -= float(self.stage_budget_controller["risk_ratio_penalty"])
+        if debt > float(self.stage_budget_controller["budget_catchup_threshold"]) and nonzero_candidates:
+            desired = max(desired, min(nonzero_candidates, key=lambda value: abs(value - target)))
+        selected = min(candidates, key=lambda value: (abs(value - desired), -value if debt >= 0.0 else value))
+        if (
+            risks["base_risk"] >= float(self.stage_budget_controller["risk_dense_threshold"])
+            and debt <= 0.0
+            and 0.0 in candidates
+        ):
+            selected = 0.0
+        if debt > float(self.stage_budget_controller["budget_catchup_threshold"]) and nonzero_candidates:
+            selected = max(selected, min(nonzero_candidates, key=lambda value: abs(value - target)))
+        return {
+            "selected_ratio": float(selected),
+            "target_actual_pruning": target,
+            "achieved_actual_pruning": achieved,
+            "budget_debt": debt,
+            "desired_ratio": desired,
+            "candidate_ratios": candidates,
+            **risks,
+        }
+
+    def _maybe_update_budget_decision(self, stage: str, layer_id: int) -> None:
+        if not self.stage_budget_controller_enabled or layer_id != 0:
+            return
+        self._budget_tokens_since_decision[stage] += 1
+        window = int(self.stage_budget_controller["decision_window_tokens"])
+        if self._budget_tokens_since_decision[stage] < window:
+            return
+        decision = self._choose_budget_ratio(stage, layer_id)
+        selected = float(decision["selected_ratio"])
+        if selected != self._budget_selected_ratios.get(stage):
+            self._clear_stage_cache(stage)
+        self._budget_selected_ratios[stage] = selected
+        self._budget_tokens_since_decision[stage] = 0
+        self._budget_decision_log.append({"stage": stage, **decision})
+        self._budget_base_risks[stage].append(float(decision.get("base_risk", 0.0)))
+        self._budget_margin_risks[stage].append(float(decision.get("margin_risk", 0.0)))
+        self._budget_volatility_risks[stage].append(float(decision.get("volatility_risk", 0.0)))
+        self._budget_debts.append(float(decision.get("budget_debt", 0.0)))
+
     def observe_or_mask(self, layer_id: int, intermediate: torch.Tensor) -> torch.Tensor | None:
         token_count = int(intermediate.shape[1])
         if token_count > 1:
@@ -1077,21 +1301,27 @@ class SafeDynamicStageGriffinRuntime:
                 self.dense_observation_tokens_by_stage["dense"] += token_count
             self._record_actual_pruning("dense", layer_id, token_count, None)
             return None
-        ratio = self.stage_ratios[stage]
-        if ratio <= 0.0:
-            if layer_id == 0:
-                self.dense_observation_tokens_by_stage[stage] += token_count
-            self._record_actual_pruning(stage, layer_id, token_count, None)
-            return None
         self._append_recent(stage, layer_id, intermediate)
+        if layer_id == 0:
+            self._maybe_update_budget_decision(stage, layer_id)
+        ratio = self._active_stage_ratio(stage)
         if observe:
             if layer_id == 0:
                 self.dense_observation_tokens_by_stage[stage] += token_count
             self._record_actual_pruning(stage, layer_id, token_count, None)
             return None
+        if ratio <= 0.0:
+            if layer_id == 0:
+                self.dense_observation_tokens_by_stage[stage] += token_count
+                if self.stage_budget_controller_enabled:
+                    self._budget_ratio_tokens[f"{stage}:0.00"] += token_count
+            self._record_actual_pruning(stage, layer_id, token_count, None)
+            return None
         if layer_id == 0:
             self.masked_tokens_by_stage[stage] += token_count
             self._stage_tokens_since_refresh[stage] += token_count
+            if self.stage_budget_controller_enabled:
+                self._budget_ratio_tokens[f"{stage}:{ratio:.2f}"] += token_count
         mask = self.keep_mask(stage, layer_id)
         self._record_actual_pruning(stage, layer_id, token_count, mask)
         return mask
@@ -1115,7 +1345,7 @@ class SafeDynamicStageGriffinRuntime:
         prune_score = self.prior_weight * _zscore(-prior) + self.runtime_weight * _zscore(-runtime_score)
         mask = _prune_mask_from_scores(
             prune_score,
-            self.stage_ratios[stage],
+            self._active_stage_ratio(stage),
             protected_mask=protected,
         )
         mask = self._limit_mask_swaps(stage, layer_id, mask, protected, -prune_score)
@@ -1198,7 +1428,38 @@ class SafeDynamicStageGriffinRuntime:
             for stage in self._actual_pruning_denominator_by_stage
             if self._actual_pruning_denominator_by_stage[stage]
         }
-        return {
+        budget_ratio_denominator = sum(self._budget_ratio_tokens.values())
+        budget_weighted = 0.0
+        for key, count in self._budget_ratio_tokens.items():
+            try:
+                ratio = float(str(key).rsplit(":", 1)[1])
+            except (IndexError, ValueError):
+                ratio = 0.0
+            budget_weighted += ratio * int(count)
+        budget_actions_by_stage = Counter(
+            str(decision.get("stage", "unknown")) for decision in self._budget_decision_log
+        )
+        budget_selected_by_stage = Counter(
+            f"{decision.get('stage', 'unknown')}:{float(decision.get('selected_ratio', 0.0)):.2f}"
+            for decision in self._budget_decision_log
+        )
+        budget_debt_summary = None
+        if self._budget_debts:
+            budget_debt_summary = {
+                "min": min(self._budget_debts),
+                "max": max(self._budget_debts),
+                "mean": sum(self._budget_debts) / len(self._budget_debts),
+                "final": self._budget_debts[-1],
+            }
+
+        def mean_values(values_by_stage: dict[str, list[float]]) -> dict[str, float]:
+            return {
+                stage: sum(values) / len(values)
+                for stage, values in values_by_stage.items()
+                if values
+            }
+
+        summary = {
             "backend": "calibrated_stage_safe_dynamic_griffin_logical_v2",
             "real_speedup_claimed": False,
             "policy": "calibrated_stage_safe_dynamic_griffin",
@@ -1242,6 +1503,67 @@ class SafeDynamicStageGriffinRuntime:
             "actual_pruning_ratio_by_stage": actual_by_stage,
             "actual_pruning_accounting": "actual_mask_sparsity_layer_token_weighted",
         }
+        if self.stage_budget_controller_enabled:
+            summary.update(
+                {
+                    "stage_budget_controller_enabled": True,
+                    "stage_budget_controller": {
+                        "target_actual_pruning": self.stage_budget_controller[
+                            "target_actual_pruning"
+                        ],
+                        "decision_window_tokens": self.stage_budget_controller[
+                            "decision_window_tokens"
+                        ],
+                        "action_ratios": list(self.stage_budget_controller["action_ratios"]),
+                        "stage_ratio_bounds": {
+                            stage: list(bounds)
+                            for stage, bounds in self.stage_budget_controller[
+                                "stage_ratio_bounds"
+                            ].items()
+                        },
+                        "stage_risk_bias": dict(self.stage_budget_controller["stage_risk_bias"]),
+                        "risk_dense_threshold": self.stage_budget_controller[
+                            "risk_dense_threshold"
+                        ],
+                        "risk_reduce_threshold": self.stage_budget_controller[
+                            "risk_reduce_threshold"
+                        ],
+                        "risk_safe_threshold": self.stage_budget_controller[
+                            "risk_safe_threshold"
+                        ],
+                        "budget_debt_gain": self.stage_budget_controller["budget_debt_gain"],
+                        "budget_catchup_threshold": self.stage_budget_controller[
+                            "budget_catchup_threshold"
+                        ],
+                        "risk_ratio_penalty": self.stage_budget_controller[
+                            "risk_ratio_penalty"
+                        ],
+                    },
+                    "stage_budget_selected_ratios": dict(self._budget_selected_ratios),
+                    "stage_budget_decisions": list(self._budget_decision_log),
+                    "stage_budget_actions_by_stage": dict(budget_actions_by_stage),
+                    "stage_budget_selected_ratio_actions": dict(budget_selected_by_stage),
+                    "stage_budget_ratio_tokens": dict(self._budget_ratio_tokens),
+                    "stage_budget_theoretical_selected_ratio": (
+                        budget_weighted / budget_ratio_denominator
+                        if budget_ratio_denominator
+                        else 0.0
+                    ),
+                    "stage_budget_mean_base_risk_by_stage": mean_values(
+                        self._budget_base_risks
+                    ),
+                    "stage_budget_mean_margin_risk_by_stage": mean_values(
+                        self._budget_margin_risks
+                    ),
+                    "stage_budget_mean_volatility_risk_by_stage": mean_values(
+                        self._budget_volatility_risks
+                    ),
+                    "stage_budget_debt_summary": budget_debt_summary,
+                }
+            )
+        else:
+            summary["stage_budget_controller_enabled"] = False
+        return summary
 
 
 class StageRiskAdaptiveRuntime(SafeDynamicStageGriffinRuntime):

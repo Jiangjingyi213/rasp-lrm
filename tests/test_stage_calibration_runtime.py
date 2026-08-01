@@ -349,6 +349,56 @@ class StageCalibrationRuntimeTest(unittest.TestCase):
         self.assertEqual(summary["output_norm_source"], "frozen_model_down_proj")
         self.assertEqual(summary["output_norm_layers"], [0])
 
+    def test_stage_budget_controller_respects_stage_bounds(self) -> None:
+        runtime = SafeDynamicStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={stage: 0.3 for stage in STAGES},
+            protected_core_ratios={stage: 0.0 for stage in STAGES},
+            runtime_weight=1.0,
+            prior_weight=0.0,
+            stage_budget_controller={
+                "enabled": True,
+                "target_actual_pruning": 0.34,
+                "decision_window_tokens": 1,
+                "action_ratios": [0.0, 0.2, 0.3, 0.4],
+                "stage_ratio_bounds": {
+                    "setup": [0.2, 0.4],
+                    "reasoning": [0.2, 0.4],
+                    "verify": [0.1, 0.3],
+                    "final": [0.0, 0.2],
+                },
+            },
+        )
+        runtime.set_stage("verify")
+        runtime.observe_or_mask(0, torch.tensor([[[0.0, 1.0, 2.0, 3.0]]]))
+        ratio = runtime.summary()["stage_budget_selected_ratios"]["verify"]
+        self.assertIn(ratio, {0.0, 0.2, 0.3})
+        self.assertLessEqual(ratio, 0.3)
+
+    def test_stage_budget_controller_dense_and_catchup_actions(self) -> None:
+        runtime = SafeDynamicStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={stage: 0.3 for stage in STAGES},
+            protected_core_ratios={stage: 0.0 for stage in STAGES},
+            runtime_weight=1.0,
+            prior_weight=0.0,
+            stage_budget_controller={
+                "enabled": True,
+                "target_actual_pruning": 0.34,
+                "decision_window_tokens": 1,
+                "action_ratios": [0.0, 0.2, 0.3, 0.4],
+                "risk_dense_threshold": 0.0,
+            },
+        )
+        runtime.set_stage("reasoning")
+        runtime._actual_pruning_weighted_sum = 60.0
+        runtime._actual_pruning_denominator = 100
+        over_budget = runtime._choose_budget_ratio("reasoning", 0)
+        self.assertEqual(over_budget["selected_ratio"], 0.0)
+        runtime._actual_pruning_weighted_sum = 0.0
+        catchup = runtime._choose_budget_ratio("reasoning", 0)
+        self.assertGreaterEqual(catchup["selected_ratio"], 0.3)
+
     def test_safe_dynamic_continuity_limits_optional_swaps(self) -> None:
         runtime = SafeDynamicStageGriffinRuntime(
             tiny_bank(),
@@ -387,6 +437,7 @@ class StageCalibrationRuntimeTest(unittest.TestCase):
             runtime.set_stage("setup")
             runtime.observe_or_mask(0, values)
         self.assertTrue(torch.equal(legacy.keep_mask("setup", 0), explicit.keep_mask("setup", 0)))
+        self.assertFalse(legacy.summary()["stage_budget_controller_enabled"])
 
     def test_safe_dynamic_final_ratio_zero_is_dense_equivalent(self) -> None:
         original = TinyMlp()

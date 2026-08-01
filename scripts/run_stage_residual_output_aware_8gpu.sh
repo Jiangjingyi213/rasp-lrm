@@ -8,7 +8,7 @@ PYTHON_BIN="${PYTHON:-/home/cike/jjy/envs/rasp_qwen3_eval/bin/python}"
 RUN_ROOT="${RUN_ROOT:-runs/09_stage_residual_rasp_v2}"
 LOG_ROOT="${LOG_ROOT:-logs/09_stage_residual_rasp_v2}"
 SOURCE_ROOT="${SOURCE_ROOT:-runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3_t30_math_safe_full}"
-SEEDS="${STAGE_RESIDUAL_SEEDS:-1 2 3}"
+SEEDS="${STAGE_RESIDUAL_SEEDS:-3}"
 CONFIG="configs/generated_stage_residual_rasp_v2/stage_residual_output_aware_frozen.yaml"
 METHODS="selected_residual_activation,selected_residual_output_aware,selected_residual_output_aware_continuity,dynamic_global_output_aware"
 
@@ -25,7 +25,7 @@ for seed in ${SEEDS}; do
     "${PYTHON_BIN}" -m src.main_prepare_stage_residual_bank --source-root "${SOURCE_ROOT}" --target-root "${seed_root}"
   fi
   CONFIG="${CONFIG}" RUN_ROOT="${seed_root}" SOURCE_ROOT="${seed_root}" LOG_DIR="${LOG_ROOT}/03_dev/seed_${seed}" \
-    STAGE_SEED="${seed}" DATASETS_OVERRIDE="gsm8k math500" STAGE_FINAL_EVAL_LIMIT=520 STAGE_FINAL_METHODS="${METHODS}" \
+    STAGE_SEED="${seed}" STAGE_FINAL_SEEDS="${seed}" DATASETS_OVERRIDE="gsm8k math500" STAGE_FINAL_EVAL_LIMIT=520 STAGE_FINAL_METHODS="${METHODS}" \
     bash scripts/run_t30_math_safe_priority_suite_8gpu.sh
 done
 

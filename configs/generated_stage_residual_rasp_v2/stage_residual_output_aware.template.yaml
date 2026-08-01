@@ -83,7 +83,7 @@ profiles:
     difficulty_filter: any_correct
     c4_samples: 0
     final_eval_limit: 520
-    final_seeds: [1, 2, 3]
+    final_seeds: [3]
     dev_uniform_ratios: []
     dev_global_policies: []
     run_stage_specific_uniform: false

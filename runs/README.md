@@ -21,3 +21,10 @@
 - `09_stage_residual_rasp_v2/`：当前主线。以 global WIFV 为底座，测试受控 stage residual、output-aware runtime score 与 continuity-constrained dynamic mask。
 
 使用 `bash scripts/56_organize_experiment_artifacts.sh` 可重复整理从服务器同步回来的旧顶层产物。
+
+## 10_stage_budget_output_aware_v1
+
+New optimization line focused on two mechanisms: online stage budget scheduling
+under a 34% actual-pruning target, and output-aware channel scoring. Results are
+kept in `runs/10_stage_budget_output_aware_v1/`; logs mirror to
+`logs/10_stage_budget_output_aware_v1/`.

@@ -396,6 +396,7 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
             fallback_behavior=str(method.get("fallback_behavior", "dense_after_error")),
             score_mode=str(method.get("score_mode", "activation")),
             max_mask_swap_fraction=float(method.get("max_mask_swap_fraction", 1.0)),
+            stage_budget_controller=dict(method.get("stage_budget_controller", {})),
         )
         apply_adaptive_stage_griffin(model, runtime)
         return runtime
@@ -621,6 +622,18 @@ def evaluate_method(
     stage_risk_mask_swaps = 0
     stage_risk_mask_swap_candidates = 0
     stage_risk_mask_jaccards = []
+    stage_budget_enabled = False
+    stage_budget_controller = None
+    stage_budget_actions = Counter()
+    stage_budget_ratio_tokens = Counter()
+    stage_budget_selected_ratio_actions = Counter()
+    stage_budget_decisions = []
+    stage_budget_base_risks: dict[str, list[float]] = defaultdict(list)
+    stage_budget_margin_risks: dict[str, list[float]] = defaultdict(list)
+    stage_budget_volatility_risks: dict[str, list[float]] = defaultdict(list)
+    stage_budget_debt_summaries = []
+    stage_budget_selected_ratios = None
+    stage_budget_theoretical = []
     for row in rows:
         runtime_summary = row["runtime_stage_mask"]
         runtime_backend = runtime_backend or runtime_summary.get("backend")
@@ -854,6 +867,39 @@ def evaluate_method(
             stage_risk_actions[stage] += 1
             for ratio, risk in decision.get("risks", {}).items():
                 stage_risk_risks[stage][str(ratio)].append(float(risk))
+        if runtime_summary.get("stage_budget_controller_enabled"):
+            stage_budget_enabled = True
+            stage_budget_controller = (
+                stage_budget_controller or runtime_summary.get("stage_budget_controller")
+            )
+            stage_budget_selected_ratios = (
+                stage_budget_selected_ratios
+                or runtime_summary.get("stage_budget_selected_ratios")
+            )
+            stage_budget_actions.update(runtime_summary.get("stage_budget_actions_by_stage", {}))
+            stage_budget_ratio_tokens.update(runtime_summary.get("stage_budget_ratio_tokens", {}))
+            stage_budget_selected_ratio_actions.update(
+                runtime_summary.get("stage_budget_selected_ratio_actions", {})
+            )
+            stage_budget_decisions.extend(runtime_summary.get("stage_budget_decisions", []))
+            if "stage_budget_theoretical_selected_ratio" in runtime_summary:
+                stage_budget_theoretical.append(
+                    float(runtime_summary["stage_budget_theoretical_selected_ratio"])
+                )
+            if runtime_summary.get("stage_budget_debt_summary"):
+                stage_budget_debt_summaries.append(runtime_summary["stage_budget_debt_summary"])
+            for stage, value in runtime_summary.get(
+                "stage_budget_mean_base_risk_by_stage", {}
+            ).items():
+                stage_budget_base_risks[str(stage)].append(float(value))
+            for stage, value in runtime_summary.get(
+                "stage_budget_mean_margin_risk_by_stage", {}
+            ).items():
+                stage_budget_margin_risks[str(stage)].append(float(value))
+            for stage, value in runtime_summary.get(
+                "stage_budget_mean_volatility_risk_by_stage", {}
+            ).items():
+                stage_budget_volatility_risks[str(stage)].append(float(value))
         stage_tokens.update(runtime_summary["tokens_by_stage"])
         dense_observation_tokens.update(runtime_summary.get("dense_observation_tokens_by_stage", {}))
         masked_tokens.update(runtime_summary.get("masked_tokens_by_stage", {}))
@@ -932,6 +978,60 @@ def evaluate_method(
             ),
             "controller_checkpoint": checkpoint,
             "controller_checkpoint_hash": file_sha256(checkpoint),
+            "method_config_hash": stable_hash(method),
+        }
+    if stage_budget_enabled:
+        debt_values = [
+            float(value[key])
+            for value in stage_budget_debt_summaries
+            for key in ("min", "max", "mean", "final")
+            if key in value
+        ]
+        summary["stage_budget_controller"] = {
+            "enabled": True,
+            "config": stage_budget_controller,
+            "selected_ratios_last": stage_budget_selected_ratios,
+            "actions_by_stage": dict(stage_budget_actions),
+            "selected_ratio_actions": dict(stage_budget_selected_ratio_actions),
+            "ratio_token_distribution": dict(stage_budget_ratio_tokens),
+            "mean_selected_ratio": (
+                sum(stage_budget_theoretical) / len(stage_budget_theoretical)
+                if stage_budget_theoretical
+                else None
+            ),
+            "mean_base_risk_by_stage": {
+                stage: sum(values) / len(values)
+                for stage, values in stage_budget_base_risks.items()
+                if values
+            },
+            "mean_margin_risk_by_stage": {
+                stage: sum(values) / len(values)
+                for stage, values in stage_budget_margin_risks.items()
+                if values
+            },
+            "mean_volatility_risk_by_stage": {
+                stage: sum(values) / len(values)
+                for stage, values in stage_budget_volatility_risks.items()
+                if values
+            },
+            "debt_summary": (
+                {
+                    "min": min(debt_values),
+                    "max": max(debt_values),
+                    "mean": sum(debt_values) / len(debt_values),
+                    "final_mean": (
+                        sum(float(value["final"]) for value in stage_budget_debt_summaries if "final" in value)
+                        / max(
+                            1,
+                            sum(1 for value in stage_budget_debt_summaries if "final" in value),
+                        )
+                    ),
+                }
+                if debt_values
+                else None
+            ),
+            "decision_count": len(stage_budget_decisions),
+            "decision_samples": stage_budget_decisions[:20],
             "method_config_hash": stable_hash(method),
         }
     if "target_pruning_ratio" in method:

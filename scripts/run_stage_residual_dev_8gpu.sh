@@ -9,7 +9,7 @@ CONFIG="${CONFIG:-configs/generated_stage_residual_rasp_v2/stage_residual_dev.ya
 RUN_ROOT="${RUN_ROOT:-runs/09_stage_residual_rasp_v2}"
 LOG_ROOT="${LOG_ROOT:-logs/09_stage_residual_rasp_v2}"
 SOURCE_ROOT="${SOURCE_ROOT:-runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3_t30_math_safe_full}"
-SEEDS="${STAGE_RESIDUAL_SEEDS:-1 2 3}"
+SEEDS="${STAGE_RESIDUAL_SEEDS:-3}"
 METHODS="structured_dense,strict_static_matched_t30,dynamic_global_activation,dynamic_stage_specific_activation,dynamic_stage_residual_025_activation,dynamic_stage_residual_050_activation,dynamic_shuffled_prior_activation"
 
 bash scripts/prepare_stage_residual_rasp_v2.sh
@@ -24,7 +24,7 @@ for seed in ${SEEDS}; do
     "${PYTHON_BIN}" -m src.main_prepare_stage_residual_bank --source-root "${SOURCE_ROOT}" --target-root "${seed_root}"
   fi
   CONFIG="${CONFIG}" RUN_ROOT="${seed_root}" SOURCE_ROOT="${seed_root}" LOG_DIR="${LOG_ROOT}/02_dev/seed_${seed}" \
-    STAGE_SEED="${seed}" DATASETS_OVERRIDE="gsm8k math500" STAGE_FINAL_EVAL_LIMIT=520 STAGE_FINAL_METHODS="${METHODS}" \
+    STAGE_SEED="${seed}" STAGE_FINAL_SEEDS="${seed}" DATASETS_OVERRIDE="gsm8k math500" STAGE_FINAL_EVAL_LIMIT=520 STAGE_FINAL_METHODS="${METHODS}" \
     bash scripts/run_t30_math_safe_priority_suite_8gpu.sh
 done
 

@@ -1892,6 +1892,7 @@ def _adaptive_griffin_method_from_cfg(acfg: dict[str, Any], prompt: dict[str, An
         selection_note=str(acfg.get("selection_note", "")),
         fallback_behavior=str(acfg.get("fallback_behavior", "dense_after_error")),
         stage_risk_controller=deepcopy(acfg.get("stage_risk_controller", {})),
+        stage_budget_controller=deepcopy(acfg.get("stage_budget_controller", {})),
         **_pruning_target_fields(acfg),
     )
 
@@ -2926,7 +2927,15 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     final_shard = _final_shard_from_env()
     output = {}
     dataset_output_dirs = {}
-    seeds = [int(value) for value in profile(cfg).get("final_seeds", [cfg["seed"]])]
+    env_final_seeds = os.environ.get("STAGE_FINAL_SEEDS")
+    if env_final_seeds:
+        seeds = [
+            int(value.strip())
+            for value in env_final_seeds.split(",")
+            if value.strip()
+        ]
+    else:
+        seeds = [int(value) for value in profile(cfg).get("final_seeds", [cfg["seed"]])]
     for dataset_cfg in _final_dataset_configs(cfg):
         tasks = load_tasks(dataset_cfg)
         name = _final_dataset_name(dataset_cfg)

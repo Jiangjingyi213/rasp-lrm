@@ -144,6 +144,18 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
     weight_sparsity_by_module = None
     matched_rasp_reference = None
     target_matched_to_rasp_actual_mlp_pruning = None
+    stage_budget_enabled = False
+    stage_budget_controller = None
+    stage_budget_actions = Counter()
+    stage_budget_ratio_tokens = Counter()
+    stage_budget_selected_ratio_actions = Counter()
+    stage_budget_decisions = []
+    stage_budget_base_risks: dict[str, list[float]] = defaultdict(list)
+    stage_budget_margin_risks: dict[str, list[float]] = defaultdict(list)
+    stage_budget_volatility_risks: dict[str, list[float]] = defaultdict(list)
+    stage_budget_debt_summaries = []
+    stage_budget_selected_ratios = None
+    stage_budget_theoretical = []
     for row in rows:
         runtime = row.get("runtime_stage_mask", {})
         runtime_backend = runtime_backend or runtime.get("backend")
@@ -260,6 +272,32 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         runtime_mask_swap_candidates.update(runtime.get("mask_swap_candidates_by_stage_layer", {}))
         for key, value in runtime.get("mean_mask_jaccard_by_stage_layer", {}).items():
             runtime_mask_jaccards[str(key)].append(float(value))
+        if runtime.get("stage_budget_controller_enabled"):
+            stage_budget_enabled = True
+            stage_budget_controller = stage_budget_controller or runtime.get("stage_budget_controller")
+            stage_budget_selected_ratios = (
+                stage_budget_selected_ratios or runtime.get("stage_budget_selected_ratios")
+            )
+            stage_budget_actions.update(runtime.get("stage_budget_actions_by_stage", {}))
+            stage_budget_ratio_tokens.update(runtime.get("stage_budget_ratio_tokens", {}))
+            stage_budget_selected_ratio_actions.update(
+                runtime.get("stage_budget_selected_ratio_actions", {})
+            )
+            stage_budget_decisions.extend(runtime.get("stage_budget_decisions", []))
+            if "stage_budget_theoretical_selected_ratio" in runtime:
+                stage_budget_theoretical.append(
+                    float(runtime["stage_budget_theoretical_selected_ratio"])
+                )
+            if runtime.get("stage_budget_debt_summary"):
+                stage_budget_debt_summaries.append(runtime["stage_budget_debt_summary"])
+            for stage, value in runtime.get("stage_budget_mean_base_risk_by_stage", {}).items():
+                stage_budget_base_risks[str(stage)].append(float(value))
+            for stage, value in runtime.get("stage_budget_mean_margin_risk_by_stage", {}).items():
+                stage_budget_margin_risks[str(stage)].append(float(value))
+            for stage, value in runtime.get(
+                "stage_budget_mean_volatility_risk_by_stage", {}
+            ).items():
+                stage_budget_volatility_risks[str(stage)].append(float(value))
         stage_tokens.update(runtime.get("tokens_by_stage", {}))
         dense_observation_tokens.update(runtime.get("dense_observation_tokens_by_stage", {}))
         masked_tokens.update(runtime.get("masked_tokens_by_stage", {}))
@@ -436,6 +474,63 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
     if runtime_mask_jaccards:
         summary["adaptive_mean_mask_jaccard_by_stage_layer"] = {
             key: sum(values) / len(values) for key, values in runtime_mask_jaccards.items()
+        }
+    if stage_budget_enabled:
+        debt_values = [
+            float(value[key])
+            for value in stage_budget_debt_summaries
+            for key in ("min", "max", "mean", "final")
+            if key in value
+        ]
+        summary["stage_budget_controller"] = {
+            "enabled": True,
+            "config": stage_budget_controller,
+            "selected_ratios_last": stage_budget_selected_ratios,
+            "actions_by_stage": dict(stage_budget_actions),
+            "selected_ratio_actions": dict(stage_budget_selected_ratio_actions),
+            "ratio_token_distribution": dict(stage_budget_ratio_tokens),
+            "mean_selected_ratio": (
+                sum(stage_budget_theoretical) / len(stage_budget_theoretical)
+                if stage_budget_theoretical
+                else None
+            ),
+            "mean_base_risk_by_stage": {
+                stage: sum(values) / len(values)
+                for stage, values in stage_budget_base_risks.items()
+                if values
+            },
+            "mean_margin_risk_by_stage": {
+                stage: sum(values) / len(values)
+                for stage, values in stage_budget_margin_risks.items()
+                if values
+            },
+            "mean_volatility_risk_by_stage": {
+                stage: sum(values) / len(values)
+                for stage, values in stage_budget_volatility_risks.items()
+                if values
+            },
+            "debt_summary": (
+                {
+                    "min": min(debt_values),
+                    "max": max(debt_values),
+                    "mean": sum(debt_values) / len(debt_values),
+                    "final_mean": (
+                        sum(
+                            float(value["final"])
+                            for value in stage_budget_debt_summaries
+                            if "final" in value
+                        )
+                        / max(
+                            1,
+                            sum(1 for value in stage_budget_debt_summaries if "final" in value),
+                        )
+                    ),
+                }
+                if debt_values
+                else None
+            ),
+            "decision_count": len(stage_budget_decisions),
+            "decision_samples": stage_budget_decisions[:20],
         }
     return summary
 
