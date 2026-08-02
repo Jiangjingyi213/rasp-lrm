@@ -33,7 +33,11 @@ def _metric(row: dict[str, Any] | None, key: str, default: float | None = None) 
     if row is None:
         return default
     value = row.get(key)
-    return None if value is None else float(value)
+    if value is None and key == "protocol_valid_accuracy":
+        value = row.get("accuracy")
+    if value is None:
+        return default
+    return float(value)
 
 
 def _pruning_ok(row: dict[str, Any] | None) -> bool:

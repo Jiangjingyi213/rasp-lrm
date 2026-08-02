@@ -344,6 +344,20 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         "actual_average_mlp_pruning_ratio": sum(actual) / len(actual) if actual else 0.0,
         "actual_pruning_accounting": actual_pruning_accounting or "estimated_from_stage_ratios",
     }
+    protocol_valid = [row for row in rows if bool(row.get("stage_protocol", {}).get("valid", False))]
+    fallback_rows = [row for row in rows if not bool(row.get("stage_protocol", {}).get("valid", False))]
+    summary["protocol_valid_accuracy"] = (
+        sum(int(row.get("correct", False)) for row in protocol_valid) / len(protocol_valid)
+        if protocol_valid
+        else summary["accuracy"]
+    )
+    summary["fallback_accuracy"] = (
+        sum(int(row.get("correct", False)) for row in fallback_rows) / len(fallback_rows)
+        if fallback_rows
+        else None
+    )
+    summary["protocol_valid_problems"] = len(protocol_valid)
+    summary["fallback_problems"] = len(fallback_rows)
     if "target_pruning_ratio" in method:
         target = float(method["target_pruning_ratio"])
         actual_value = float(summary["actual_average_mlp_pruning_ratio"])
