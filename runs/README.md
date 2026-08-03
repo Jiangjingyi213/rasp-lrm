@@ -35,3 +35,10 @@ Follow-up to Phase A after the first budget controller improved accuracy but
 undershot actual pruning. This branch keeps `trajectory_global + activation` and
 only repairs the stage-budget action grid/catch-up strength to re-test at
 33.5%-34.5% actual pruning.
+
+### 08_budget_v3_actual_calibrated
+
+Follow-up to A2 after nominal ratio selection still undershot actual pruning.
+This branch keeps `trajectory_global + activation` and changes only the budget
+controller selection rule so candidate ratios are chosen by estimated realized
+mask sparsity under protected-core constraints.

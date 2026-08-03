@@ -275,6 +275,7 @@ def _phase_a2(
     baseline_method: str,
     candidate_methods: tuple[str, ...],
     mode: str,
+    phase_label: str = "A2_budget_v2",
 ) -> dict[str, Any]:
     candidates = []
     for method_name in candidate_methods:
@@ -356,7 +357,7 @@ def _phase_a2(
             ),
         )
     return {
-        "phase": f"A2_budget_v2_{mode}",
+        "phase": f"{phase_label}_{mode}",
         "phase_passed": bool(passing),
         "selection_mode": mode,
         "seed": seed,
@@ -391,6 +392,7 @@ def main() -> None:
     parser.add_argument("--datasets", nargs="+", default=list(DATASETS))
     parser.add_argument("--baseline-method", default="dynamic_global_activation_fixed_t30")
     parser.add_argument("--candidate-methods", nargs="+", default=[])
+    parser.add_argument("--phase-label", default="A2_budget_v2")
     args = parser.parse_args()
 
     rows = _summary_rows(*(Path(value) for value in args.reference_root), Path(args.phase_root))
@@ -408,6 +410,7 @@ def main() -> None:
             baseline_method=str(args.baseline_method),
             candidate_methods=tuple(str(value) for value in args.candidate_methods),
             mode=str(args.selection_mode),
+            phase_label=str(args.phase_label),
         )
     else:
         selection = _phase_c(rows, args.nondegrade_tolerance)

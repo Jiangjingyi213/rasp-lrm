@@ -12,6 +12,10 @@ them:
 - `budget_v2_dev.yaml`: Phase A2, selected repaired budget on seed3 dev.
 - `budget_v2_seed42.yaml`: Phase A2, frozen candidate confirmation on seed42 dev.
 - `budget_v2_full.template.yaml`: Phase A2, frozen full-eval template.
+- `budget_v3_smoke.yaml`: Phase A3, actual-calibrated budget candidates on 128+128 smoke.
+- `budget_v3_dev.yaml`: Phase A3, selected actual-calibrated budget on seed3 dev.
+- `budget_v3_seed42.yaml`: Phase A3, frozen actual-calibrated confirmation on seed42 dev.
+- `budget_v3_full.template.yaml`: Phase A3, frozen full-eval template.
 
 All new results should live under `runs/10_stage_budget_output_aware_v1/`; logs
 mirror to `logs/10_stage_budget_output_aware_v1/`.

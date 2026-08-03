@@ -19,6 +19,10 @@ mkdir -p \
   "${RUN_ROOT}/07_budget_v2_grid_repair/01_dev_seed3" \
   "${RUN_ROOT}/07_budget_v2_grid_repair/02_seed42_confirmation" \
   "${RUN_ROOT}/07_budget_v2_grid_repair/03_frozen_full" \
+  "${RUN_ROOT}/08_budget_v3_actual_calibrated/00_smoke_actual_pruning" \
+  "${RUN_ROOT}/08_budget_v3_actual_calibrated/01_dev_seed3" \
+  "${RUN_ROOT}/08_budget_v3_actual_calibrated/02_seed42_confirmation" \
+  "${RUN_ROOT}/08_budget_v3_actual_calibrated/03_frozen_full" \
   "${LOG_ROOT}/00_preflight" \
   "${LOG_ROOT}/01_budget_only_dev" \
   "${LOG_ROOT}/02_output_aware_only_dev" \
@@ -28,7 +32,11 @@ mkdir -p \
   "${LOG_ROOT}/07_budget_v2_grid_repair/00_smoke_actual_pruning" \
   "${LOG_ROOT}/07_budget_v2_grid_repair/01_dev_seed3" \
   "${LOG_ROOT}/07_budget_v2_grid_repair/02_seed42_confirmation" \
-  "${LOG_ROOT}/07_budget_v2_grid_repair/03_frozen_full"
+  "${LOG_ROOT}/07_budget_v2_grid_repair/03_frozen_full" \
+  "${LOG_ROOT}/08_budget_v3_actual_calibrated/00_smoke_actual_pruning" \
+  "${LOG_ROOT}/08_budget_v3_actual_calibrated/01_dev_seed3" \
+  "${LOG_ROOT}/08_budget_v3_actual_calibrated/02_seed42_confirmation" \
+  "${LOG_ROOT}/08_budget_v3_actual_calibrated/03_frozen_full"
 
 for dir in \
   "${RUN_ROOT}/00_existing_evidence_audit" \
@@ -41,7 +49,11 @@ for dir in \
   "${RUN_ROOT}/07_budget_v2_grid_repair/00_smoke_actual_pruning" \
   "${RUN_ROOT}/07_budget_v2_grid_repair/01_dev_seed3" \
   "${RUN_ROOT}/07_budget_v2_grid_repair/02_seed42_confirmation" \
-  "${RUN_ROOT}/07_budget_v2_grid_repair/03_frozen_full"; do
+  "${RUN_ROOT}/07_budget_v2_grid_repair/03_frozen_full" \
+  "${RUN_ROOT}/08_budget_v3_actual_calibrated/00_smoke_actual_pruning" \
+  "${RUN_ROOT}/08_budget_v3_actual_calibrated/01_dev_seed3" \
+  "${RUN_ROOT}/08_budget_v3_actual_calibrated/02_seed42_confirmation" \
+  "${RUN_ROOT}/08_budget_v3_actual_calibrated/03_frozen_full"; do
   if [[ ! -f "${dir}/README.md" ]]; then
     cat > "${dir}/README.md" <<EOF
 # $(basename "${dir}")
@@ -98,6 +110,18 @@ New optimization line focused on two mechanisms: online stage budget scheduling
 under a 34% actual-pruning target, and output-aware channel scoring. Results are
 kept in `runs/10_stage_budget_output_aware_v1/`; logs mirror to
 `logs/10_stage_budget_output_aware_v1/`.
+EOF
+fi
+
+if ! grep -q "08_budget_v3_actual_calibrated" "${RUN_ROOT}/README.md" 2>/dev/null; then
+  cat >> "${RUN_ROOT}/README.md" <<'EOF'
+
+### 08_budget_v3_actual_calibrated
+
+Follow-up to A2 after nominal ratio selection still undershot actual pruning.
+This branch keeps `trajectory_global + activation` and changes only the budget
+controller selection rule so candidate ratios are chosen by estimated realized
+mask sparsity under protected-core constraints.
 EOF
 fi
 

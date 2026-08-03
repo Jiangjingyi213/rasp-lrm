@@ -971,6 +971,12 @@ class SafeDynamicStageGriffinRuntime:
             "final": 0.15,
         }
         stage_risk_bias.update({stage: float(value) for stage, value in cfg.get("stage_risk_bias", {}).items()})
+        ratio_selection_mode = str(cfg.get("ratio_selection_mode", "nominal"))
+        if ratio_selection_mode not in {"nominal", "estimated_actual"}:
+            raise ValueError(
+                "stage_budget_controller.ratio_selection_mode must be "
+                "'nominal' or 'estimated_actual'"
+            )
         return {
             "enabled": bool(cfg.get("enabled", False)),
             "target_actual_pruning": target,
@@ -984,6 +990,7 @@ class SafeDynamicStageGriffinRuntime:
             "budget_debt_gain": float(cfg.get("budget_debt_gain", 0.75)),
             "budget_catchup_threshold": float(cfg.get("budget_catchup_threshold", 0.015)),
             "risk_ratio_penalty": float(cfg.get("risk_ratio_penalty", 0.10)),
+            "ratio_selection_mode": ratio_selection_mode,
         }
 
     def _initial_budget_ratio(self, stage: str) -> float:
@@ -1234,6 +1241,33 @@ class SafeDynamicStageGriffinRuntime:
             "volatility_risk": volatility_risk,
         }
 
+    def _estimate_actual_pruning_for_ratio(self, stage: str, ratio: float) -> float:
+        """Estimate realized mask sparsity after protected-core constraints."""
+
+        layer_values: list[float] = []
+        for layer_id in self.bank["layers"]:
+            entry = self.bank["policies"][self.prior_policy][stage][layer_id]
+            prior = entry["metric"].float()
+            protected = _topk_mask(prior, self.protected_core_ratios[stage])
+            channels = int(prior.numel())
+            prune_count = min(
+                channels - 1,
+                max(0, int(round(channels * float(ratio)))),
+                int((~protected).sum().item()),
+            )
+            layer_values.append(float(prune_count) / float(channels) if channels else 0.0)
+        return sum(layer_values) / len(layer_values) if layer_values else 0.0
+
+    def _budget_candidate_actual_estimates(
+        self,
+        stage: str,
+        candidates: list[float],
+    ) -> dict[float, float]:
+        return {
+            float(ratio): self._estimate_actual_pruning_for_ratio(stage, float(ratio))
+            for ratio in candidates
+        }
+
     def _choose_budget_ratio(self, stage: str, layer_id: int) -> dict[str, Any]:
         candidates = self._stage_budget_candidates(stage)
         if not candidates:
@@ -1252,7 +1286,24 @@ class SafeDynamicStageGriffinRuntime:
             desired -= float(self.stage_budget_controller["risk_ratio_penalty"])
         if debt > float(self.stage_budget_controller["budget_catchup_threshold"]) and nonzero_candidates:
             desired = max(desired, min(nonzero_candidates, key=lambda value: abs(value - target)))
-        selected = min(candidates, key=lambda value: (abs(value - desired), -value if debt >= 0.0 else value))
+        ratio_selection_mode = str(self.stage_budget_controller["ratio_selection_mode"])
+        if ratio_selection_mode not in {"nominal", "estimated_actual"}:
+            raise ValueError(f"Unknown stage budget ratio_selection_mode: {ratio_selection_mode}")
+        actual_estimates: dict[float, float] = {}
+        if ratio_selection_mode == "estimated_actual":
+            actual_estimates = self._budget_candidate_actual_estimates(stage, candidates)
+            selected = min(
+                candidates,
+                key=lambda value: (
+                    abs(actual_estimates.get(float(value), 0.0) - desired),
+                    -value if debt >= 0.0 else value,
+                ),
+            )
+        else:
+            selected = min(
+                candidates,
+                key=lambda value: (abs(value - desired), -value if debt >= 0.0 else value),
+            )
         if (
             risks["base_risk"] >= float(self.stage_budget_controller["risk_dense_threshold"])
             and debt <= 0.0
@@ -1260,14 +1311,37 @@ class SafeDynamicStageGriffinRuntime:
         ):
             selected = 0.0
         if debt > float(self.stage_budget_controller["budget_catchup_threshold"]) and nonzero_candidates:
-            selected = max(selected, min(nonzero_candidates, key=lambda value: abs(value - target)))
+            if ratio_selection_mode == "estimated_actual":
+                selected = max(
+                    selected,
+                    min(
+                        nonzero_candidates,
+                        key=lambda value: abs(actual_estimates.get(float(value), 0.0) - target),
+                    ),
+                )
+            else:
+                selected = max(selected, min(nonzero_candidates, key=lambda value: abs(value - target)))
         return {
             "selected_ratio": float(selected),
             "target_actual_pruning": target,
             "achieved_actual_pruning": achieved,
             "budget_debt": debt,
             "desired_ratio": desired,
+            "desired_actual_pruning": (
+                desired if ratio_selection_mode == "estimated_actual" else None
+            ),
             "candidate_ratios": candidates,
+            "ratio_selection_mode": ratio_selection_mode,
+            "candidate_actual_pruning_estimates": {
+                f"{ratio:.2f}": actual
+                for ratio, actual in sorted(actual_estimates.items())
+            },
+            "selected_estimated_actual_pruning": (
+                actual_estimates.get(float(selected))
+                if ratio_selection_mode == "estimated_actual"
+                else None
+            ),
+            "actual_calibrated_debt": debt,
             **risks,
         }
 
@@ -1537,6 +1611,9 @@ class SafeDynamicStageGriffinRuntime:
                         ],
                         "risk_ratio_penalty": self.stage_budget_controller[
                             "risk_ratio_penalty"
+                        ],
+                        "ratio_selection_mode": self.stage_budget_controller[
+                            "ratio_selection_mode"
                         ],
                     },
                     "stage_budget_selected_ratios": dict(self._budget_selected_ratios),

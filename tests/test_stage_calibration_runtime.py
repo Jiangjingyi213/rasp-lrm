@@ -398,6 +398,59 @@ class StageCalibrationRuntimeTest(unittest.TestCase):
         runtime._actual_pruning_weighted_sum = 0.0
         catchup = runtime._choose_budget_ratio("reasoning", 0)
         self.assertGreaterEqual(catchup["selected_ratio"], 0.3)
+        self.assertEqual(catchup["ratio_selection_mode"], "nominal")
+
+    def test_stage_budget_estimated_actual_matches_realized_mask_sparsity(self) -> None:
+        runtime = SafeDynamicStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={stage: 0.75 for stage in STAGES},
+            protected_core_ratios={stage: 0.5 for stage in STAGES},
+            runtime_weight=1.0,
+            prior_weight=0.0,
+            stage_budget_controller={
+                "enabled": True,
+                "target_actual_pruning": 0.34,
+                "decision_window_tokens": 1,
+                "action_ratios": [0.0, 0.25, 0.5, 0.75],
+                "stage_ratio_bounds": {stage: [0.0, 0.75] for stage in STAGES},
+                "ratio_selection_mode": "estimated_actual",
+            },
+        )
+        runtime.set_stage("setup")
+        mask = runtime.observe_or_mask(0, torch.tensor([[[0.0, 1.0, 2.0, 3.0]]]))
+        self.assertIsNotNone(mask)
+        realized = 1.0 - float(mask.float().mean().item())
+        decision = runtime.summary()["stage_budget_decisions"][0]
+        self.assertEqual(decision["ratio_selection_mode"], "estimated_actual")
+        self.assertAlmostEqual(
+            decision["candidate_actual_pruning_estimates"]["0.75"],
+            realized,
+        )
+        self.assertAlmostEqual(decision["selected_estimated_actual_pruning"], realized)
+        self.assertAlmostEqual(realized, 0.5)
+
+    def test_stage_budget_estimated_actual_catches_up_on_positive_debt(self) -> None:
+        runtime = SafeDynamicStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={stage: 0.3 for stage in STAGES},
+            protected_core_ratios={stage: 0.5 for stage in STAGES},
+            runtime_weight=1.0,
+            prior_weight=0.0,
+            stage_budget_controller={
+                "enabled": True,
+                "target_actual_pruning": 0.34,
+                "decision_window_tokens": 1,
+                "action_ratios": [0.0, 0.3, 0.5, 0.75],
+                "stage_ratio_bounds": {stage: [0.0, 0.75] for stage in STAGES},
+                "budget_debt_gain": 1.25,
+                "ratio_selection_mode": "estimated_actual",
+            },
+        )
+        runtime._actual_pruning_weighted_sum = 0.0
+        runtime._actual_pruning_denominator = 100
+        catchup = runtime._choose_budget_ratio("reasoning", 0)
+        self.assertGreaterEqual(catchup["selected_estimated_actual_pruning"], 0.34)
+        self.assertGreaterEqual(catchup["selected_ratio"], 0.5)
 
     def test_safe_dynamic_continuity_limits_optional_swaps(self) -> None:
         runtime = SafeDynamicStageGriffinRuntime(
