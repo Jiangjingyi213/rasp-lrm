@@ -23,6 +23,10 @@ mkdir -p \
   "${RUN_ROOT}/08_budget_v3_actual_calibrated/01_dev_seed3" \
   "${RUN_ROOT}/08_budget_v3_actual_calibrated/02_seed42_confirmation" \
   "${RUN_ROOT}/08_budget_v3_actual_calibrated/03_frozen_full" \
+  "${RUN_ROOT}/09_budget_v4_perf_guarded_32p/00_smoke_32p" \
+  "${RUN_ROOT}/09_budget_v4_perf_guarded_32p/01_dev_seed3" \
+  "${RUN_ROOT}/09_budget_v4_perf_guarded_32p/02_seed42_confirmation" \
+  "${RUN_ROOT}/09_budget_v4_perf_guarded_32p/03_frozen_full" \
   "${LOG_ROOT}/00_preflight" \
   "${LOG_ROOT}/01_budget_only_dev" \
   "${LOG_ROOT}/02_output_aware_only_dev" \
@@ -36,7 +40,11 @@ mkdir -p \
   "${LOG_ROOT}/08_budget_v3_actual_calibrated/00_smoke_actual_pruning" \
   "${LOG_ROOT}/08_budget_v3_actual_calibrated/01_dev_seed3" \
   "${LOG_ROOT}/08_budget_v3_actual_calibrated/02_seed42_confirmation" \
-  "${LOG_ROOT}/08_budget_v3_actual_calibrated/03_frozen_full"
+  "${LOG_ROOT}/08_budget_v3_actual_calibrated/03_frozen_full" \
+  "${LOG_ROOT}/09_budget_v4_perf_guarded_32p/00_smoke_32p" \
+  "${LOG_ROOT}/09_budget_v4_perf_guarded_32p/01_dev_seed3" \
+  "${LOG_ROOT}/09_budget_v4_perf_guarded_32p/02_seed42_confirmation" \
+  "${LOG_ROOT}/09_budget_v4_perf_guarded_32p/03_frozen_full"
 
 for dir in \
   "${RUN_ROOT}/00_existing_evidence_audit" \
@@ -53,7 +61,11 @@ for dir in \
   "${RUN_ROOT}/08_budget_v3_actual_calibrated/00_smoke_actual_pruning" \
   "${RUN_ROOT}/08_budget_v3_actual_calibrated/01_dev_seed3" \
   "${RUN_ROOT}/08_budget_v3_actual_calibrated/02_seed42_confirmation" \
-  "${RUN_ROOT}/08_budget_v3_actual_calibrated/03_frozen_full"; do
+  "${RUN_ROOT}/08_budget_v3_actual_calibrated/03_frozen_full" \
+  "${RUN_ROOT}/09_budget_v4_perf_guarded_32p/00_smoke_32p" \
+  "${RUN_ROOT}/09_budget_v4_perf_guarded_32p/01_dev_seed3" \
+  "${RUN_ROOT}/09_budget_v4_perf_guarded_32p/02_seed42_confirmation" \
+  "${RUN_ROOT}/09_budget_v4_perf_guarded_32p/03_frozen_full"; do
   if [[ ! -f "${dir}/README.md" ]]; then
     cat > "${dir}/README.md" <<EOF
 # $(basename "${dir}")
@@ -122,6 +134,17 @@ Follow-up to A2 after nominal ratio selection still undershot actual pruning.
 This branch keeps `trajectory_global + activation` and changes only the budget
 controller selection rule so candidate ratios are chosen by estimated realized
 mask sparsity under protected-core constraints.
+EOF
+fi
+
+if ! grep -q "09_budget_v4_perf_guarded_32p" "${RUN_ROOT}/README.md" 2>/dev/null; then
+  cat >> "${RUN_ROOT}/README.md" <<'EOF'
+
+### 09_budget_v4_perf_guarded_32p
+
+Performance-guarded follow-up to v3. This branch keeps
+`trajectory_global + activation + estimated_actual` and targets 32.0%-33.5%
+actual pruning instead of forcing the full 34% T30 target.
 EOF
 fi
 

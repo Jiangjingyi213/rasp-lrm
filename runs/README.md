@@ -42,3 +42,9 @@ Follow-up to A2 after nominal ratio selection still undershot actual pruning.
 This branch keeps `trajectory_global + activation` and changes only the budget
 controller selection rule so candidate ratios are chosen by estimated realized
 mask sparsity under protected-core constraints.
+
+### 09_budget_v4_perf_guarded_32p
+
+Performance-guarded follow-up to v3. This branch keeps
+`trajectory_global + activation + estimated_actual` and targets 32.0%-33.5%
+actual pruning instead of forcing the full 34% T30 target.

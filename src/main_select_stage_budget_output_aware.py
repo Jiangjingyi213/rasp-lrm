@@ -42,9 +42,14 @@ def _metric(row: dict[str, Any] | None, key: str, default: float | None = None) 
     return float(value)
 
 
-def _pruning_ok(row: dict[str, Any] | None) -> bool:
+def _pruning_ok(
+    row: dict[str, Any] | None,
+    *,
+    target_min: float = TARGET_MIN,
+    target_max: float = TARGET_MAX,
+) -> bool:
     value = _metric(row, "actual_average_mlp_pruning_ratio")
-    return value is not None and TARGET_MIN <= value <= TARGET_MAX
+    return value is not None and target_min <= value <= target_max
 
 
 def _nondegrade(
@@ -214,14 +219,25 @@ def _candidate_dataset_result(
     seed: int,
     baseline_method: str,
     candidate_method: str,
+    target_min: float = TARGET_MIN,
+    target_max: float = TARGET_MAX,
+    target_center: float = TARGET_CENTER,
+    performance_reference_method: str | None = None,
 ) -> dict[str, Any]:
     baseline = rows.get((dataset, baseline_method, seed))
     candidate = rows.get((dataset, candidate_method, seed))
+    performance_reference = (
+        rows.get((dataset, performance_reference_method, seed))
+        if performance_reference_method
+        else None
+    )
     actual = _metric(candidate, "actual_average_mlp_pruning_ratio")
     accuracy = _metric(candidate, "accuracy")
     protocol_accuracy = _metric(candidate, "protocol_valid_accuracy")
     baseline_accuracy = _metric(baseline, "accuracy")
     baseline_protocol_accuracy = _metric(baseline, "protocol_valid_accuracy")
+    reference_accuracy = _metric(performance_reference, "accuracy")
+    reference_protocol_accuracy = _metric(performance_reference, "protocol_valid_accuracy")
     fallback = _metric(candidate, "fallback_rate")
     baseline_fallback = _metric(baseline, "fallback_rate")
     truncation = _metric(candidate, "truncation_rate")
@@ -233,13 +249,20 @@ def _candidate_dataset_result(
         "candidate_method": candidate_method,
         "summary_found": candidate is not None,
         "baseline_found": baseline is not None,
+        "performance_reference_method": performance_reference_method,
+        "performance_reference_found": (
+            performance_reference is not None if performance_reference_method else None
+        ),
         "actual_pruning": actual,
         "target_pruning_range_passed": bool(
-            actual is not None and TARGET_MIN <= actual <= TARGET_MAX
+            actual is not None and target_min <= actual <= target_max
         ),
         "target_pruning_abs_gap": (
-            abs(actual - TARGET_CENTER) if actual is not None else None
+            abs(actual - target_center) if actual is not None else None
         ),
+        "target_pruning_min": target_min,
+        "target_pruning_max": target_max,
+        "target_pruning_center": target_center,
         "accuracy": accuracy,
         "protocol_valid_accuracy": protocol_accuracy,
         "accuracy_delta_vs_baseline": (
@@ -250,6 +273,16 @@ def _candidate_dataset_result(
         "protocol_valid_accuracy_delta_vs_baseline": (
             protocol_accuracy - baseline_protocol_accuracy
             if protocol_accuracy is not None and baseline_protocol_accuracy is not None
+            else None
+        ),
+        "accuracy_delta_vs_performance_reference": (
+            accuracy - reference_accuracy
+            if accuracy is not None and reference_accuracy is not None
+            else None
+        ),
+        "protocol_valid_accuracy_delta_vs_performance_reference": (
+            protocol_accuracy - reference_protocol_accuracy
+            if protocol_accuracy is not None and reference_protocol_accuracy is not None
             else None
         ),
         "fallback_rate": fallback,
@@ -276,6 +309,13 @@ def _phase_a2(
     candidate_methods: tuple[str, ...],
     mode: str,
     phase_label: str = "A2_budget_v2",
+    target_min: float = TARGET_MIN,
+    target_max: float = TARGET_MAX,
+    target_center: float = TARGET_CENTER,
+    performance_reference_method: str | None = None,
+    max_performance_reference_accuracy_drop: float | None = None,
+    max_fallback_delta: float | None = None,
+    max_truncation_delta: float | None = None,
 ) -> dict[str, Any]:
     candidates = []
     for method_name in candidate_methods:
@@ -286,6 +326,10 @@ def _phase_a2(
                 seed=seed,
                 baseline_method=baseline_method,
                 candidate_method=method_name,
+                target_min=target_min,
+                target_max=target_max,
+                target_center=target_center,
+                performance_reference_method=performance_reference_method,
             )
             for dataset in datasets
         ]
@@ -297,15 +341,43 @@ def _phase_a2(
             row["accuracy_delta_vs_baseline"] for row in dataset_results
         )
         avg_target_gap = _mean(row["target_pruning_abs_gap"] for row in dataset_results)
-        max_fallback_delta = _max_value(row["fallback_delta_vs_baseline"] for row in dataset_results)
-        max_truncation_delta = _max_value(
+        observed_max_fallback_delta = _max_value(
+            row["fallback_delta_vs_baseline"] for row in dataset_results
+        )
+        observed_max_truncation_delta = _max_value(
             row["truncation_delta_vs_baseline"] for row in dataset_results
         )
+        avg_reference_delta = _mean(
+            row["accuracy_delta_vs_performance_reference"] for row in dataset_results
+        )
+        reference_ok = True
+        if max_performance_reference_accuracy_drop is not None:
+            reference_ok = bool(
+                avg_reference_delta is not None
+                and avg_reference_delta >= -float(max_performance_reference_accuracy_drop)
+            )
+        fallback_ok = bool(
+            max_fallback_delta is None
+            or (
+                observed_max_fallback_delta is not None
+                and observed_max_fallback_delta <= float(max_fallback_delta)
+            )
+        )
+        truncation_ok = bool(
+            max_truncation_delta is None
+            or (
+                observed_max_truncation_delta is not None
+                and observed_max_truncation_delta <= float(max_truncation_delta)
+            )
+        )
         if mode in {"smoke", "confirm"}:
-            passed = target_ok
+            passed = bool(target_ok and reference_ok and fallback_ok and truncation_ok)
         else:
             passed = bool(
                 target_ok
+                and reference_ok
+                and fallback_ok
+                and truncation_ok
                 and avg_accuracy_delta is not None
                 and avg_accuracy_delta >= 0.01
                 and all(
@@ -313,10 +385,10 @@ def _phase_a2(
                     and row["accuracy_delta_vs_baseline"] >= -0.005
                     for row in dataset_results
                 )
-                and max_fallback_delta is not None
-                and max_fallback_delta <= 0.01
-                and max_truncation_delta is not None
-                and max_truncation_delta <= 0.01
+                and observed_max_fallback_delta is not None
+                and observed_max_fallback_delta <= 0.01
+                and observed_max_truncation_delta is not None
+                and observed_max_truncation_delta <= 0.01
             )
         candidates.append(
             {
@@ -325,9 +397,10 @@ def _phase_a2(
                 "target_pruning_range_passed": target_ok,
                 "avg_protocol_valid_accuracy": avg_protocol,
                 "avg_accuracy_delta_vs_baseline": avg_accuracy_delta,
+                "avg_accuracy_delta_vs_performance_reference": avg_reference_delta,
                 "avg_target_pruning_abs_gap": avg_target_gap,
-                "max_fallback_delta_vs_baseline": max_fallback_delta,
-                "max_truncation_delta_vs_baseline": max_truncation_delta,
+                "max_fallback_delta_vs_baseline": observed_max_fallback_delta,
+                "max_truncation_delta_vs_baseline": observed_max_truncation_delta,
                 "datasets": dataset_results,
             }
         )
@@ -363,6 +436,13 @@ def _phase_a2(
         "seed": seed,
         "datasets": list(datasets),
         "baseline_method": baseline_method,
+        "target_min": target_min,
+        "target_max": target_max,
+        "target_center": target_center,
+        "performance_reference_method": performance_reference_method,
+        "max_performance_reference_accuracy_drop": max_performance_reference_accuracy_drop,
+        "max_fallback_delta": max_fallback_delta,
+        "max_truncation_delta": max_truncation_delta,
         "selected_candidate_method": selected["method"] if selected else None,
         "selected_candidate_passed": bool(selected and selected["passed"]),
         "selected_for_diagnosis_only": bool(selected and not selected["passed"]),
@@ -393,6 +473,13 @@ def main() -> None:
     parser.add_argument("--baseline-method", default="dynamic_global_activation_fixed_t30")
     parser.add_argument("--candidate-methods", nargs="+", default=[])
     parser.add_argument("--phase-label", default="A2_budget_v2")
+    parser.add_argument("--target-min", type=float, default=TARGET_MIN)
+    parser.add_argument("--target-max", type=float, default=TARGET_MAX)
+    parser.add_argument("--target-center", type=float, default=TARGET_CENTER)
+    parser.add_argument("--performance-reference-method", default=None)
+    parser.add_argument("--max-performance-reference-accuracy-drop", type=float, default=None)
+    parser.add_argument("--max-fallback-delta", type=float, default=None)
+    parser.add_argument("--max-truncation-delta", type=float, default=None)
     args = parser.parse_args()
 
     rows = _summary_rows(*(Path(value) for value in args.reference_root), Path(args.phase_root))
@@ -411,6 +498,17 @@ def main() -> None:
             candidate_methods=tuple(str(value) for value in args.candidate_methods),
             mode=str(args.selection_mode),
             phase_label=str(args.phase_label),
+            target_min=float(args.target_min),
+            target_max=float(args.target_max),
+            target_center=float(args.target_center),
+            performance_reference_method=(
+                str(args.performance_reference_method)
+                if args.performance_reference_method
+                else None
+            ),
+            max_performance_reference_accuracy_drop=args.max_performance_reference_accuracy_drop,
+            max_fallback_delta=args.max_fallback_delta,
+            max_truncation_delta=args.max_truncation_delta,
         )
     else:
         selection = _phase_c(rows, args.nondegrade_tolerance)
