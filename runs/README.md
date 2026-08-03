@@ -28,3 +28,10 @@ New optimization line focused on two mechanisms: online stage budget scheduling
 under a 34% actual-pruning target, and output-aware channel scoring. Results are
 kept in `runs/10_stage_budget_output_aware_v1/`; logs mirror to
 `logs/10_stage_budget_output_aware_v1/`.
+
+### 07_budget_v2_grid_repair
+
+Follow-up to Phase A after the first budget controller improved accuracy but
+undershot actual pruning. This branch keeps `trajectory_global + activation` and
+only repairs the stage-budget action grid/catch-up strength to re-test at
+33.5%-34.5% actual pruning.

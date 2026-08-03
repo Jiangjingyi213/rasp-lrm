@@ -15,12 +15,20 @@ mkdir -p \
   "${RUN_ROOT}/04_seed42_confirmation" \
   "${RUN_ROOT}/05_frozen_full" \
   "${RUN_ROOT}/06_figures_tables" \
+  "${RUN_ROOT}/07_budget_v2_grid_repair/00_smoke_actual_pruning" \
+  "${RUN_ROOT}/07_budget_v2_grid_repair/01_dev_seed3" \
+  "${RUN_ROOT}/07_budget_v2_grid_repair/02_seed42_confirmation" \
+  "${RUN_ROOT}/07_budget_v2_grid_repair/03_frozen_full" \
   "${LOG_ROOT}/00_preflight" \
   "${LOG_ROOT}/01_budget_only_dev" \
   "${LOG_ROOT}/02_output_aware_only_dev" \
   "${LOG_ROOT}/03_combined_dev" \
   "${LOG_ROOT}/04_seed42_confirmation" \
-  "${LOG_ROOT}/05_frozen_full"
+  "${LOG_ROOT}/05_frozen_full" \
+  "${LOG_ROOT}/07_budget_v2_grid_repair/00_smoke_actual_pruning" \
+  "${LOG_ROOT}/07_budget_v2_grid_repair/01_dev_seed3" \
+  "${LOG_ROOT}/07_budget_v2_grid_repair/02_seed42_confirmation" \
+  "${LOG_ROOT}/07_budget_v2_grid_repair/03_frozen_full"
 
 for dir in \
   "${RUN_ROOT}/00_existing_evidence_audit" \
@@ -29,7 +37,11 @@ for dir in \
   "${RUN_ROOT}/03_combined_dev" \
   "${RUN_ROOT}/04_seed42_confirmation" \
   "${RUN_ROOT}/05_frozen_full" \
-  "${RUN_ROOT}/06_figures_tables"; do
+  "${RUN_ROOT}/06_figures_tables" \
+  "${RUN_ROOT}/07_budget_v2_grid_repair/00_smoke_actual_pruning" \
+  "${RUN_ROOT}/07_budget_v2_grid_repair/01_dev_seed3" \
+  "${RUN_ROOT}/07_budget_v2_grid_repair/02_seed42_confirmation" \
+  "${RUN_ROOT}/07_budget_v2_grid_repair/03_frozen_full"; do
   if [[ ! -f "${dir}/README.md" ]]; then
     cat > "${dir}/README.md" <<EOF
 # $(basename "${dir}")
