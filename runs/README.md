@@ -48,3 +48,9 @@ mask sparsity under protected-core constraints.
 Performance-guarded follow-up to v3. This branch keeps
 `trajectory_global + activation + estimated_actual` and targets 32.0%-33.5%
 actual pruning instead of forcing the full 34% T30 target.
+
+### 10_budget_v41_stage_lift_32p
+
+Small stage-budget lift after v4 smoke landed just below 32% actual pruning.
+This branch keeps the same mainline mechanism and raises only stage floor ratios
+and budget pressure, with v4 mild used as the immediate performance reference.

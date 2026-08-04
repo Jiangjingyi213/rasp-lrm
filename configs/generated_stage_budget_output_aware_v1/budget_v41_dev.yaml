@@ -1,0 +1,141 @@
+seed: 3
+
+workflow:
+  profile: pilot
+  root: runs/10_stage_budget_output_aware_v1/10_budget_v41_stage_lift_32p/01_dev_seed3/seed_{seed}
+
+stages: [setup, reasoning, verify, final]
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float32
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  ordinary: {use_chat_template: true, enable_thinking: true, answer_format: boxed}
+  structured:
+    use_chat_template: true
+    enable_thinking: true
+    explicit_stage_protocol: true
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
+
+generation: {max_input_tokens: 4096, max_new_tokens: 16384, temperature: 0.6, top_p: 0.95, top_k: 20}
+calibration_pool:
+  allowed_sources: ["*"]
+  excluded_sources: [GSM8k, GSM8K, MATH, Omni-MATH, amc_aime, cn_k12]
+selection: {difficulty_filter: any_correct}
+calibration: {forward_chunk_tokens: 1024}
+masks: {metric: WIFV, structure: UL-UM, ratios: [0.00, 0.10, 0.15, 0.20], c4_samples: 0, bias_compensation: true}
+
+adaptive_griffin:
+  enabled: true
+  policy: calibrated_stage_safe_dynamic_griffin
+  score_mode: activation
+  target_pruning_ratio: 0.33
+  min_target_pruning_ratio: 0.320
+  max_target_pruning_ratio: 0.340
+  target_pruning_label: t33p_stage_lift
+  runtime_weight: 0.25
+  prior_weight: 0.75
+  prior_policy: trajectory_global
+  warmup_tokens: {setup: 0, reasoning: 16, verify: 16, final: 0}
+  stage_ratios: {setup: 0.48, reasoning: 0.44, verify: 0.40, final: 0.28}
+  protected_core_ratios: {setup: 0.35, reasoning: 0.40, verify: 0.45, final: 0.45}
+  refresh_intervals: {setup: 192, reasoning: 192, verify: 192, final: 0}
+  window_tokens: {setup: 192, reasoning: 192, verify: 192, final: 1}
+  bias_compensation: true
+  backend: logical_mask
+  variants:
+    - method_name: dynamic_global_activation_budgeted_v4_mild_32p
+      variant_role: phase_a4_perf_reference_mild_32p
+      prior_policy: trajectory_global
+      score_mode: activation
+      target_pruning_ratio: 0.325
+      min_target_pruning_ratio: 0.320
+      max_target_pruning_ratio: 0.335
+      target_pruning_label: t32p_perf_guarded
+      stage_ratios: {setup: 0.48, reasoning: 0.44, verify: 0.40, final: 0.24}
+      stage_budget_controller:
+        enabled: true
+        target_actual_pruning: 0.325
+        decision_window_tokens: 128
+        action_ratios: [0.00, 0.20, 0.24, 0.30, 0.32, 0.34, 0.36, 0.38, 0.40, 0.44, 0.48]
+        stage_ratio_bounds:
+          setup: [0.20, 0.48]
+          reasoning: [0.30, 0.44]
+          verify: [0.30, 0.40]
+          final: [0.20, 0.24]
+        budget_debt_gain: 1.10
+        budget_catchup_threshold: 0.004
+        risk_ratio_penalty: 0.025
+        ratio_selection_mode: estimated_actual
+    - method_name: dynamic_global_activation_budgeted_v41_stage_lift_32p
+      variant_role: phase_a41_stage_lift_32p
+      prior_policy: trajectory_global
+      score_mode: activation
+      stage_budget_controller:
+        enabled: true
+        target_actual_pruning: 0.33
+        decision_window_tokens: 128
+        action_ratios: [0.00, 0.24, 0.28, 0.30, 0.32, 0.34, 0.36, 0.38, 0.40, 0.44, 0.48]
+        stage_ratio_bounds:
+          setup: [0.24, 0.48]
+          reasoning: [0.32, 0.44]
+          verify: [0.32, 0.40]
+          final: [0.24, 0.28]
+        budget_debt_gain: 1.10
+        budget_catchup_threshold: 0.003
+        risk_ratio_penalty: 0.020
+        risk_dense_threshold: 1.01
+        ratio_selection_mode: estimated_actual
+    - method_name: dynamic_global_activation_budgeted_v41_stage_lift_plus_32p
+      variant_role: phase_a41_stage_lift_plus_32p
+      prior_policy: trajectory_global
+      score_mode: activation
+      stage_budget_controller:
+        enabled: true
+        target_actual_pruning: 0.335
+        decision_window_tokens: 128
+        action_ratios: [0.00, 0.24, 0.28, 0.30, 0.32, 0.34, 0.36, 0.38, 0.40, 0.44, 0.48]
+        stage_ratio_bounds:
+          setup: [0.28, 0.48]
+          reasoning: [0.32, 0.44]
+          verify: [0.32, 0.40]
+          final: [0.24, 0.30]
+        budget_debt_gain: 1.20
+        budget_catchup_threshold: 0.0025
+        risk_ratio_penalty: 0.010
+        risk_dense_threshold: 1.01
+        ratio_selection_mode: estimated_actual
+
+evaluation:
+  allow_final_without_dev: true
+  math500_name_or_path: HuggingFaceH4/MATH-500
+  final_datasets: [{dataset: gsm8k, split: test}, {dataset: math500, name_or_path: HuggingFaceH4/MATH-500, split: test}]
+
+profiles:
+  pilot:
+    candidate_problems: 600
+    generations_per_problem: 2
+    calibration_problems: 128
+    dev_problems: 1040
+    min_stage_tokens: 2048
+    min_stage_tokens_by_stage: {setup: 2048, reasoning: 4096, verify: 2048, final: 256}
+    stage_token_balanced_selection: true
+    expansion_problems: 300
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: 520
+    final_seeds: [3]
+    dev_uniform_ratios: []
+    dev_global_policies: []
+    run_stage_specific_uniform: false
+    run_shuffled_uniform: false
+    budget_search_ratios: []
+    coordinate_rounds: 0
+    run_no_bias_compensation_ablation: false
+    diagnostic_budget_search_on_gate_failure: false
+    reuse_existing_method_summaries: true
+    final_methods: [dynamic_global_activation_budgeted_v4_mild_32p, dynamic_global_activation_budgeted_v41_stage_lift_32p, dynamic_global_activation_budgeted_v41_stage_lift_plus_32p]
