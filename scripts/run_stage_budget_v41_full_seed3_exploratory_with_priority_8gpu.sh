@@ -38,27 +38,54 @@ fi
 
 bash scripts/prepare_stage_budget_output_aware_v1.sh
 
-phase_root="${RUN_ROOT}/10_budget_v41_stage_lift_32p/03_frozen_full/seed_3_exploratory"
-log_dir="${LOG_ROOT}/10_budget_v41_stage_lift_32p/03_frozen_full/seed_3_exploratory"
-mkdir -p "${phase_root}" "${log_dir}"
+METHODS="dynamic_global_activation_fixed_t30,${selected_method}"
 
-cat > "${phase_root}/status.json" <<'EOF'
+main_root="${RUN_ROOT}/10_budget_v41_stage_lift_32p/03_frozen_full/seed_3_exploratory"
+main_log_dir="${LOG_ROOT}/10_budget_v41_stage_lift_32p/03_frozen_full/seed_3_exploratory"
+mkdir -p "${main_root}" "${main_log_dir}"
+cat > "${main_root}/status.json" <<'EOF'
 {
   "status": "running",
   "mode": "exploratory_full_seed3",
+  "datasets": ["gsm8k", "math500"],
   "note": "Seed42 confirmation did not pass; this run is best-seed exploratory full, not frozen multi-seed final evidence."
 }
 EOF
 
-METHODS="dynamic_global_activation_fixed_t30,${selected_method}"
-CONFIG="${CONFIG}" RUN_ROOT="${phase_root}" SOURCE_ROOT="${SOURCE_ROOT}" LOG_DIR="${log_dir}" \
+CONFIG="${CONFIG}" RUN_ROOT="${main_root}" SOURCE_ROOT="${SOURCE_ROOT}" LOG_DIR="${main_log_dir}" \
   STAGE_SEED=3 STAGE_FINAL_SEEDS=3 DATASETS_OVERRIDE="gsm8k math500" STAGE_FINAL_EVAL_LIMIT="${STAGE_FINAL_EVAL_LIMIT:--1}" STAGE_FINAL_METHODS="${METHODS}" \
   bash scripts/run_t30_math_safe_priority_suite_8gpu.sh
 
-cat > "${phase_root}/status.json" <<'EOF'
+cat > "${main_root}/status.json" <<'EOF'
 {
   "status": "completed",
   "mode": "exploratory_full_seed3",
+  "datasets": ["gsm8k", "math500"],
   "note": "Seed42 confirmation did not pass; this run is best-seed exploratory full, not frozen multi-seed final evidence."
+}
+EOF
+
+priority_root="${RUN_ROOT}/10_budget_v41_stage_lift_32p/03_frozen_full/seed_3_exploratory_priority_suite"
+priority_log_dir="${LOG_ROOT}/10_budget_v41_stage_lift_32p/03_frozen_full/seed_3_exploratory_priority_suite"
+mkdir -p "${priority_root}" "${priority_log_dir}"
+cat > "${priority_root}/status.json" <<'EOF'
+{
+  "status": "running",
+  "mode": "exploratory_priority_suite_seed3",
+  "datasets": ["aime2024", "aime2025", "amc2023", "gpqa_diamond", "arc_challenge"],
+  "note": "Priority-suite exploratory run for the best seed3 v4.1 candidate."
+}
+EOF
+
+CONFIG="${CONFIG}" RUN_ROOT="${priority_root}" SOURCE_ROOT="${SOURCE_ROOT}" LOG_DIR="${priority_log_dir}" \
+  STAGE_SEED=3 STAGE_FINAL_SEEDS=3 DATASETS_OVERRIDE="aime2024 aime2025 amc2023 gpqa_diamond arc_challenge" STAGE_FINAL_EVAL_LIMIT="${STAGE_PRIORITY_EVAL_LIMIT:--1}" STAGE_FINAL_METHODS="${METHODS}" \
+  bash scripts/run_t30_math_safe_priority_suite_8gpu.sh
+
+cat > "${priority_root}/status.json" <<'EOF'
+{
+  "status": "completed",
+  "mode": "exploratory_priority_suite_seed3",
+  "datasets": ["aime2024", "aime2025", "amc2023", "gpqa_diamond", "arc_challenge"],
+  "note": "Priority-suite exploratory run for the best seed3 v4.1 candidate."
 }
 EOF
