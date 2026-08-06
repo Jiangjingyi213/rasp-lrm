@@ -24,6 +24,7 @@ them:
 - `budget_v41_dev.yaml`: Phase A4.1, selected stage-lift candidate plus v4 mild reference.
 - `budget_v41_seed42.yaml`: Phase A4.1, frozen stage-lift confirmation on seed42 dev.
 - `budget_v41_full.template.yaml`: Phase A4.1, frozen full-eval template.
+- `budget_v41_priority_suite.template.yaml`: Phase A4.1, exploratory priority-suite template.
 
 All new results should live under `runs/10_stage_budget_output_aware_v1/`; logs
 mirror to `logs/10_stage_budget_output_aware_v1/`.

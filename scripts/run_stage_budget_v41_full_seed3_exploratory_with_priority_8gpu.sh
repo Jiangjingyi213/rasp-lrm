@@ -9,6 +9,7 @@ RUN_ROOT="${RUN_ROOT:-runs/10_stage_budget_output_aware_v1}"
 LOG_ROOT="${LOG_ROOT:-logs/10_stage_budget_output_aware_v1}"
 SOURCE_ROOT="${SOURCE_ROOT:-runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3_t30_math_safe_full}"
 CONFIG="${CONFIG:-configs/generated_stage_budget_output_aware_v1/budget_v41_full.template.yaml}"
+PRIORITY_CONFIG="${PRIORITY_CONFIG:-configs/generated_stage_budget_output_aware_v1/budget_v41_priority_suite.template.yaml}"
 DEV_SELECTION="${RUN_ROOT}/10_budget_v41_stage_lift_32p/01_dev_seed3/budget_v41_dev_selection.json"
 
 selected_method="$(SELECTION="${DEV_SELECTION}" "${PYTHON_BIN}" - <<'PY'
@@ -77,7 +78,7 @@ cat > "${priority_root}/status.json" <<'EOF'
 }
 EOF
 
-CONFIG="${CONFIG}" RUN_ROOT="${priority_root}" SOURCE_ROOT="${SOURCE_ROOT}" LOG_DIR="${priority_log_dir}" \
+CONFIG="${PRIORITY_CONFIG}" RUN_ROOT="${priority_root}" SOURCE_ROOT="${SOURCE_ROOT}" LOG_DIR="${priority_log_dir}" \
   STAGE_SEED=3 STAGE_FINAL_SEEDS=3 DATASETS_OVERRIDE="aime2024 aime2025 amc2023 gpqa_diamond arc_challenge" STAGE_FINAL_EVAL_LIMIT="${STAGE_PRIORITY_EVAL_LIMIT:--1}" STAGE_FINAL_METHODS="${METHODS}" \
   bash scripts/run_t30_math_safe_priority_suite_8gpu.sh
 
