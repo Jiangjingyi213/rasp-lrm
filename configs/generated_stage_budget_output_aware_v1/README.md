@@ -25,6 +25,8 @@ them:
 - `budget_v41_seed42.yaml`: Phase A4.1, frozen stage-lift confirmation on seed42 dev.
 - `budget_v41_full.template.yaml`: Phase A4.1, frozen full-eval template.
 - `budget_v41_priority_suite.template.yaml`: Phase A4.1, exploratory priority-suite template.
+- `budget_v41_qwen3_4b_full.template.yaml`: Qwen3-4B transfer full-eval template for fixed global vs v4.1 plus.
+- `budget_v41_qwen3_4b_priority_suite.template.yaml`: Qwen3-4B transfer priority-suite template for fixed global vs v4.1 plus.
 
 All new results should live under `runs/10_stage_budget_output_aware_v1/`; logs
 mirror to `logs/10_stage_budget_output_aware_v1/`.
