@@ -1893,6 +1893,10 @@ def _adaptive_griffin_method_from_cfg(acfg: dict[str, Any], prompt: dict[str, An
         fallback_behavior=str(acfg.get("fallback_behavior", "dense_after_error")),
         stage_risk_controller=deepcopy(acfg.get("stage_risk_controller", {})),
         stage_budget_controller=deepcopy(acfg.get("stage_budget_controller", {})),
+        attention_head_pruning=deepcopy(acfg.get("attention_head_pruning", {})),
+        multi_structure_budget_controller=deepcopy(
+            acfg.get("multi_structure_budget_controller", {})
+        ),
         **_pruning_target_fields(acfg),
     )
 

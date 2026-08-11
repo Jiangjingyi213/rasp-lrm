@@ -111,12 +111,49 @@ def _safe_dynamic_score_mode(value: str) -> str:
         "activation_keep": "activation",
         "protected_core_safe_prune": "activation",
         "current_safe": "activation",
-        "output_aware": "output_aware",
+            "output_aware": "output_aware",
     }
     try:
         return aliases[str(value)]
     except KeyError as exc:
         raise ValueError(f"Unsupported safe-dynamic score mode: {value}") from exc
+
+
+def _find_self_attention(layer: nn.Module) -> nn.Module:
+    for name in ("self_attn", "attention", "attn"):
+        if hasattr(layer, name):
+            return getattr(layer, name)
+    raise ValueError("Could not locate self-attention module on decoder layer")
+
+
+def _attention_num_heads(attn: nn.Module, hidden_size: int) -> int:
+    for name in ("num_heads", "num_attention_heads", "n_heads", "n_head"):
+        value = getattr(attn, name, None)
+        if value is not None:
+            heads = int(value)
+            if heads > 0 and hidden_size % heads == 0:
+                return heads
+    config = getattr(attn, "config", None)
+    if config is not None:
+        for name in ("num_attention_heads", "n_heads", "n_head"):
+            value = getattr(config, name, None)
+            if value is not None:
+                heads = int(value)
+                if heads > 0 and hidden_size % heads == 0:
+                    return heads
+    raise ValueError("Could not infer attention head count from module")
+
+
+def _head_mask_from_scores(scores: torch.Tensor, ratio: float) -> torch.Tensor:
+    if not 0.0 <= float(ratio) < 1.0:
+        raise ValueError(f"Attention head pruning ratio must be in [0, 1), got {ratio}")
+    heads = int(scores.numel())
+    prune = min(heads - 1, max(0, int(round(heads * float(ratio)))))
+    mask = torch.ones(heads, dtype=torch.bool, device=scores.device)
+    if prune:
+        prune_indices = torch.topk(scores.float(), k=prune, largest=False).indices
+        mask[prune_indices] = False
+    return mask
 
 
 class StageMaskRuntime:
@@ -856,6 +893,8 @@ class SafeDynamicStageGriffinRuntime:
         score_mode: str = "activation",
         max_mask_swap_fraction: float = 1.0,
         stage_budget_controller: dict[str, Any] | None = None,
+        attention_head_pruning: dict[str, Any] | None = None,
+        multi_structure_budget_controller: dict[str, Any] | None = None,
     ) -> None:
         validate_mask_bank(bank)
         if prior_policy not in bank["policies"]:
@@ -876,6 +915,16 @@ class SafeDynamicStageGriffinRuntime:
         budget_cfg = dict(stage_budget_controller or {})
         self.stage_budget_controller_enabled = bool(budget_cfg.get("enabled", False))
         self.stage_budget_controller = self._prepare_stage_budget_controller(budget_cfg)
+        self.attention_head_pruning = self._prepare_attention_head_pruning(
+            dict(attention_head_pruning or {})
+        )
+        self.attention_head_pruning_enabled = bool(self.attention_head_pruning["enabled"])
+        self.multi_structure_budget_controller = self._prepare_multi_structure_budget_controller(
+            dict(multi_structure_budget_controller or {})
+        )
+        self.multi_structure_budget_controller_enabled = bool(
+            self.multi_structure_budget_controller["enabled"]
+        )
         warmup_tokens = warmup_tokens or {}
         protected_core_ratios = protected_core_ratios or {}
         refresh_intervals = refresh_intervals or {}
@@ -934,6 +983,40 @@ class SafeDynamicStageGriffinRuntime:
         self._budget_volatility_risks: dict[str, list[float]] = {stage: [] for stage in STAGES}
         self._budget_debts: list[float] = []
         self._budget_previous_scores: dict[str, torch.Tensor] = {}
+        self._attention_num_heads_by_layer: dict[int, int] = {}
+        self._attention_head_dim_by_layer: dict[int, int] = {}
+        self._attention_o_proj_norms: dict[int, torch.Tensor] = {}
+        self._attention_o_proj_norm_hash: str | None = None
+        self._attention_prompt_scores: dict[int, torch.Tensor] = {}
+        self._attention_recent_scores: dict[str, dict[int, deque[torch.Tensor]]] = {
+            stage: {} for stage in STAGES
+        }
+        self._attention_recent_sums: dict[str, dict[int, torch.Tensor]] = {
+            stage: {} for stage in STAGES
+        }
+        self._attention_mask_cache: dict[tuple[str, int], torch.Tensor] = {}
+        self._attention_actual_weighted_sum = 0.0
+        self._attention_actual_denominator = 0
+        self._attention_actual_weighted_sum_by_stage: Counter[str] = Counter()
+        self._attention_actual_denominator_by_stage: Counter[str] = Counter()
+        self._attention_ratio_tokens: Counter[str] = Counter()
+        self._attention_selected_ratios: dict[str, float] = {
+            stage: float(self.attention_head_pruning["stage_ratios"].get(stage, 0.0))
+            for stage in STAGES
+        }
+        self._attention_tokens_since_decision: Counter[str] = Counter()
+        self._attention_decision_log: list[dict[str, Any]] = []
+        self._attention_budget_debts: list[float] = []
+        self._attention_previous_scores: dict[str, torch.Tensor] = {}
+        self._multi_selected_mlp_ratios: dict[str, float] = {
+            stage: self._initial_budget_ratio(stage) for stage in STAGES
+        }
+        self._multi_selected_attention_ratios: dict[str, float] = {
+            stage: float(self.attention_head_pruning["stage_ratios"].get(stage, 0.0))
+            for stage in STAGES
+        }
+        self._multi_tokens_since_decision: Counter[str] = Counter()
+        self._multi_decision_log: list[dict[str, Any]] = []
 
     def _prepare_stage_budget_controller(self, cfg: dict[str, Any]) -> dict[str, Any]:
         action_ratios = tuple(
@@ -993,6 +1076,107 @@ class SafeDynamicStageGriffinRuntime:
             "ratio_selection_mode": ratio_selection_mode,
         }
 
+    def _prepare_attention_head_pruning(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        enabled = bool(cfg.get("enabled", False))
+        stage_ratios = cfg.get("stage_ratios", {})
+        prepared_ratios = {stage: float(stage_ratios.get(stage, 0.0)) for stage in STAGES}
+        for stage, ratio in prepared_ratios.items():
+            if not 0.0 <= ratio < 1.0:
+                raise ValueError(f"Invalid attention head ratio for {stage}: {ratio}")
+        action_ratios = tuple(
+            sorted({float(value) for value in cfg.get("action_ratios", [0.0, 0.0625, 0.125])})
+        )
+        if not action_ratios or action_ratios[0] != 0.0:
+            raise ValueError("attention_head_pruning.action_ratios must include 0.0")
+        if any(value < 0.0 or value >= 1.0 for value in action_ratios):
+            raise ValueError("Invalid attention head action ratio")
+        raw_bounds = cfg.get("stage_ratio_bounds", {})
+        default_bounds = {
+            "setup": (0.0, 0.125),
+            "reasoning": (0.0, 0.125),
+            "verify": (0.0, 0.0625),
+            "final": (0.0, 0.0),
+        }
+        bounds: dict[str, tuple[float, float]] = {}
+        for stage in STAGES:
+            values = raw_bounds.get(stage, default_bounds[stage])
+            low, high = [float(value) for value in values]
+            if low < 0.0 or high >= 1.0 or low > high:
+                raise ValueError(f"Invalid attention head bounds for {stage}: {values}")
+            bounds[stage] = (low, high)
+        score_mode = str(cfg.get("score_mode", "output_aware"))
+        if score_mode != "output_aware":
+            raise ValueError("attention_head_pruning.score_mode currently supports output_aware only")
+        return {
+            "enabled": enabled,
+            "score_mode": score_mode,
+            "stage_ratios": prepared_ratios,
+            "action_ratios": action_ratios,
+            "stage_ratio_bounds": bounds,
+            "target_attention_pruning": float(cfg.get("target_attention_pruning", 0.10)),
+            "decision_window_tokens": max(1, int(cfg.get("decision_window_tokens", 128))),
+            "budget_debt_gain": float(cfg.get("budget_debt_gain", 0.75)),
+            "budget_catchup_threshold": float(cfg.get("budget_catchup_threshold", 0.01)),
+            "risk_ratio_penalty": float(cfg.get("risk_ratio_penalty", 0.02)),
+            "dynamic_budget": bool(cfg.get("dynamic_budget", False)),
+        }
+
+    def _prepare_multi_structure_budget_controller(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        enabled = bool(cfg.get("enabled", False))
+        if not enabled:
+            return {"enabled": False}
+        mlp_action_ratios = tuple(
+            sorted({float(value) for value in cfg.get("mlp_action_ratios", self.stage_budget_controller["action_ratios"])})
+        )
+        attention_action_ratios = tuple(
+            sorted({float(value) for value in cfg.get("attention_action_ratios", self.attention_head_pruning["action_ratios"])})
+        )
+        if not mlp_action_ratios or mlp_action_ratios[0] != 0.0:
+            raise ValueError("multi_structure_budget_controller.mlp_action_ratios must include 0.0")
+        if not attention_action_ratios or attention_action_ratios[0] != 0.0:
+            raise ValueError("multi_structure_budget_controller.attention_action_ratios must include 0.0")
+
+        def parse_bounds(key: str, defaults: dict[str, tuple[float, float]]) -> dict[str, tuple[float, float]]:
+            raw = cfg.get(key, {})
+            out: dict[str, tuple[float, float]] = {}
+            for stage in STAGES:
+                low, high = [float(value) for value in raw.get(stage, defaults[stage])]
+                if low < 0.0 or high >= 1.0 or low > high:
+                    raise ValueError(f"Invalid {key} for {stage}: {raw.get(stage)}")
+                out[stage] = (low, high)
+            return out
+
+        stage_attention_penalty = {
+            "setup": 0.0,
+            "reasoning": 0.04,
+            "verify": 0.08,
+            "final": 0.20,
+        }
+        stage_attention_penalty.update(
+            {stage: float(value) for stage, value in cfg.get("stage_attention_penalty", {}).items()}
+        )
+        return {
+            "enabled": True,
+            "decision_window_tokens": max(1, int(cfg.get("decision_window_tokens", 128))),
+            "mlp_target_actual_pruning": float(cfg.get("mlp_target_actual_pruning", 0.315)),
+            "attention_target_actual_pruning": float(cfg.get("attention_target_actual_pruning", 0.060)),
+            "mlp_action_ratios": mlp_action_ratios,
+            "attention_action_ratios": attention_action_ratios,
+            "mlp_stage_bounds": parse_bounds(
+                "mlp_stage_bounds",
+                {stage: self.stage_budget_controller["stage_ratio_bounds"][stage] for stage in STAGES},
+            ),
+            "attention_stage_bounds": parse_bounds(
+                "attention_stage_bounds",
+                {stage: self.attention_head_pruning["stage_ratio_bounds"][stage] for stage in STAGES},
+            ),
+            "stage_attention_penalty": {
+                stage: float(stage_attention_penalty.get(stage, 0.0)) for stage in STAGES
+            },
+            "budget_debt_gain": float(cfg.get("budget_debt_gain", 0.75)),
+            "risk_ratio_penalty": float(cfg.get("risk_ratio_penalty", 0.02)),
+        }
+
     def _initial_budget_ratio(self, stage: str) -> float:
         if not self.stage_budget_controller_enabled:
             return self.stage_ratios.get(stage, 0.0)
@@ -1014,6 +1198,8 @@ class SafeDynamicStageGriffinRuntime:
         return sorted(set(float(value) for value in output))
 
     def _active_stage_ratio(self, stage: str) -> float:
+        if self.multi_structure_budget_controller_enabled:
+            return float(self._multi_selected_mlp_ratios.get(stage, 0.0))
         if self.stage_budget_controller_enabled:
             return float(self._budget_selected_ratios.get(stage, 0.0))
         return float(self.stage_ratios.get(stage, 0.0))
@@ -1058,6 +1244,32 @@ class SafeDynamicStageGriffinRuntime:
         self._budget_volatility_risks = {stage: [] for stage in STAGES}
         self._budget_debts.clear()
         self._budget_previous_scores.clear()
+        self._attention_prompt_scores.clear()
+        self._attention_recent_scores = {stage: {} for stage in STAGES}
+        self._attention_recent_sums = {stage: {} for stage in STAGES}
+        self._attention_mask_cache.clear()
+        self._attention_actual_weighted_sum = 0.0
+        self._attention_actual_denominator = 0
+        self._attention_actual_weighted_sum_by_stage.clear()
+        self._attention_actual_denominator_by_stage.clear()
+        self._attention_ratio_tokens.clear()
+        self._attention_selected_ratios = {
+            stage: float(self.attention_head_pruning["stage_ratios"].get(stage, 0.0))
+            for stage in STAGES
+        }
+        self._attention_tokens_since_decision.clear()
+        self._attention_decision_log.clear()
+        self._attention_budget_debts.clear()
+        self._attention_previous_scores.clear()
+        self._multi_selected_mlp_ratios = {
+            stage: self._initial_budget_ratio(stage) for stage in STAGES
+        }
+        self._multi_selected_attention_ratios = {
+            stage: float(self.attention_head_pruning["stage_ratios"].get(stage, 0.0))
+            for stage in STAGES
+        }
+        self._multi_tokens_since_decision.clear()
+        self._multi_decision_log.clear()
 
     def set_stage(self, stage: str) -> None:
         previous = self.active_stage
@@ -1071,6 +1283,15 @@ class SafeDynamicStageGriffinRuntime:
             if previous != stage and self.stage_budget_controller_enabled:
                 self._budget_tokens_since_decision[stage] = int(
                     self.stage_budget_controller["decision_window_tokens"]
+                )
+            if previous != stage and self.attention_head_pruning_enabled:
+                self._attention_tokens_since_decision[stage] = int(
+                    self.attention_head_pruning["decision_window_tokens"]
+                )
+                self._attention_clear_stage_cache(stage)
+            if previous != stage and self.multi_structure_budget_controller_enabled:
+                self._multi_tokens_since_decision[stage] = int(
+                    self.multi_structure_budget_controller["decision_window_tokens"]
                 )
             if previous != stage and self.max_mask_swap_fraction < 1.0:
                 self._clear_stage_cache(stage)
@@ -1146,6 +1367,272 @@ class SafeDynamicStageGriffinRuntime:
 
     def _clear_stage_cache(self, stage: str) -> None:
         self._mask_cache = {key: value for key, value in self._mask_cache.items() if key[0] != stage}
+
+    def register_attention_layer(
+        self,
+        layer_id: int,
+        *,
+        num_heads: int,
+        head_dim: int,
+        o_proj_weight: torch.Tensor,
+    ) -> None:
+        self._attention_num_heads_by_layer[int(layer_id)] = int(num_heads)
+        self._attention_head_dim_by_layer[int(layer_id)] = int(head_dim)
+        weight = o_proj_weight.detach().float().cpu()
+        expected_hidden = int(num_heads) * int(head_dim)
+        if int(weight.shape[1]) != expected_hidden:
+            raise ValueError(
+                f"o_proj input width mismatch for layer {layer_id}: "
+                f"{weight.shape[1]} vs {expected_hidden}"
+            )
+        norms = weight.square().sum(dim=0).reshape(int(num_heads), int(head_dim)).sum(dim=1)
+        self._attention_o_proj_norms[int(layer_id)] = norms.contiguous()
+        digest = hashlib.sha256()
+        for lid in sorted(self._attention_o_proj_norms):
+            digest.update(str(lid).encode("ascii"))
+            digest.update(self._attention_o_proj_norms[lid].numpy().tobytes())
+        self._attention_o_proj_norm_hash = digest.hexdigest()
+
+    def _attention_clear_stage_cache(self, stage: str) -> None:
+        self._attention_mask_cache = {
+            key: value for key, value in self._attention_mask_cache.items() if key[0] != stage
+        }
+
+    def _attention_stage_candidates(self, stage: str, *, multi: bool = False) -> list[float]:
+        if multi:
+            cfg = self.multi_structure_budget_controller
+            floor, cap = cfg["attention_stage_bounds"][stage]
+            ratios = cfg["attention_action_ratios"]
+        else:
+            floor, cap = self.attention_head_pruning["stage_ratio_bounds"][stage]
+            ratios = self.attention_head_pruning["action_ratios"]
+        return [
+            float(ratio)
+            for ratio in ratios
+            if ratio == 0.0 or (floor - 1e-12 <= float(ratio) <= cap + 1e-12)
+        ]
+
+    def _multi_mlp_candidates(self, stage: str) -> list[float]:
+        cfg = self.multi_structure_budget_controller
+        floor, cap = cfg["mlp_stage_bounds"][stage]
+        return [
+            float(ratio)
+            for ratio in cfg["mlp_action_ratios"]
+            if ratio == 0.0 or (floor - 1e-12 <= float(ratio) <= cap + 1e-12)
+        ]
+
+    def _active_attention_ratio(self, stage: str) -> float:
+        if self.multi_structure_budget_controller_enabled:
+            return float(self._multi_selected_attention_ratios.get(stage, 0.0))
+        if bool(self.attention_head_pruning.get("dynamic_budget", False)):
+            return float(self._attention_selected_ratios.get(stage, 0.0))
+        return float(self.attention_head_pruning["stage_ratios"].get(stage, 0.0))
+
+    def _attention_head_score(self, layer_id: int, hidden: torch.Tensor) -> torch.Tensor:
+        num_heads = self._attention_num_heads_by_layer[layer_id]
+        head_dim = self._attention_head_dim_by_layer[layer_id]
+        values = hidden.detach().float().reshape(*hidden.shape[:-1], num_heads, head_dim)
+        activation_energy = values.square().sum(dim=-1).mean(dim=tuple(range(values.ndim - 2)))
+        norms = self._attention_o_proj_norms[layer_id].to(
+            device=activation_energy.device, dtype=torch.float32
+        )
+        return activation_energy * norms
+
+    def _attention_append_recent(self, stage: str, layer_id: int, hidden: torch.Tensor) -> None:
+        score = self._attention_head_score(layer_id, hidden)
+        if int(hidden.shape[1]) > 1:
+            previous = self._attention_prompt_scores.get(layer_id)
+            self._attention_prompt_scores[layer_id] = (
+                score if previous is None else previous.to(score.device) + score
+            )
+            return
+        by_layer = self._attention_recent_scores[stage]
+        queue = by_layer.get(layer_id)
+        if queue is None:
+            queue = deque()
+            by_layer[layer_id] = queue
+        maxlen = self.window_tokens[stage]
+        current_sum = self._attention_recent_sums[stage].get(layer_id)
+        if current_sum is None:
+            current_sum = torch.zeros_like(score)
+        else:
+            current_sum = current_sum.to(score.device)
+        while len(queue) >= maxlen:
+            current_sum = current_sum - queue.popleft().to(score.device)
+        queue.append(score.detach().cpu())
+        self._attention_recent_sums[stage][layer_id] = current_sum + score
+
+    def _attention_score_for_mask(self, stage: str, layer_id: int) -> torch.Tensor:
+        score = self._attention_recent_sums[stage].get(layer_id)
+        if score is None:
+            score = self._attention_prompt_scores.get(layer_id)
+        if score is None:
+            heads = self._attention_num_heads_by_layer[layer_id]
+            score = torch.ones(heads, dtype=torch.float32)
+        return score.float()
+
+    def _record_attention_pruning(self, stage: str, layer_id: int, token_count: int, mask: torch.Tensor | None) -> None:
+        ratio = 0.0 if mask is None else _mask_pruning_ratio(mask)
+        count = int(token_count)
+        self._attention_actual_weighted_sum += ratio * count
+        self._attention_actual_denominator += count
+        key = stage if stage in STAGES else "dense"
+        self._attention_actual_weighted_sum_by_stage[key] += ratio * count
+        self._attention_actual_denominator_by_stage[key] += count
+
+    def _attention_achieved_pruning(self) -> float:
+        if self._attention_actual_denominator <= 0:
+            return 0.0
+        return float(self._attention_actual_weighted_sum / self._attention_actual_denominator)
+
+    def _estimate_attention_actual_for_ratio(self, layer_id: int, ratio: float) -> float:
+        heads = int(self._attention_num_heads_by_layer.get(layer_id, 0))
+        if heads <= 1:
+            return 0.0
+        return float(min(heads - 1, max(0, int(round(heads * float(ratio)))))) / float(heads)
+
+    def _attention_risk(self, stage: str, layer_id: int, ratio: float) -> dict[str, float]:
+        score = _zscore(self._attention_score_for_mask(stage, layer_id)).detach().cpu()
+        previous = self._attention_previous_scores.get(stage)
+        volatility = 0.0
+        if previous is not None and previous.numel() == score.numel():
+            volatility = float(
+                1.0
+                - torch.nn.functional.cosine_similarity(
+                    score.unsqueeze(0), previous.to(score.device).unsqueeze(0)
+                ).item()
+            )
+        self._attention_previous_scores[stage] = score
+        heads = int(score.numel())
+        prune = min(heads - 1, max(0, int(round(heads * float(ratio)))))
+        if prune <= 0 or prune >= heads:
+            margin = 1.0
+        else:
+            ordered = torch.sort(score, descending=False).values
+            margin = float((ordered[prune] - ordered[prune - 1]).abs().item())
+        margin_risk = float(1.0 / (1.0 + max(0.0, margin)))
+        volatility_risk = float(max(0.0, min(1.0, volatility)))
+        return {
+            "attention_margin_risk": margin_risk,
+            "attention_volatility_risk": volatility_risk,
+            "attention_base_risk": min(1.0, 0.55 * margin_risk + 0.35 * volatility_risk),
+        }
+
+    def _choose_attention_budget_ratio(self, stage: str, layer_id: int) -> dict[str, Any]:
+        candidates = self._attention_stage_candidates(stage)
+        if not candidates:
+            return {"selected_ratio": 0.0, "reason": "no_attention_candidate"}
+        target = float(self.attention_head_pruning["target_attention_pruning"])
+        debt = target - self._attention_achieved_pruning()
+        desired = target + float(self.attention_head_pruning["budget_debt_gain"]) * debt
+        probe = max(candidates)
+        risks = self._attention_risk(stage, layer_id, probe)
+        desired -= float(self.attention_head_pruning["risk_ratio_penalty"]) * risks["attention_base_risk"]
+        selected = min(
+            candidates,
+            key=lambda value: (
+                abs(self._estimate_attention_actual_for_ratio(layer_id, value) - desired),
+                -value if debt >= 0.0 else value,
+            ),
+        )
+        return {
+            "selected_ratio": float(selected),
+            "target_attention_pruning": target,
+            "achieved_attention_pruning": self._attention_achieved_pruning(),
+            "attention_budget_debt": debt,
+            "desired_attention_pruning": desired,
+            "candidate_ratios": candidates,
+            "selected_estimated_attention_pruning": self._estimate_attention_actual_for_ratio(layer_id, selected),
+            **risks,
+        }
+
+    def _maybe_update_attention_budget_decision(self, stage: str, layer_id: int) -> None:
+        if (
+            not self.attention_head_pruning_enabled
+            or not bool(self.attention_head_pruning.get("dynamic_budget", False))
+            or self.multi_structure_budget_controller_enabled
+            or layer_id != 0
+        ):
+            return
+        self._attention_tokens_since_decision[stage] += 1
+        window = int(self.attention_head_pruning["decision_window_tokens"])
+        if self._attention_tokens_since_decision[stage] < window:
+            return
+        decision = self._choose_attention_budget_ratio(stage, layer_id)
+        selected = float(decision["selected_ratio"])
+        if selected != self._attention_selected_ratios.get(stage):
+            self._attention_clear_stage_cache(stage)
+        self._attention_selected_ratios[stage] = selected
+        self._attention_tokens_since_decision[stage] = 0
+        self._attention_decision_log.append({"stage": stage, **decision})
+        self._attention_budget_debts.append(float(decision.get("attention_budget_debt", 0.0)))
+
+    def _maybe_update_multi_structure_decision(self, stage: str, layer_id: int) -> None:
+        if not self.multi_structure_budget_controller_enabled or layer_id != 0:
+            return
+        self._multi_tokens_since_decision[stage] += 1
+        window = int(self.multi_structure_budget_controller["decision_window_tokens"])
+        if self._multi_tokens_since_decision[stage] < window:
+            return
+        cfg = self.multi_structure_budget_controller
+        mlp_candidates = self._multi_mlp_candidates(stage)
+        attention_candidates = self._attention_stage_candidates(stage, multi=True)
+        mlp_target = float(cfg["mlp_target_actual_pruning"])
+        attention_target = float(cfg["attention_target_actual_pruning"])
+        mlp_debt = mlp_target - self._budget_achieved_pruning()
+        attention_debt = attention_target - self._attention_achieved_pruning()
+        mlp_desired = mlp_target + float(cfg["budget_debt_gain"]) * mlp_debt
+        attention_desired = (
+            attention_target
+            + float(cfg["budget_debt_gain"]) * attention_debt
+            - float(cfg["stage_attention_penalty"][stage])
+        )
+        mlp_probe = max([value for value in mlp_candidates if value > 0.0] or [0.0])
+        mlp_risks = self._budget_score_components(stage, layer_id, mlp_probe)
+        attention_probe = max(attention_candidates or [0.0])
+        attention_risks = self._attention_risk(stage, layer_id, attention_probe)
+        mlp_desired -= float(cfg["risk_ratio_penalty"]) * mlp_risks["base_risk"]
+        attention_desired -= float(cfg["risk_ratio_penalty"]) * attention_risks["attention_base_risk"]
+        selected_mlp = min(
+            mlp_candidates,
+            key=lambda value: (
+                abs(self._estimate_actual_pruning_for_ratio(stage, value) - mlp_desired),
+                -value if mlp_debt >= 0.0 else value,
+            ),
+        )
+        selected_attention = min(
+            attention_candidates,
+            key=lambda value: (
+                abs(self._estimate_attention_actual_for_ratio(layer_id, value) - attention_desired),
+                -value if attention_debt >= 0.0 else value,
+            ),
+        )
+        if selected_mlp != self._multi_selected_mlp_ratios.get(stage):
+            self._clear_stage_cache(stage)
+        if selected_attention != self._multi_selected_attention_ratios.get(stage):
+            self._attention_clear_stage_cache(stage)
+        self._multi_selected_mlp_ratios[stage] = float(selected_mlp)
+        self._multi_selected_attention_ratios[stage] = float(selected_attention)
+        self._multi_tokens_since_decision[stage] = 0
+        self._multi_decision_log.append(
+            {
+                "stage": stage,
+                "selected_mlp_ratio": float(selected_mlp),
+                "selected_attention_ratio": float(selected_attention),
+                "mlp_target_actual_pruning": mlp_target,
+                "attention_target_actual_pruning": attention_target,
+                "mlp_achieved_pruning": self._budget_achieved_pruning(),
+                "attention_achieved_pruning": self._attention_achieved_pruning(),
+                "mlp_budget_debt": mlp_debt,
+                "attention_budget_debt": attention_debt,
+                "mlp_desired_actual_pruning": mlp_desired,
+                "attention_desired_actual_pruning": attention_desired,
+                "mlp_candidates": mlp_candidates,
+                "attention_candidates": attention_candidates,
+                **mlp_risks,
+                **attention_risks,
+            }
+        )
 
     def _single_token_mode(self, layer_id: int, token_count: int) -> tuple[str | None, bool]:
         if layer_id == 0:
@@ -1377,7 +1864,10 @@ class SafeDynamicStageGriffinRuntime:
             return None
         self._append_recent(stage, layer_id, intermediate)
         if layer_id == 0:
-            self._maybe_update_budget_decision(stage, layer_id)
+            if self.multi_structure_budget_controller_enabled:
+                self._maybe_update_multi_structure_decision(stage, layer_id)
+            else:
+                self._maybe_update_budget_decision(stage, layer_id)
         ratio = self._active_stage_ratio(stage)
         if observe:
             if layer_id == 0:
@@ -1398,6 +1888,45 @@ class SafeDynamicStageGriffinRuntime:
                 self._budget_ratio_tokens[f"{stage}:{ratio:.2f}"] += token_count
         mask = self.keep_mask(stage, layer_id)
         self._record_actual_pruning(stage, layer_id, token_count, mask)
+        return mask
+
+    def observe_or_mask_attention(self, layer_id: int, hidden: torch.Tensor) -> torch.Tensor | None:
+        if not self.attention_head_pruning_enabled:
+            return None
+        token_count = int(hidden.shape[1])
+        if layer_id not in self._attention_num_heads_by_layer:
+            raise RuntimeError(f"Attention layer {layer_id} was not registered")
+        if token_count > 1:
+            self._attention_append_recent("prompt", layer_id, hidden)
+            self._record_attention_pruning("prompt", layer_id, token_count, None)
+            return None
+        stage = self.active_stage
+        if self.fallback_reason is not None or stage not in STAGES:
+            self._record_attention_pruning("dense", layer_id, token_count, None)
+            return None
+        self._attention_append_recent(stage, layer_id, hidden)
+        if layer_id == 0:
+            self._maybe_update_attention_budget_decision(stage, layer_id)
+        ratio = self._active_attention_ratio(stage)
+        if ratio <= 0.0:
+            if layer_id == 0:
+                self._attention_ratio_tokens[f"{stage}:0.00"] += token_count
+            self._record_attention_pruning(stage, layer_id, token_count, None)
+            return None
+        if layer_id == 0:
+            self._attention_ratio_tokens[f"{stage}:{ratio:.4f}"] += token_count
+        mask = self.keep_attention_head_mask(stage, layer_id)
+        self._record_attention_pruning(stage, layer_id, token_count, mask)
+        return mask
+
+    def keep_attention_head_mask(self, stage: str, layer_id: int) -> torch.Tensor:
+        key = (stage, layer_id)
+        cached = self._attention_mask_cache.get(key)
+        if cached is not None:
+            return cached
+        score = self._attention_score_for_mask(stage, layer_id)
+        mask = _head_mask_from_scores(score, self._active_attention_ratio(stage))
+        self._attention_mask_cache[key] = mask
         return mask
 
     def keep_mask(self, stage: str, layer_id: int) -> torch.Tensor:
@@ -1525,6 +2054,32 @@ class SafeDynamicStageGriffinRuntime:
                 "mean": sum(self._budget_debts) / len(self._budget_debts),
                 "final": self._budget_debts[-1],
             }
+        attention_actual_by_stage = {
+            stage: (
+                float(self._attention_actual_weighted_sum_by_stage[stage])
+                / float(self._attention_actual_denominator_by_stage[stage])
+            )
+            for stage in self._attention_actual_denominator_by_stage
+            if self._attention_actual_denominator_by_stage[stage]
+        }
+        attention_actions_by_stage = Counter(
+            str(decision.get("stage", "unknown")) for decision in self._attention_decision_log
+        )
+        attention_selected_by_stage = Counter(
+            f"{decision.get('stage', 'unknown')}:{float(decision.get('selected_ratio', 0.0)):.4f}"
+            for decision in self._attention_decision_log
+        )
+        multi_actions_by_stage = Counter(
+            str(decision.get("stage", "unknown")) for decision in self._multi_decision_log
+        )
+        multi_selected_pairs = Counter(
+            (
+                f"{decision.get('stage', 'unknown')}:"
+                f"mlp={float(decision.get('selected_mlp_ratio', 0.0)):.2f},"
+                f"attn={float(decision.get('selected_attention_ratio', 0.0)):.4f}"
+            )
+            for decision in self._multi_decision_log
+        )
 
         def mean_values(values_by_stage: dict[str, list[float]]) -> dict[str, float]:
             return {
@@ -1576,6 +2131,41 @@ class SafeDynamicStageGriffinRuntime:
             ),
             "actual_pruning_ratio_by_stage": actual_by_stage,
             "actual_pruning_accounting": "actual_mask_sparsity_layer_token_weighted",
+            "attention_head_pruning_enabled": self.attention_head_pruning_enabled,
+            "attention_head_score_mode": (
+                self.attention_head_pruning["score_mode"]
+                if self.attention_head_pruning_enabled
+                else None
+            ),
+            "attention_o_proj_norm_hash": self._attention_o_proj_norm_hash,
+            "actual_average_attention_head_pruning_ratio": (
+                self._attention_actual_weighted_sum / self._attention_actual_denominator
+                if self._attention_actual_denominator
+                else 0.0
+            ),
+            "actual_attention_head_pruning_ratio_by_stage": attention_actual_by_stage,
+            "attention_head_ratio_tokens": dict(self._attention_ratio_tokens),
+            "attention_head_selected_ratio_actions": dict(attention_selected_by_stage),
+            "attention_head_actions_by_stage": dict(attention_actions_by_stage),
+            "attention_head_budget_decisions": list(self._attention_decision_log),
+            "multi_structure_budget_controller_enabled": self.multi_structure_budget_controller_enabled,
+            "multi_structure_budget_decisions": list(self._multi_decision_log),
+            "multi_structure_actions_by_stage": dict(multi_actions_by_stage),
+            "multi_structure_selected_pair_actions": dict(multi_selected_pairs),
+            "selected_mlp_ratio_by_stage": dict(self._multi_selected_mlp_ratios),
+            "selected_attention_ratio_by_stage": dict(self._multi_selected_attention_ratios),
+            "joint_logical_pruning_summary": {
+                "mlp": (
+                    self._actual_pruning_weighted_sum / self._actual_pruning_denominator
+                    if self._actual_pruning_denominator
+                    else 0.0
+                ),
+                "attention_head": (
+                    self._attention_actual_weighted_sum / self._attention_actual_denominator
+                    if self._attention_actual_denominator
+                    else 0.0
+                ),
+            },
         }
         if self.stage_budget_controller_enabled:
             summary.update(
@@ -1640,6 +2230,58 @@ class SafeDynamicStageGriffinRuntime:
             )
         else:
             summary["stage_budget_controller_enabled"] = False
+        if self.attention_head_pruning_enabled:
+            summary["attention_head_pruning"] = {
+                "enabled": True,
+                "score_mode": self.attention_head_pruning["score_mode"],
+                "stage_ratios": dict(self.attention_head_pruning["stage_ratios"]),
+                "action_ratios": list(self.attention_head_pruning["action_ratios"]),
+                "stage_ratio_bounds": {
+                    stage: list(bounds)
+                    for stage, bounds in self.attention_head_pruning["stage_ratio_bounds"].items()
+                },
+                "target_attention_pruning": self.attention_head_pruning[
+                    "target_attention_pruning"
+                ],
+                "decision_window_tokens": self.attention_head_pruning[
+                    "decision_window_tokens"
+                ],
+                "dynamic_budget": self.attention_head_pruning["dynamic_budget"],
+            }
+        if self.multi_structure_budget_controller_enabled:
+            summary["multi_structure_budget_controller"] = {
+                "enabled": True,
+                "decision_window_tokens": self.multi_structure_budget_controller[
+                    "decision_window_tokens"
+                ],
+                "mlp_target_actual_pruning": self.multi_structure_budget_controller[
+                    "mlp_target_actual_pruning"
+                ],
+                "attention_target_actual_pruning": self.multi_structure_budget_controller[
+                    "attention_target_actual_pruning"
+                ],
+                "mlp_action_ratios": list(
+                    self.multi_structure_budget_controller["mlp_action_ratios"]
+                ),
+                "attention_action_ratios": list(
+                    self.multi_structure_budget_controller["attention_action_ratios"]
+                ),
+                "mlp_stage_bounds": {
+                    stage: list(bounds)
+                    for stage, bounds in self.multi_structure_budget_controller[
+                        "mlp_stage_bounds"
+                    ].items()
+                },
+                "attention_stage_bounds": {
+                    stage: list(bounds)
+                    for stage, bounds in self.multi_structure_budget_controller[
+                        "attention_stage_bounds"
+                    ].items()
+                },
+                "stage_attention_penalty": dict(
+                    self.multi_structure_budget_controller["stage_attention_penalty"]
+                ),
+            }
         return summary
 
 
@@ -2249,6 +2891,47 @@ class AdaptiveStageGriffinQwen3MLP(nn.Module):
         return output
 
 
+class AttentionHeadMaskedOProj(nn.Module):
+    def __init__(
+        self,
+        original_o_proj: nn.Module,
+        layer_id: int,
+        runtime: SafeDynamicStageGriffinRuntime,
+        *,
+        num_heads: int,
+        head_dim: int,
+    ) -> None:
+        super().__init__()
+        self.original_o_proj = original_o_proj
+        self.layer_id = int(layer_id)
+        self.runtime = runtime
+        self.num_heads = int(num_heads)
+        self.head_dim = int(head_dim)
+
+    @property
+    def weight(self) -> torch.Tensor:
+        return self.original_o_proj.weight
+
+    @property
+    def bias(self) -> torch.Tensor | None:
+        return getattr(self.original_o_proj, "bias", None)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        mask = self.runtime.observe_or_mask_attention(self.layer_id, x)
+        if mask is None:
+            return self.original_o_proj(x)
+        if x.shape[-1] != self.num_heads * self.head_dim:
+            raise ValueError(
+                f"Attention hidden width mismatch in layer {self.layer_id}: "
+                f"{x.shape[-1]} vs {self.num_heads * self.head_dim}"
+            )
+        head_mask = mask.to(device=x.device, dtype=x.dtype).reshape(
+            *([1] * (x.ndim - 1)), self.num_heads, 1
+        )
+        values = x.reshape(*x.shape[:-1], self.num_heads, self.head_dim)
+        return self.original_o_proj((values * head_mask).reshape_as(x))
+
+
 def apply_adaptive_stage_griffin_qwen3(
     model: nn.Module,
     runtime: AdaptiveStageGriffinRuntime,
@@ -2273,6 +2956,38 @@ def apply_adaptive_stage_griffin_qwen3(
         if not all(hasattr(mlp, name) for name in ("gate_proj", "up_proj", "down_proj", "act_fn")):
             raise ValueError("Expected gated MLP with gate_proj/up_proj/down_proj/act_fn")
         layer.mlp = AdaptiveStageGriffinQwen3MLP(mlp, layer_id, runtime)
+    if isinstance(runtime, SafeDynamicStageGriffinRuntime) and runtime.attention_head_pruning_enabled:
+        for layer_id, layer in enumerate(layers):
+            attn = _find_self_attention(layer)
+            o_proj = getattr(attn, "o_proj", None)
+            if o_proj is None:
+                raise ValueError("Expected self_attn.o_proj for attention head pruning")
+            if isinstance(o_proj, AttentionHeadMaskedOProj):
+                runtime.register_attention_layer(
+                    layer_id,
+                    num_heads=o_proj.num_heads,
+                    head_dim=o_proj.head_dim,
+                    o_proj_weight=o_proj.weight,
+                )
+                if o_proj.runtime is not runtime:
+                    o_proj.runtime = runtime
+                continue
+            hidden_size = int(o_proj.weight.shape[1])
+            num_heads = _attention_num_heads(attn, hidden_size)
+            head_dim = hidden_size // num_heads
+            runtime.register_attention_layer(
+                layer_id,
+                num_heads=num_heads,
+                head_dim=head_dim,
+                o_proj_weight=o_proj.weight,
+            )
+            attn.o_proj = AttentionHeadMaskedOProj(
+                o_proj,
+                layer_id,
+                runtime,
+                num_heads=num_heads,
+                head_dim=head_dim,
+            )
     return model
 
 

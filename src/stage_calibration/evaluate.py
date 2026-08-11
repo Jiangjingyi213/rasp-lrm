@@ -397,6 +397,10 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
             score_mode=str(method.get("score_mode", "activation")),
             max_mask_swap_fraction=float(method.get("max_mask_swap_fraction", 1.0)),
             stage_budget_controller=dict(method.get("stage_budget_controller", {})),
+            attention_head_pruning=dict(method.get("attention_head_pruning", {})),
+            multi_structure_budget_controller=dict(
+                method.get("multi_structure_budget_controller", {})
+            ),
         )
         apply_adaptive_stage_griffin(model, runtime)
         return runtime
@@ -540,6 +544,8 @@ def evaluate_method(
     fallback = Counter()
     theoretical = []
     actual = []
+    attention_actual = []
+    attention_actual_by_stage_weighted: dict[str, list[float]] = defaultdict(list)
     actual_pruning_accounting = None
     runtime_backend = None
     runtime_alpha = None
@@ -634,6 +640,16 @@ def evaluate_method(
     stage_budget_debt_summaries = []
     stage_budget_selected_ratios = None
     stage_budget_theoretical = []
+    attention_head_enabled = False
+    attention_head_score_mode = None
+    attention_o_proj_norm_hash = None
+    attention_head_ratio_tokens = Counter()
+    attention_head_selected_ratio_actions = Counter()
+    multi_structure_enabled = False
+    multi_structure_actions = Counter()
+    multi_structure_selected_pair_actions = Counter()
+    selected_mlp_ratio_by_stage = None
+    selected_attention_ratio_by_stage = None
     for row in rows:
         runtime_summary = row["runtime_stage_mask"]
         runtime_backend = runtime_backend or runtime_summary.get("backend")
@@ -900,6 +916,43 @@ def evaluate_method(
                 "stage_budget_mean_volatility_risk_by_stage", {}
             ).items():
                 stage_budget_volatility_risks[str(stage)].append(float(value))
+        if runtime_summary.get("attention_head_pruning_enabled"):
+            attention_head_enabled = True
+            attention_head_score_mode = (
+                attention_head_score_mode or runtime_summary.get("attention_head_score_mode")
+            )
+            attention_o_proj_norm_hash = (
+                attention_o_proj_norm_hash or runtime_summary.get("attention_o_proj_norm_hash")
+            )
+            attention_head_ratio_tokens.update(
+                runtime_summary.get("attention_head_ratio_tokens", {})
+            )
+            attention_head_selected_ratio_actions.update(
+                runtime_summary.get("attention_head_selected_ratio_actions", {})
+            )
+            attention_actual.append(
+                float(runtime_summary.get("actual_average_attention_head_pruning_ratio", 0.0))
+            )
+            for stage, value in runtime_summary.get(
+                "actual_attention_head_pruning_ratio_by_stage", {}
+            ).items():
+                attention_actual_by_stage_weighted[str(stage)].append(float(value))
+        if runtime_summary.get("multi_structure_budget_controller_enabled"):
+            multi_structure_enabled = True
+            multi_structure_actions.update(
+                runtime_summary.get("multi_structure_actions_by_stage", {})
+            )
+            multi_structure_selected_pair_actions.update(
+                runtime_summary.get("multi_structure_selected_pair_actions", {})
+            )
+            selected_mlp_ratio_by_stage = (
+                selected_mlp_ratio_by_stage
+                or runtime_summary.get("selected_mlp_ratio_by_stage")
+            )
+            selected_attention_ratio_by_stage = (
+                selected_attention_ratio_by_stage
+                or runtime_summary.get("selected_attention_ratio_by_stage")
+            )
         stage_tokens.update(runtime_summary["tokens_by_stage"])
         dense_observation_tokens.update(runtime_summary.get("dense_observation_tokens_by_stage", {}))
         masked_tokens.update(runtime_summary.get("masked_tokens_by_stage", {}))
@@ -938,6 +991,34 @@ def evaluate_method(
         "actual_average_mlp_pruning_ratio": sum(actual) / len(actual) if actual else 0.0,
         "actual_pruning_accounting": actual_pruning_accounting or "estimated_from_stage_ratios",
     }
+    if attention_head_enabled:
+        summary["attention_head_pruning_enabled"] = True
+        summary["attention_head_score_mode"] = attention_head_score_mode
+        summary["attention_o_proj_norm_hash"] = attention_o_proj_norm_hash
+        summary["actual_average_attention_head_pruning_ratio"] = (
+            sum(attention_actual) / len(attention_actual) if attention_actual else 0.0
+        )
+        summary["actual_attention_head_pruning_ratio_by_stage"] = {
+            stage: sum(values) / len(values)
+            for stage, values in attention_actual_by_stage_weighted.items()
+            if values
+        }
+        summary["attention_head_ratio_tokens"] = dict(attention_head_ratio_tokens)
+        summary["attention_head_selected_ratio_actions"] = dict(
+            attention_head_selected_ratio_actions
+        )
+        summary["joint_logical_pruning_summary"] = {
+            "mlp": summary["actual_average_mlp_pruning_ratio"],
+            "attention_head": summary["actual_average_attention_head_pruning_ratio"],
+        }
+    if multi_structure_enabled:
+        summary["multi_structure_budget_controller_enabled"] = True
+        summary["multi_structure_actions_by_stage"] = dict(multi_structure_actions)
+        summary["multi_structure_selected_pair_actions"] = dict(
+            multi_structure_selected_pair_actions
+        )
+        summary["selected_mlp_ratio_by_stage"] = selected_mlp_ratio_by_stage
+        summary["selected_attention_ratio_by_stage"] = selected_attention_ratio_by_stage
     protocol_valid = [row for row in rows if bool(row["stage_protocol"]["valid"])]
     fallback_rows = [row for row in rows if not bool(row["stage_protocol"]["valid"])]
     summary["protocol_valid_accuracy"] = (
