@@ -56,6 +56,10 @@ def uniform_ratios(ratio: float) -> dict[str, float]:
 
 
 def method_requires_mask_bank(method: dict[str, Any]) -> bool:
+    if bool(method.get("attention_head_pruning", {}).get("enabled", False)):
+        return True
+    if bool(method.get("multi_structure_budget_controller", {}).get("enabled", False)):
+        return True
     if all(float(value) <= 0.0 for value in method.get("stage_ratios", {}).values()):
         return False
     return method.get("policy") not in {
