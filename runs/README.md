@@ -54,3 +54,14 @@ actual pruning instead of forcing the full 34% T30 target.
 Small stage-budget lift after v4 smoke landed just below 32% actual pruning.
 This branch keeps the same mainline mechanism and raises only stage floor ratios
 and budget pressure, with v4 mild used as the immediate performance reference.
+
+## 12_additional_baselines
+
+Paper-facing additional baseline runs kept outside the method-search directories.
+
+### 01_shortgpt_t30
+
+ShortGPT T30 matched baseline for Qwen3-1.7B. It precomputes one frozen
+Block-Influence layer-pruning artifact, then evaluates only
+`shortgpt_t30_matched` on GSM8K/MATH-500 full and the five-dataset priority
+suite.

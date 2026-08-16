@@ -1567,6 +1567,9 @@ def _shortgpt_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> di
     ):
         if key in row:
             extra[key] = deepcopy(row[key])
+    if "pruned_layers_path" in row and "pruned_layers" not in extra:
+        data = read_json(row["pruned_layers_path"])
+        extra["pruned_layers"] = data.get("pruned_layers", data)
     return method(
         name,
         "shortgpt",

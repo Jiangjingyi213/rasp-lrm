@@ -1,0 +1,88 @@
+seed: 3
+
+workflow:
+  profile: pilot
+  root: runs/12_additional_baselines/01_shortgpt_t30/02_priority_suite_qwen3_1p7b
+
+stages: [setup, reasoning, verify, final]
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float16
+  device_map: null
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  ordinary:
+    use_chat_template: true
+    enable_thinking: true
+    answer_format: boxed
+  structured:
+    use_chat_template: true
+    enable_thinking: true
+    explicit_stage_protocol: true
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
+
+generation:
+  max_input_tokens: 4096
+  max_new_tokens: 16384
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+
+calibration_pool:
+  allowed_sources: ["*"]
+  excluded_sources: [GSM8k, GSM8K, MATH, Omni-MATH, amc_aime, cn_k12]
+
+masks:
+  metric: WIFV
+  structure: UL-UM
+  ratios: [0.00]
+  c4_samples: 0
+  bias_compensation: true
+
+shortgpt:
+  enabled: true
+  calibration_samples: 128
+  calibration_max_input_tokens: 2048
+  selection_method: block_influence
+  variants:
+    - method_name: shortgpt_t30_matched
+      prune_ratio: 0.20
+      matched_rasp_reference: t30_math_safe
+      target_pruning_label: t30
+      target_pruning_ratio: 0.34
+      variant_role: additional_depth_pruning_baseline
+      pruned_layers_path: runs/12_additional_baselines/01_shortgpt_t30/00_preflight/shortgpt_t30_pruned_layers.json
+      selection_note: "ShortGPT depth-pruning baseline; Block Influence layer selection with 20% decoder-layer logical skip, matched to the T30 comparison tier."
+
+evaluation:
+  allow_final_without_dev: true
+  math500_name_or_path: HuggingFaceH4/MATH-500
+  final_datasets:
+    - dataset: aime2024
+      name_or_path: HuggingFaceH4/aime_2024
+      split: train
+    - dataset: aime2025
+      name_or_path: math-ai/aime25
+      split: test
+    - dataset: amc2023
+      name_or_path: zwhe99/amc23
+      split: train
+    - dataset: gpqa_diamond
+      name_or_path: zai-org/glm-simple-evals-dataset
+      data_files: gpqa/gpqa_diamond.csv
+      split: train
+      choice_seed: 17
+    - dataset: arc_challenge
+      name_or_path: ai2_arc
+      dataset_config: ARC-Challenge
+      split: test
+
+profiles:
+  pilot:
+    final_eval_limit: -1
+    final_seeds: [3]
+    reuse_existing_method_summaries: true
+    final_methods: [shortgpt_t30_matched]
