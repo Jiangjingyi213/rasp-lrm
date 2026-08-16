@@ -343,7 +343,15 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
                 "real_speedup_claimed": False,
             },
         )
-    if all(float(value) <= 0.0 for value in method.get("stage_ratios", {}).values()):
+    has_attention_pruning = bool(method.get("attention_head_pruning", {}).get("enabled", False))
+    has_multi_structure_controller = bool(
+        method.get("multi_structure_budget_controller", {}).get("enabled", False)
+    )
+    if (
+        not has_attention_pruning
+        and not has_multi_structure_controller
+        and all(float(value) <= 0.0 for value in method.get("stage_ratios", {}).values())
+    ):
         return DenseStageRuntime(policy=str(method.get("policy", "dense")))
     if bank is None:
         raise ValueError(f"Method {method['name']} with policy {method['policy']} requires a mask bank")

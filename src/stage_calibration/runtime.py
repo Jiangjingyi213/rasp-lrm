@@ -1898,7 +1898,6 @@ class SafeDynamicStageGriffinRuntime:
             raise RuntimeError(f"Attention layer {layer_id} was not registered")
         if token_count > 1:
             self._attention_append_recent("prompt", layer_id, hidden)
-            self._record_attention_pruning("prompt", layer_id, token_count, None)
             return None
         stage = self.active_stage
         if self.fallback_reason is not None or stage not in STAGES:

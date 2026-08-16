@@ -1,0 +1,117 @@
+seed: 3
+
+workflow:
+  profile: pilot
+  root: runs/10_stage_budget_output_aware_v1/11_multi_structure_stage_budget_v1/06_attention_vs_mlp_h06_1040
+
+stages: [setup, reasoning, verify, final]
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float32
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  ordinary: {use_chat_template: true, enable_thinking: true, answer_format: boxed}
+  structured:
+    use_chat_template: true
+    enable_thinking: true
+    explicit_stage_protocol: true
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
+
+generation: {max_input_tokens: 4096, max_new_tokens: 16384, temperature: 0.6, top_p: 0.95, top_k: 20}
+calibration_pool:
+  allowed_sources: ["*"]
+  excluded_sources: [GSM8k, GSM8K, MATH, Omni-MATH, amc_aime, cn_k12]
+selection: {difficulty_filter: any_correct}
+calibration: {forward_chunk_tokens: 1024}
+masks: {metric: WIFV, structure: UL-UM, ratios: [0.00, 0.10, 0.15, 0.20], c4_samples: 0, bias_compensation: true}
+
+adaptive_griffin:
+  enabled: true
+  policy: calibrated_stage_safe_dynamic_griffin
+  score_mode: activation
+  runtime_weight: 0.25
+  prior_weight: 0.75
+  prior_policy: trajectory_global
+  warmup_tokens: {setup: 0, reasoning: 16, verify: 16, final: 0}
+  stage_ratios: {setup: 0.0, reasoning: 0.0, verify: 0.0, final: 0.0}
+  protected_core_ratios: {setup: 0.35, reasoning: 0.40, verify: 0.45, final: 0.45}
+  refresh_intervals: {setup: 192, reasoning: 192, verify: 192, final: 0}
+  window_tokens: {setup: 192, reasoning: 192, verify: 192, final: 1}
+  bias_compensation: true
+  backend: logical_mask
+  variants:
+    - method_name: mlp_only_stage_budget_h06
+      variant_role: mlp_only_dynamic_h06_same_rate_reference
+      prior_policy: trajectory_global
+      score_mode: activation
+      stage_ratios: {setup: 0.08, reasoning: 0.06, verify: 0.06, final: 0.04}
+      target_pruning_ratio: 0.06
+      min_target_pruning_ratio: 0.045
+      max_target_pruning_ratio: 0.075
+      target_pruning_label: h06_same_rate
+      stage_budget_controller:
+        enabled: true
+        target_actual_pruning: 0.06
+        decision_window_tokens: 128
+        action_ratios: [0.00, 0.04, 0.06, 0.08, 0.10]
+        stage_ratio_bounds:
+          setup: [0.04, 0.10]
+          reasoning: [0.04, 0.08]
+          verify: [0.04, 0.08]
+          final: [0.00, 0.04]
+        budget_debt_gain: 0.85
+        budget_catchup_threshold: 0.006
+        risk_ratio_penalty: 0.02
+        risk_dense_threshold: 1.01
+        ratio_selection_mode: estimated_actual
+    - method_name: attention_head_only_stage_budget_h06
+      variant_role: attention_only_dynamic_h06_runtime_fixed
+      prior_policy: trajectory_global
+      score_mode: activation
+      stage_ratios: {setup: 0.0, reasoning: 0.0, verify: 0.0, final: 0.0}
+      target_pruning_ratio: 0.0
+      min_target_pruning_ratio: 0.0
+      max_target_pruning_ratio: 0.01
+      stage_budget_controller: {enabled: false}
+      attention_head_pruning:
+        enabled: true
+        dynamic_budget: true
+        score_mode: output_aware
+        target_attention_pruning: 0.06
+        decision_window_tokens: 128
+        action_ratios: [0.00, 0.0625, 0.125]
+        stage_ratios: {setup: 0.0625, reasoning: 0.0625, verify: 0.0625, final: 0.0}
+        stage_ratio_bounds:
+          setup: [0.0625, 0.125]
+          reasoning: [0.00, 0.0625]
+          verify: [0.00, 0.0625]
+          final: [0.00, 0.00]
+        budget_debt_gain: 0.75
+        budget_catchup_threshold: 0.01
+        risk_ratio_penalty: 0.02
+
+evaluation:
+  allow_final_without_dev: true
+  math500_name_or_path: HuggingFaceH4/MATH-500
+  final_datasets: [{dataset: gsm8k, split: test}, {dataset: math500, name_or_path: HuggingFaceH4/MATH-500, split: test}]
+
+profiles:
+  pilot:
+    candidate_problems: 600
+    generations_per_problem: 2
+    calibration_problems: 128
+    dev_problems: 1040
+    min_stage_tokens: 2048
+    min_stage_tokens_by_stage: {setup: 2048, reasoning: 4096, verify: 2048, final: 256}
+    stage_token_balanced_selection: true
+    expansion_problems: 300
+    difficulty_filter: any_correct
+    c4_samples: 0
+    final_eval_limit: 520
+    final_seeds: [3]
+    reuse_existing_method_summaries: true
+    final_methods: [mlp_only_stage_budget_h06, attention_head_only_stage_budget_h06]
