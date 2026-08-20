@@ -96,7 +96,7 @@ LOG_DIR="${PRIORITY_LOG_DIR}" \
 LOG_PREFIX="shortgpt_t30_qwen3_1p7b_priority" \
 BASELINE_LABEL="ShortGPT T30" \
 BASELINE_SCHEMA="shortgpt_t30_priority_suite_aggregate_v1" \
-DATASETS_OVERRIDE="${DATASETS_OVERRIDE:-aime2024 aime2025 amc2023 gpqa_diamond arc_challenge}" \
+DATASETS_OVERRIDE="${DATASETS_OVERRIDE:-amc2023 gpqa_diamond arc_challenge}" \
 bash scripts/run_griffin_prompt_priority_suite_gpu.sh
 
 echo "==== ALL DONE ShortGPT T30 Qwen3-1.7B ===="
