@@ -61,12 +61,6 @@ evaluation:
   allow_final_without_dev: true
   math500_name_or_path: HuggingFaceH4/MATH-500
   final_datasets:
-    - dataset: aime2024
-      name_or_path: HuggingFaceH4/aime_2024
-      split: train
-    - dataset: aime2025
-      name_or_path: math-ai/aime25
-      split: test
     - dataset: amc2023
       name_or_path: zwhe99/amc23
       split: train
