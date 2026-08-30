@@ -1708,6 +1708,8 @@ def _flap_mlp_official_method_from_cfg(row: dict[str, Any], prompt: dict[str, An
     extra: dict[str, Any] = {}
     if "layers" in row:
         extra["layers"] = deepcopy(row["layers"])
+    if "precomputed_masks_path" in row:
+        extra["precomputed_masks_path"] = str(row["precomputed_masks_path"])
     return method(
         name,
         "flap_mlp_official",

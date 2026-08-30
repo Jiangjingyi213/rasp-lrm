@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import json
+from pathlib import Path
 from typing import Iterable
 
 import torch
@@ -208,6 +210,163 @@ def _prune_mlp_channels(mlp: nn.Module, keep_mask: torch.Tensor, mean_input: tor
         mlp.intermediate_size = int(keep_idx.numel())
 
 
+def _summary_from_masks(
+    *,
+    masks: dict[int, torch.Tensor],
+    total_layers: int,
+    original_intermediate_size: int,
+    ratio: float,
+    calibration_dataset: str,
+    calibration_samples: int,
+    metric: str,
+    structure: str,
+    bias_compensation: bool,
+    source: str,
+) -> FlapMlpSummary:
+    kept: dict[str, int] = {}
+    pruned: dict[str, int] = {}
+    for layer_id, keep_mask in masks.items():
+        kept[str(layer_id)] = int(keep_mask.sum().item())
+        pruned[str(layer_id)] = int((~keep_mask).sum().item())
+    return FlapMlpSummary(
+        method="flap_mlp_qwen3",
+        source=source,
+        metric=metric,
+        structure=structure,
+        ratio=float(ratio),
+        calibration_dataset=calibration_dataset,
+        calibration_samples=int(calibration_samples),
+        target="mlp.down_proj_input_channels",
+        physical_pruning=True,
+        bias_compensation=bool(bias_compensation),
+        total_layers=int(total_layers),
+        pruned_layers=sorted(int(layer_id) for layer_id in masks),
+        original_intermediate_size=int(original_intermediate_size),
+        kept_channels_per_layer=kept,
+        pruned_channels_per_layer=pruned,
+    )
+
+
+@torch.no_grad()
+def build_flap_mlp_mask_artifact_qwen3(
+    model: nn.Module,
+    tokenizer,
+    calibration_texts: list[str],
+    ratio: float,
+    calibration_dataset: str = "wikitext2",
+    metric: str = "WIFV",
+    structure: str = "AL-AM",
+    calibration_samples: int = 32,
+    max_input_tokens: int = 2048,
+    layers: Iterable[int] | None = None,
+    bias_compensation: bool = False,
+) -> dict:
+    """Build reusable FLAP-MLP channel masks without mutating the model."""
+
+    metric = metric.upper()
+    structure = structure.upper()
+    if bias_compensation:
+        raise ValueError("Reusable FLAP artifacts currently require bias_compensation=false")
+    if metric not in {"IFV", "WIFV", "WIFN"}:
+        raise ValueError("FLAP-MLP Qwen3 metric must be one of {'IFV', 'WIFV', 'WIFN'}")
+
+    decoder_layers = get_decoder_layers(model)
+    selected_layers = _layer_ids(model, layers)
+    first_mlp = _qwen3_mlp(decoder_layers[selected_layers[0]])
+    original_intermediate_size = int(first_mlp.down_proj.weight.shape[1])
+
+    use_cache = getattr(model.config, "use_cache", None)
+    if use_cache is not None:
+        model.config.use_cache = False
+    metrics, _means = collect_flap_mlp_statistics_qwen3(
+        model=model,
+        tokenizer=tokenizer,
+        calibration_texts=calibration_texts,
+        metric=metric,
+        calibration_samples=calibration_samples,
+        max_input_tokens=max_input_tokens,
+        layers=selected_layers,
+    )
+    if use_cache is not None:
+        model.config.use_cache = use_cache
+
+    masks = _masks_from_metrics(metrics, ratio=ratio, structure=structure)
+    summary = _summary_from_masks(
+        masks=masks,
+        total_layers=len(decoder_layers),
+        original_intermediate_size=original_intermediate_size,
+        ratio=ratio,
+        calibration_dataset=calibration_dataset,
+        calibration_samples=min(int(calibration_samples), len(calibration_texts)),
+        metric=metric,
+        structure=structure,
+        bias_compensation=False,
+        source="Reusable FLAP MLP mask artifact for Qwen3; calibration stats computed once.",
+    )
+    return {
+        "schema": "flap_mlp_qwen3_mask_artifact_v1",
+        "summary": summary_to_dict(summary),
+        "keep_indices_by_layer": {
+            str(layer_id): torch.where(mask)[0].cpu().tolist()
+            for layer_id, mask in masks.items()
+        },
+        "pruned_indices_by_layer": {
+            str(layer_id): torch.where(~mask)[0].cpu().tolist()
+            for layer_id, mask in masks.items()
+        },
+    }
+
+
+@torch.no_grad()
+def apply_flap_mlp_artifact_qwen3(
+    model: nn.Module,
+    artifact: dict | str | Path,
+) -> FlapMlpSummary:
+    """Apply a precomputed FLAP-MLP mask artifact to the loaded model."""
+
+    if isinstance(artifact, (str, Path)):
+        with Path(artifact).open("r", encoding="utf-8") as f:
+            artifact = json.load(f)
+    if artifact.get("schema") != "flap_mlp_qwen3_mask_artifact_v1":
+        raise ValueError(f"Unsupported FLAP artifact schema: {artifact.get('schema')}")
+    summary = dict(artifact["summary"])
+    if bool(summary.get("bias_compensation", False)):
+        raise ValueError("Reusable FLAP artifacts currently require bias_compensation=false")
+
+    decoder_layers = get_decoder_layers(model)
+    original_intermediate_size = int(summary["original_intermediate_size"])
+    masks: dict[int, torch.Tensor] = {}
+    for layer_key, keep_indices in artifact["keep_indices_by_layer"].items():
+        layer_id = int(layer_key)
+        if layer_id < 0 or layer_id >= len(decoder_layers):
+            raise ValueError(f"FLAP artifact layer {layer_id} is out of range")
+        keep_mask = torch.zeros(original_intermediate_size, dtype=torch.bool)
+        keep_mask[torch.tensor([int(i) for i in keep_indices], dtype=torch.long)] = True
+        masks[layer_id] = keep_mask
+
+    zero_mean = torch.zeros(original_intermediate_size)
+    for layer_id, keep_mask in masks.items():
+        _prune_mlp_channels(
+            _qwen3_mlp(decoder_layers[layer_id]),
+            keep_mask,
+            zero_mean,
+            bias_compensation=False,
+        )
+
+    return _summary_from_masks(
+        masks=masks,
+        total_layers=len(decoder_layers),
+        original_intermediate_size=original_intermediate_size,
+        ratio=float(summary["ratio"]),
+        calibration_dataset=str(summary["calibration_dataset"]),
+        calibration_samples=int(summary["calibration_samples"]),
+        metric=str(summary["metric"]),
+        structure=str(summary["structure"]),
+        bias_compensation=False,
+        source=str(summary.get("source", "Reusable FLAP MLP mask artifact for Qwen3")),
+    )
+
+
 @torch.no_grad()
 def apply_flap_mlp_pruning_qwen3(
     model: nn.Module,
@@ -248,30 +407,21 @@ def apply_flap_mlp_pruning_qwen3(
         model.config.use_cache = use_cache
 
     masks = _masks_from_metrics(metrics, ratio=ratio, structure=structure)
-    kept: dict[str, int] = {}
-    pruned: dict[str, int] = {}
     for layer_id in selected_layers:
         keep_mask = masks[layer_id]
-        kept[str(layer_id)] = int(keep_mask.sum().item())
-        pruned[str(layer_id)] = int((~keep_mask).sum().item())
         _prune_mlp_channels(_qwen3_mlp(decoder_layers[layer_id]), keep_mask, means[layer_id], bias_compensation)
 
-    return FlapMlpSummary(
-        method="flap_mlp_qwen3",
-        source="FLAP MLP port from external_repos/FLAP commit 3bb57db3449dd2fa04a5c2192de80e87e33be2b1",
-        metric=metric,
-        structure=structure,
-        ratio=float(ratio),
+    return _summary_from_masks(
+        masks=masks,
+        total_layers=len(decoder_layers),
+        original_intermediate_size=original_intermediate_size,
+        ratio=ratio,
         calibration_dataset=calibration_dataset,
         calibration_samples=min(int(calibration_samples), len(calibration_texts)),
-        target="mlp.down_proj_input_channels",
-        physical_pruning=True,
+        metric=metric,
+        structure=structure,
         bias_compensation=bool(bias_compensation),
-        total_layers=len(decoder_layers),
-        pruned_layers=selected_layers,
-        original_intermediate_size=original_intermediate_size,
-        kept_channels_per_layer=kept,
-        pruned_channels_per_layer=pruned,
+        source="FLAP MLP port from external_repos/FLAP commit 3bb57db3449dd2fa04a5c2192de80e87e33be2b1",
     )
 
 

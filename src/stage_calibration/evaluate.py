@@ -12,6 +12,7 @@ from tqdm import tqdm
 from src.data.format_prompt import build_prompt, forced_assistant_prefix
 from src.metrics.answer_match import answer_match, extract_answer
 from src.baselines.flap_mlp_qwen3 import (
+    apply_flap_mlp_artifact_qwen3,
     apply_flap_mlp_pruning_qwen3,
     summary_to_dict as flap_summary_to_dict,
 )
@@ -190,28 +191,35 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
             },
         )
     if method["policy"] == "flap_mlp_official":
-        source = str(method.get("calibration_dataset", "mixed_calibration"))
-        if source == "wikitext2":
-            sample_count = int(method.get("calibration_samples", 128))
+        precomputed_masks_path = method.get("precomputed_masks_path")
+        if precomputed_masks_path:
+            flap_summary = apply_flap_mlp_artifact_qwen3(
+                model,
+                artifact=str(precomputed_masks_path),
+            )
         else:
-            calibration_rows = read_jsonl(str(method["calibration_path"]))
-            sample_count = min(int(method.get("calibration_samples", 128)), len(calibration_rows))
-        if sample_count <= 0:
-            raise ValueError(f"No FLAP calibration rows found at {method['calibration_path']}")
-        calibration_texts = _flap_calibration_texts(method["tokenizer"], method, sample_count)
-        flap_summary = apply_flap_mlp_pruning_qwen3(
-            model,
-            method["tokenizer"],
-            calibration_texts=calibration_texts,
-            ratio=float(method.get("prune_ratio", method["stage_ratios"].get("setup", 0.0))),
-            calibration_dataset=str(method.get("calibration_dataset", "mixed_calibration")),
-            metric=str(method.get("metric", "WIFV")),
-            structure=str(method.get("structure", "AL-AM")),
-            calibration_samples=sample_count,
-            max_input_tokens=int(method.get("calibration_max_input_tokens", 2048)),
-            layers=method.get("layers"),
-            bias_compensation=bool(method.get("bias_compensation", False)),
-        )
+            source = str(method.get("calibration_dataset", "mixed_calibration"))
+            if source == "wikitext2":
+                sample_count = int(method.get("calibration_samples", 128))
+            else:
+                calibration_rows = read_jsonl(str(method["calibration_path"]))
+                sample_count = min(int(method.get("calibration_samples", 128)), len(calibration_rows))
+            if sample_count <= 0:
+                raise ValueError(f"No FLAP calibration rows found at {method['calibration_path']}")
+            calibration_texts = _flap_calibration_texts(method["tokenizer"], method, sample_count)
+            flap_summary = apply_flap_mlp_pruning_qwen3(
+                model,
+                method["tokenizer"],
+                calibration_texts=calibration_texts,
+                ratio=float(method.get("prune_ratio", method["stage_ratios"].get("setup", 0.0))),
+                calibration_dataset=str(method.get("calibration_dataset", "mixed_calibration")),
+                metric=str(method.get("metric", "WIFV")),
+                structure=str(method.get("structure", "AL-AM")),
+                calibration_samples=sample_count,
+                max_input_tokens=int(method.get("calibration_max_input_tokens", 2048)),
+                layers=method.get("layers"),
+                bias_compensation=bool(method.get("bias_compensation", False)),
+            )
         summary = flap_summary_to_dict(flap_summary)
         total_pruned = sum(int(value) for value in summary["pruned_channels_per_layer"].values())
         total_channels = int(summary["original_intermediate_size"]) * len(summary["pruned_layers"])
@@ -230,6 +238,7 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
                 "flap_calibration_dataset": str(summary["calibration_dataset"]),
                 "flap_calibration_samples": int(summary["calibration_samples"]),
                 "flap_calibration_source": str(method["calibration_path"]),
+                "flap_precomputed_masks_path": str(precomputed_masks_path or ""),
                 "flap_bias_compensation": bool(summary["bias_compensation"]),
                 "flap_physical_pruning": bool(summary["physical_pruning"]),
                 "flap_target": str(summary["target"]),
@@ -615,6 +624,7 @@ def evaluate_method(
     flap_calibration_dataset = None
     flap_calibration_samples = None
     flap_calibration_source = None
+    flap_precomputed_masks_path = None
     flap_bias_compensation = None
     flap_physical_pruning = None
     flap_target = None
@@ -782,6 +792,9 @@ def evaluate_method(
         )
         flap_calibration_source = (
             flap_calibration_source or runtime_summary.get("flap_calibration_source")
+        )
+        flap_precomputed_masks_path = (
+            flap_precomputed_masks_path or runtime_summary.get("flap_precomputed_masks_path")
         )
         flap_bias_compensation = (
             flap_bias_compensation
@@ -1228,6 +1241,8 @@ def evaluate_method(
         summary["flap_calibration_samples"] = flap_calibration_samples
     if flap_calibration_source:
         summary["flap_calibration_source"] = flap_calibration_source
+    if flap_precomputed_masks_path:
+        summary["flap_precomputed_masks_path"] = flap_precomputed_masks_path
     if flap_bias_compensation is not None:
         summary["flap_bias_compensation"] = flap_bias_compensation
     if flap_physical_pruning is not None:
