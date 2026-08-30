@@ -18,7 +18,12 @@ SKIP_EXISTING="${SKIP_EXISTING:-1}"
 
 read -r -a GPUS <<< "${FINAL_GPUS:-0 1 2 3 4 5 6 7}"
 export FINAL_GPUS="${FINAL_GPUS:-0 1 2 3 4 5 6 7}"
-export STAGE_FINAL_SHARD_COUNT="${STAGE_FINAL_SHARD_COUNT:-${#GPUS[@]}}"
+REQUESTED_SHARD_COUNT="${STAGE_FINAL_SHARD_COUNT:-${#GPUS[@]}}"
+if [[ "${REQUESTED_SHARD_COUNT}" -gt "${#GPUS[@]}" ]]; then
+  echo "Requested ${REQUESTED_SHARD_COUNT} shards but only ${#GPUS[@]} GPU ids were provided; using ${#GPUS[@]} shards."
+  REQUESTED_SHARD_COUNT="${#GPUS[@]}"
+fi
+export STAGE_FINAL_SHARD_COUNT="${REQUESTED_SHARD_COUNT}"
 
 if [[ ! -f "${SOURCE_ROOT}/03_selected/calibration.jsonl" ]]; then
   echo "Missing FLAP calibration file: ${SOURCE_ROOT}/03_selected/calibration.jsonl" >&2
