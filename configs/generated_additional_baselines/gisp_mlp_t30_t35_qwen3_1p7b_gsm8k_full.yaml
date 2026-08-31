@@ -1,0 +1,85 @@
+seed: 3
+
+workflow:
+  profile: pilot
+  root: runs/12_additional_baselines/04_gisp_mlp/01_t30_t35_gsm8k_full
+
+stages: [setup, reasoning, verify, final]
+
+model:
+  name_or_path: Qwen/Qwen3-1.7B
+  dtype: float16
+  device_map: null
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  ordinary:
+    use_chat_template: true
+    enable_thinking: true
+    answer_format: boxed
+  structured:
+    use_chat_template: true
+    enable_thinking: true
+    explicit_stage_protocol: true
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
+
+generation:
+  max_input_tokens: 4096
+  max_new_tokens: 8192
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+
+calibration_pool:
+  allowed_sources: ["*"]
+  excluded_sources: [GSM8k, GSM8K, MATH, Omni-MATH, amc_aime, cn_k12]
+
+masks:
+  metric: WIFV
+  structure: UL-UM
+  ratios: [0.00]
+  c4_samples: 0
+  bias_compensation: true
+
+gisp_mlp:
+  enabled: true
+  calibration_samples: 32
+  calibration_max_input_tokens: 1024
+  calibration_prompt_mode: structured_prompt
+  calibration_text_field: text
+  iterations: 4
+  score_normalization: layer_mean
+  variants:
+    - method_name: gisp_mlp_t30
+      prune_ratio: 0.30
+      target_pruning_ratio: 0.30
+      target_pruning_label: t30
+      matched_rasp_reference: t30_math_safe
+      precomputed_masks_path: runs/12_additional_baselines/04_gisp_mlp/01_t30_t35_gsm8k_full/00_preflight/gisp_mlp_t30_artifact.json
+      selection_note: "GISP-style global iterative first-order structured MLP-channel baseline at 30% pruning."
+    - method_name: gisp_mlp_t35
+      prune_ratio: 0.35
+      target_pruning_ratio: 0.35
+      target_pruning_label: t35
+      matched_rasp_reference: t30_math_safe
+      precomputed_masks_path: runs/12_additional_baselines/04_gisp_mlp/01_t30_t35_gsm8k_full/00_preflight/gisp_mlp_t35_artifact.json
+      selection_note: "GISP-style global iterative first-order structured MLP-channel baseline at 35% pruning."
+
+evaluation:
+  allow_final_without_dev: true
+  final_datasets:
+    - dataset: gsm8k
+      split: test
+
+profiles:
+  smoke:
+    final_eval_limit: 128
+    final_seeds: [3]
+    reuse_existing_method_summaries: true
+    final_methods: [gisp_mlp_t30, gisp_mlp_t35]
+  pilot:
+    final_eval_limit: -1
+    final_seeds: [3]
+    reuse_existing_method_summaries: true
+    final_methods: [gisp_mlp_t30, gisp_mlp_t35]

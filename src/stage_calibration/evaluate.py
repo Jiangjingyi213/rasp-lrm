@@ -16,6 +16,10 @@ from src.baselines.flap_mlp_qwen3 import (
     apply_flap_mlp_pruning_qwen3,
     summary_to_dict as flap_summary_to_dict,
 )
+from src.baselines.gisp_mlp_qwen3 import (
+    prepare_gisp_mlp_qwen3,
+    summary_to_dict as gisp_mlp_summary_to_dict,
+)
 from src.baselines.llm_pruner_mlp_qwen3 import (
     apply_llm_pruner_mlp_pruning_qwen3,
     summary_to_dict as llm_pruner_mlp_summary_to_dict,
@@ -70,6 +74,7 @@ def method_requires_mask_bank(method: dict[str, Any]) -> bool:
         "shortgpt",
         "limits_layer_pruning",
         "flap_mlp_official",
+        "gisp_mlp",
         "llm_pruner_mlp_static_width",
     }
 
@@ -291,6 +296,58 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
                     if "target_pruning_ratio" in method
                     else None
                 ),
+                "real_speedup_claimed": False,
+            },
+        )
+    if method["policy"] == "gisp_mlp":
+        gisp_summary, handles = prepare_gisp_mlp_qwen3(
+            model,
+            method["tokenizer"],
+            calibration_path=str(method["calibration_path"]),
+            prompt_config=dict(method.get("prompt", {})),
+            ratio=float(method.get("prune_ratio", method["stage_ratios"].get("setup", 0.0))),
+            iterations=int(method.get("iterations", 4)),
+            calibration_samples=int(method.get("calibration_samples", 64)),
+            max_input_tokens=int(method.get("calibration_max_input_tokens", 1024)),
+            calibration_prompt_mode=str(method.get("calibration_prompt_mode", "structured_prompt")),
+            calibration_text_field=str(method.get("calibration_text_field", "text")),
+            score_normalization=str(method.get("score_normalization", "layer_mean")),
+            layers=method.get("layers"),
+            precomputed_masks_path=method.get("precomputed_masks_path"),
+            matched_rasp_reference=str(method.get("matched_rasp_reference", "")),
+            target_matched_to_rasp_actual_mlp_pruning=(
+                float(method["target_pruning_ratio"])
+                if "target_pruning_ratio" in method
+                else None
+            ),
+        )
+        summary = gisp_mlp_summary_to_dict(gisp_summary)
+        actual_ratio = float(summary["actual_mlp_channel_pruning_ratio"])
+        return StaticMlpChannelPruningRuntime(
+            policy="gisp_mlp",
+            backend="gisp_mlp_qwen3_logical_channel_mask_v1",
+            baseline_type="gisp_global_iterative_structured_mlp_qwen3_port",
+            pruning_granularity="mlp_channel_structured",
+            mlp_channel_pruning_ratio=actual_ratio,
+            handles=handles,
+            extra_summary={
+                "gisp_mlp_summary": summary,
+                "gisp_ratio": float(summary["ratio"]),
+                "gisp_iterations": int(summary["iterations"]),
+                "gisp_calibration_samples": int(summary["calibration_samples"]),
+                "gisp_calibration_source": str(summary["calibration_path"]),
+                "gisp_calibration_prompt_mode": str(summary["calibration_prompt_mode"]),
+                "gisp_calibration_text_field": str(summary["calibration_text_field"]),
+                "gisp_score_normalization": str(summary["score_normalization"]),
+                "gisp_physical_pruning": bool(summary["physical_pruning"]),
+                "gisp_target": str(summary["target"]),
+                "gisp_kept_channels_per_layer": dict(summary["kept_channels_per_layer"]),
+                "gisp_pruned_channels_per_layer": dict(summary["pruned_channels_per_layer"]),
+                "gisp_actual_mlp_channel_pruning_ratio": actual_ratio,
+                "matched_rasp_reference": str(summary["matched_rasp_reference"]),
+                "target_matched_to_rasp_actual_mlp_pruning": summary[
+                    "target_matched_to_rasp_actual_mlp_pruning"
+                ],
                 "real_speedup_claimed": False,
             },
         )
@@ -517,6 +574,7 @@ def evaluate_method(
         "shortgpt",
         "limits_layer_pruning",
         "flap_mlp_official",
+        "gisp_mlp",
     }:
         method["tokenizer"] = tokenizer
     runtime = _runtime_for_method(model, bank, method)
@@ -639,6 +697,18 @@ def evaluate_method(
     llm_pruner_kept_channels_per_layer = None
     llm_pruner_pruned_channels_per_layer = None
     llm_pruner_actual_mlp_channel_pruning_ratio = None
+    gisp_ratio = None
+    gisp_iterations = None
+    gisp_calibration_samples = None
+    gisp_calibration_source = None
+    gisp_calibration_prompt_mode = None
+    gisp_calibration_text_field = None
+    gisp_score_normalization = None
+    gisp_physical_pruning = None
+    gisp_target = None
+    gisp_kept_channels_per_layer = None
+    gisp_pruned_channels_per_layer = None
+    gisp_actual_mlp_channel_pruning_ratio = None
     weight_sparsity_by_module = None
     matched_rasp_reference = None
     target_matched_to_rasp_actual_mlp_pruning = None
@@ -843,6 +913,50 @@ def evaluate_method(
             llm_pruner_actual_mlp_channel_pruning_ratio
             if llm_pruner_actual_mlp_channel_pruning_ratio is not None
             else runtime_summary.get("llm_pruner_actual_mlp_channel_pruning_ratio")
+        )
+        gisp_ratio = (
+            gisp_ratio
+            if gisp_ratio is not None
+            else runtime_summary.get("gisp_ratio")
+        )
+        gisp_iterations = (
+            gisp_iterations
+            if gisp_iterations is not None
+            else runtime_summary.get("gisp_iterations")
+        )
+        gisp_calibration_samples = (
+            gisp_calibration_samples
+            if gisp_calibration_samples is not None
+            else runtime_summary.get("gisp_calibration_samples")
+        )
+        gisp_calibration_source = (
+            gisp_calibration_source or runtime_summary.get("gisp_calibration_source")
+        )
+        gisp_calibration_prompt_mode = (
+            gisp_calibration_prompt_mode or runtime_summary.get("gisp_calibration_prompt_mode")
+        )
+        gisp_calibration_text_field = (
+            gisp_calibration_text_field or runtime_summary.get("gisp_calibration_text_field")
+        )
+        gisp_score_normalization = (
+            gisp_score_normalization or runtime_summary.get("gisp_score_normalization")
+        )
+        gisp_physical_pruning = (
+            gisp_physical_pruning
+            if gisp_physical_pruning is not None
+            else runtime_summary.get("gisp_physical_pruning")
+        )
+        gisp_target = gisp_target or runtime_summary.get("gisp_target")
+        gisp_kept_channels_per_layer = (
+            gisp_kept_channels_per_layer or runtime_summary.get("gisp_kept_channels_per_layer")
+        )
+        gisp_pruned_channels_per_layer = (
+            gisp_pruned_channels_per_layer or runtime_summary.get("gisp_pruned_channels_per_layer")
+        )
+        gisp_actual_mlp_channel_pruning_ratio = (
+            gisp_actual_mlp_channel_pruning_ratio
+            if gisp_actual_mlp_channel_pruning_ratio is not None
+            else runtime_summary.get("gisp_actual_mlp_channel_pruning_ratio")
         )
         weight_sparsity_by_module = (
             weight_sparsity_by_module or runtime_summary.get("weight_sparsity_by_module")
@@ -1273,6 +1387,30 @@ def evaluate_method(
         summary["llm_pruner_actual_mlp_channel_pruning_ratio"] = (
             llm_pruner_actual_mlp_channel_pruning_ratio
         )
+    if gisp_ratio is not None:
+        summary["gisp_ratio"] = gisp_ratio
+    if gisp_iterations is not None:
+        summary["gisp_iterations"] = gisp_iterations
+    if gisp_calibration_samples is not None:
+        summary["gisp_calibration_samples"] = gisp_calibration_samples
+    if gisp_calibration_source:
+        summary["gisp_calibration_source"] = gisp_calibration_source
+    if gisp_calibration_prompt_mode:
+        summary["gisp_calibration_prompt_mode"] = gisp_calibration_prompt_mode
+    if gisp_calibration_text_field:
+        summary["gisp_calibration_text_field"] = gisp_calibration_text_field
+    if gisp_score_normalization:
+        summary["gisp_score_normalization"] = gisp_score_normalization
+    if gisp_physical_pruning is not None:
+        summary["gisp_physical_pruning"] = gisp_physical_pruning
+    if gisp_target:
+        summary["gisp_target"] = gisp_target
+    if gisp_kept_channels_per_layer:
+        summary["gisp_kept_channels_per_layer"] = gisp_kept_channels_per_layer
+    if gisp_pruned_channels_per_layer:
+        summary["gisp_pruned_channels_per_layer"] = gisp_pruned_channels_per_layer
+    if gisp_actual_mlp_channel_pruning_ratio is not None:
+        summary["gisp_actual_mlp_channel_pruning_ratio"] = gisp_actual_mlp_channel_pruning_ratio
     if weight_sparsity_by_module:
         summary["weight_sparsity_by_module"] = weight_sparsity_by_module
     if matched_rasp_reference:

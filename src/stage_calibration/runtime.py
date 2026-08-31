@@ -346,6 +346,7 @@ class StaticMlpChannelPruningRuntime(DenseStageRuntime):
         pruning_granularity: str,
         mlp_channel_pruning_ratio: float,
         extra_summary: dict[str, Any] | None = None,
+        handles: list[Any] | None = None,
     ) -> None:
         super().__init__(policy=policy)
         self.backend = str(backend)
@@ -353,6 +354,12 @@ class StaticMlpChannelPruningRuntime(DenseStageRuntime):
         self.pruning_granularity = str(pruning_granularity)
         self.mlp_channel_pruning_ratio = float(mlp_channel_pruning_ratio)
         self.extra_summary = dict(extra_summary or {})
+        self.handles = list(handles or [])
+
+    def close(self) -> None:
+        for handle in self.handles:
+            handle.remove()
+        self.handles.clear()
 
     def summary(self) -> dict[str, Any]:
         output = super().summary()
@@ -363,7 +370,6 @@ class StaticMlpChannelPruningRuntime(DenseStageRuntime):
                 "baseline_type": self.baseline_type,
                 "policy": self.policy,
                 "pruning_granularity": self.pruning_granularity,
-                "flap_actual_mlp_channel_pruning_ratio": self.mlp_channel_pruning_ratio,
                 "theoretical_average_mlp_pruning_ratio": self.mlp_channel_pruning_ratio,
                 "actual_average_mlp_pruning_ratio": self.mlp_channel_pruning_ratio,
                 "actual_pruning_accounting": "static_mlp_channel_pruning_ratio",

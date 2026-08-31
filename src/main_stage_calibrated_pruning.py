@@ -1312,6 +1312,14 @@ def _flap_mlp_official_enabled(cfg: dict[str, Any]) -> bool:
     return bool(_flap_mlp_official_cfg(cfg).get("enabled", False))
 
 
+def _gisp_mlp_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    return deepcopy(cfg.get("gisp_mlp", {}))
+
+
+def _gisp_mlp_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(_gisp_mlp_cfg(cfg).get("enabled", False))
+
+
 def _llm_pruner_mlp_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
     return deepcopy(cfg.get("llm_pruner_mlp_static_width", {}))
 
@@ -1764,6 +1772,82 @@ def flap_mlp_official_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     if len(names) != len(set(names)):
         duplicates = sorted({name for name in names if names.count(name) > 1})
         raise ValueError(f"FLAP MLP official method names must be unique: {duplicates}")
+    return methods
+
+
+def _gisp_mlp_calibration_path(row: dict[str, Any]) -> str:
+    if row.get("calibration_path"):
+        return str(row["calibration_path"])
+    source_root = os.environ.get(
+        "SOURCE_ROOT",
+        "runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3",
+    )
+    return str(Path(source_root) / "03_selected" / "calibration.jsonl")
+
+
+def _gisp_mlp_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> dict[str, Any]:
+    prune_ratio = float(row.get("prune_ratio", row.get("ratio", 0.0)))
+    name = str(row.get("method_name", row.get("name", f"gisp_mlp_{prune_ratio:.4f}".replace(".", "p"))))
+    extra: dict[str, Any] = {}
+    if "layers" in row:
+        extra["layers"] = deepcopy(row["layers"])
+    if "precomputed_masks_path" in row:
+        extra["precomputed_masks_path"] = str(row["precomputed_masks_path"])
+    return method(
+        name,
+        "gisp_mlp",
+        uniform_ratios(prune_ratio),
+        prompt,
+        bias=False,
+        prune_ratio=prune_ratio,
+        density=1.0 - prune_ratio,
+        calibration_path=_gisp_mlp_calibration_path(row),
+        calibration_samples=int(row.get("calibration_samples", 64)),
+        calibration_max_input_tokens=int(row.get("calibration_max_input_tokens", 1024)),
+        calibration_prompt_mode=str(row.get("calibration_prompt_mode", "structured_prompt")),
+        calibration_text_field=str(row.get("calibration_text_field", "text")),
+        iterations=int(row.get("iterations", 4)),
+        score_normalization=str(row.get("score_normalization", "layer_mean")),
+        baseline_type="gisp_global_iterative_structured_mlp_qwen3_port",
+        pruning_granularity="mlp_channel_structured",
+        matched_rasp_reference=str(row.get("matched_rasp_reference", "")),
+        variant_role=str(row.get("variant_role", name)),
+        selection_note=str(row.get("selection_note", "")),
+        **extra,
+        **(
+            {"target_pruning_ratio": float(row["target_pruning_ratio"])}
+            if "target_pruning_ratio" in row
+            else {}
+        ),
+        **(
+            {"target_pruning_label": str(row["target_pruning_label"])}
+            if "target_pruning_label" in row
+            else {}
+        ),
+    )
+
+
+def gisp_mlp_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    gcfg = _gisp_mlp_cfg(cfg)
+    variants = gcfg.get("variants")
+    if variants is None:
+        if not gcfg:
+            return []
+        variants = [gcfg]
+    if not isinstance(variants, list) or not variants:
+        raise ValueError("gisp_mlp.variants must be a non-empty list when provided")
+    methods = []
+    for index, row in enumerate(variants):
+        if not isinstance(row, dict):
+            raise ValueError(f"gisp_mlp.variants[{index}] must be a mapping")
+        merged = deepcopy(gcfg)
+        merged.pop("variants", None)
+        merged.update(deepcopy(row))
+        methods.append(_gisp_mlp_method_from_cfg(merged, structured_prompt(cfg)))
+    names = [row["name"] for row in methods]
+    if len(names) != len(set(names)):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"GISP MLP method names must be unique: {duplicates}")
     return methods
 
 
@@ -2755,6 +2839,7 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         or _shortgpt_enabled(cfg)
         or _limits_layer_pruning_enabled(cfg)
         or _flap_mlp_official_enabled(cfg)
+        or _gisp_mlp_enabled(cfg)
         or _llm_pruner_mlp_enabled(cfg)
     )
     if p["dev_summary"].exists():
@@ -2770,6 +2855,7 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             "shortgpt_baseline_frozen": _shortgpt_enabled(cfg),
             "limits_layer_pruning_baseline_frozen": _limits_layer_pruning_enabled(cfg),
             "flap_mlp_official_baseline_frozen": _flap_mlp_official_enabled(cfg),
+            "gisp_mlp_baseline_frozen": _gisp_mlp_enabled(cfg),
             "llm_pruner_mlp_baseline_frozen": _llm_pruner_mlp_enabled(cfg),
         }
     else:
@@ -2800,6 +2886,7 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         or _shortgpt_enabled(cfg)
         or _limits_layer_pruning_enabled(cfg)
         or _flap_mlp_official_enabled(cfg)
+        or _gisp_mlp_enabled(cfg)
         or _llm_pruner_mlp_enabled(cfg)
     ):
         requested_final_methods = set()
@@ -2839,6 +2926,8 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
             methods.extend(limits_layer_pruning_methods(cfg))
         if _flap_mlp_official_enabled(cfg):
             methods.extend(flap_mlp_official_methods(cfg))
+        if _gisp_mlp_enabled(cfg):
+            methods.extend(gisp_mlp_methods(cfg))
         if _llm_pruner_mlp_enabled(cfg):
             methods.extend(llm_pruner_mlp_methods(cfg))
     else:

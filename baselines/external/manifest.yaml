@@ -23,3 +23,9 @@ external_repos:
     local_dir:
     status: repo_not_confirmed
     notes: Requires exact public repository or paper implementation before smoke testing.
+  gisp:
+    name: GISP
+    repo: https://github.com/uncc-efficient-ai/GISP.git
+    local_dir: external_repos/GISP
+    status: qwen3_mlp_port_added
+    notes: Global Iterative Structured Pruning baseline candidate; current repo implementation is a Qwen3 MLP-channel logical-mask port for fair comparison with RASP-LRM MLP pruning.

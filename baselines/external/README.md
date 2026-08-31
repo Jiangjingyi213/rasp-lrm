@@ -17,5 +17,8 @@ Current baseline candidates:
 - `LLM-Pruner`: static structured pruning baseline, possibly with recovery.
 - `GRIFFIN`: dynamic/prompt-conditioned FFN pruning baseline candidate.
 - `IFPruning`: pending exact public repository confirmation.
+- `GISP`: global iterative structured pruning baseline candidate; this repository
+  includes a Qwen3 MLP-channel logical-mask port for fair comparison with
+  RASP-LRM MLP pruning.
 
 The main caution is that external methods may primarily support LLaMA-family models. Qwen3 compatibility must be verified before treating a method as an executable baseline.
