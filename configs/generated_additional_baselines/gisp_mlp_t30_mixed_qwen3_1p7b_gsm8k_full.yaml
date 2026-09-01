@@ -2,7 +2,7 @@ seed: 3
 
 workflow:
   profile: pilot
-  root: runs/12_additional_baselines/04_gisp_mlp/02_t35_c4_gsm8k_full
+  root: runs/12_additional_baselines/04_gisp_mlp/03_t30_mixed_gsm8k_full
 
 stages: [setup, reasoning, verify, final]
 
@@ -26,7 +26,7 @@ prompt:
 
 generation:
   max_input_tokens: 4096
-  max_new_tokens: 8192
+  max_new_tokens: 16384
   temperature: 0.6
   top_p: 0.95
   top_k: 20
@@ -44,29 +44,22 @@ masks:
 
 gisp_mlp:
   enabled: true
-  calibration_path: runs/12_additional_baselines/04_gisp_mlp/02_t35_c4_gsm8k_full/00_c4_calibration/c4_2000_seed3.jsonl
-  calibration_samples: 2000
-  calibration_max_input_tokens: 256
-  calibration_prompt_mode: raw_text
+  calibration_path: runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3/03_selected/calibration.jsonl
+  calibration_samples: 128
+  calibration_max_input_tokens: 2048
+  calibration_prompt_mode: structured_prompt
   calibration_text_field: text
   iterations: 4
   score_normalization: layer_mean
   prune_skip: true
   variants:
-    - method_name: gisp_mlp_t30
+    - method_name: gisp_mlp_t30_mixed
       prune_ratio: 0.30
       target_pruning_ratio: 0.30
       target_pruning_label: t30
       matched_rasp_reference: t30_math_safe
-      precomputed_masks_path: runs/12_additional_baselines/04_gisp_mlp/02_t35_c4_gsm8k_full/00_preflight/gisp_mlp_t30_artifact.json
-      selection_note: "GISP-inspired Qwen3 MLP-channel-only logical-mask port at 30% pruning; not the full official MHA+MLP physical-zeroing implementation."
-    - method_name: gisp_mlp_t35
-      prune_ratio: 0.35
-      target_pruning_ratio: 0.35
-      target_pruning_label: t35
-      matched_rasp_reference: t30_math_safe
-      precomputed_masks_path: runs/12_additional_baselines/04_gisp_mlp/02_t35_c4_gsm8k_full/00_preflight/gisp_mlp_t35_artifact.json
-      selection_note: "GISP-inspired Qwen3 MLP-channel-only logical-mask port at 35% pruning; not the full official MHA+MLP physical-zeroing implementation."
+      precomputed_masks_path: runs/12_additional_baselines/04_gisp_mlp/03_t30_mixed_gsm8k_full/00_preflight/gisp_mlp_t30_mixed_artifact.json
+      selection_note: "GISP-inspired Qwen3 MLP-channel-only logical-mask port at T30 pruning, using mixed reasoning calibration to reduce protocol collapse risk; follows official first-order global iterative saliency and prune_skip layer protection, but not the full official MHA+MLP physical-zeroing implementation."
 
 evaluation:
   allow_final_without_dev: true
@@ -79,9 +72,9 @@ profiles:
     final_eval_limit: 128
     final_seeds: [3]
     reuse_existing_method_summaries: true
-    final_methods: [gisp_mlp_t30, gisp_mlp_t35]
+    final_methods: [gisp_mlp_t30_mixed]
   pilot:
     final_eval_limit: -1
     final_seeds: [3]
     reuse_existing_method_summaries: true
-    final_methods: [gisp_mlp_t30, gisp_mlp_t35]
+    final_methods: [gisp_mlp_t30_mixed]

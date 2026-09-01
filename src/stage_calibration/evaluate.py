@@ -315,6 +315,7 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
             layers=method.get("layers"),
             precomputed_masks_path=method.get("precomputed_masks_path"),
             matched_rasp_reference=str(method.get("matched_rasp_reference", "")),
+            prune_skip=bool(method.get("prune_skip", True)),
             target_matched_to_rasp_actual_mlp_pruning=(
                 float(method["target_pruning_ratio"])
                 if "target_pruning_ratio" in method
@@ -339,6 +340,9 @@ def _runtime_for_method(model, bank: dict[str, Any] | None, method: dict[str, An
                 "gisp_calibration_prompt_mode": str(summary["calibration_prompt_mode"]),
                 "gisp_calibration_text_field": str(summary["calibration_text_field"]),
                 "gisp_score_normalization": str(summary["score_normalization"]),
+                "gisp_prune_skip": bool(summary["prune_skip"]),
+                "gisp_protected_layers": list(summary["protected_layers"]),
+                "gisp_upstream_reference": str(summary["upstream_reference"]),
                 "gisp_physical_pruning": bool(summary["physical_pruning"]),
                 "gisp_target": str(summary["target"]),
                 "gisp_kept_channels_per_layer": dict(summary["kept_channels_per_layer"]),

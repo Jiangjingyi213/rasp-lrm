@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
 import torch
@@ -36,6 +36,12 @@ class GispMlpSummary:
     actual_mlp_channel_pruning_ratio: float
     matched_rasp_reference: str
     target_matched_to_rasp_actual_mlp_pruning: float | None
+    prune_skip: bool = True
+    protected_layers: list[int] = field(default_factory=list)
+    upstream_reference: str = (
+        "uncc-efficient-ai/GISP external_code/GISP/pruners/grad_sp_global.py; "
+        "adapted as a Qwen3 MLP-channel-only logical-mask port."
+    )
 
 
 def _qwen3_mlp(layer: nn.Module) -> nn.Module:
@@ -63,6 +69,18 @@ def _intermediate_size(mlp: nn.Module) -> int:
     if gate != up or gate != down:
         raise ValueError("Qwen3 MLP projections do not share a common intermediate width")
     return gate
+
+
+def _protected_layer_ids(
+    selected_layers: Iterable[int],
+    total_layers: int,
+    *,
+    prune_skip: bool,
+) -> set[int]:
+    if not prune_skip:
+        return set()
+    prunable = set(range(int(total_layers * 0.1), int(total_layers) - 1))
+    return {int(layer_id) for layer_id in selected_layers if int(layer_id) not in prunable}
 
 
 def _resolve_prompt(
@@ -179,6 +197,7 @@ def _update_global_masks(
     scores: dict[int, torch.Tensor],
     *,
     target_ratio: float,
+    protected_layers: set[int] | None = None,
 ) -> None:
     if not 0.0 <= float(target_ratio) < 1.0:
         raise ValueError(f"GISP target_ratio must be in [0, 1), got {target_ratio}")
@@ -189,7 +208,10 @@ def _update_global_masks(
     if additional <= 0:
         return
     candidates = []
+    protected_layers = set(protected_layers or set())
     for layer_id, mask in masks.items():
+        if int(layer_id) in protected_layers:
+            continue
         active_idx = torch.nonzero(mask.bool(), as_tuple=False).flatten()
         for channel_id in active_idx.tolist():
             candidates.append((float(scores[layer_id][channel_id].item()), int(layer_id), int(channel_id)))
@@ -215,6 +237,8 @@ def _summarize_masks(
     score_normalization: str,
     matched_rasp_reference: str,
     target_matched_to_rasp_actual_mlp_pruning: float | None,
+    prune_skip: bool,
+    protected_layers: Iterable[int],
     source: str,
 ) -> GispMlpSummary:
     kept: dict[str, int] = {}
@@ -249,6 +273,8 @@ def _summarize_masks(
         actual_mlp_channel_pruning_ratio=total_pruned / total_channels if total_channels else 0.0,
         matched_rasp_reference=str(matched_rasp_reference),
         target_matched_to_rasp_actual_mlp_pruning=target_matched_to_rasp_actual_mlp_pruning,
+        prune_skip=bool(prune_skip),
+        protected_layers=sorted(int(layer_id) for layer_id in protected_layers),
     )
 
 
@@ -258,15 +284,18 @@ def build_gisp_mlp_mask_artifact_from_scores(
     ratio: float,
     initial_masks: dict[int, torch.Tensor],
     score_normalization: str = "layer_mean",
+    protected_layers: Iterable[int] | None = None,
 ) -> dict[int, torch.Tensor]:
     masks = {layer_id: mask.detach().cpu().bool().clone() for layer_id, mask in initial_masks.items()}
     iterations = max(1, len(scores_by_iteration))
+    protected = {int(layer_id) for layer_id in protected_layers or []}
     for step, scores in enumerate(scores_by_iteration):
         normed = _normalise_scores(scores, masks, score_normalization)
         _update_global_masks(
             masks,
             normed,
             target_ratio=float(ratio) * float(step + 1) / float(iterations),
+            protected_layers=protected,
         )
     return masks
 
@@ -345,6 +374,7 @@ def build_gisp_mlp_mask_artifact_qwen3(
     layers: Iterable[int] | None = None,
     matched_rasp_reference: str = "",
     target_matched_to_rasp_actual_mlp_pruning: float | None = None,
+    prune_skip: bool = True,
 ) -> dict[str, Any]:
     calibration_rows = read_jsonl(calibration_path)
     sample_count = min(int(calibration_samples), len(calibration_rows))
@@ -362,6 +392,11 @@ def build_gisp_mlp_mask_artifact_qwen3(
     if not selected_layers:
         raise ValueError("GISP MLP pruning requires at least one selected decoder layer")
     decoder_layers = get_decoder_layers(model)
+    protected_layers = _protected_layer_ids(
+        selected_layers,
+        len(decoder_layers),
+        prune_skip=bool(prune_skip),
+    )
     first_mlp = _qwen3_mlp(decoder_layers[selected_layers[0]])
     original_intermediate_size = _intermediate_size(first_mlp)
     masks = {
@@ -387,6 +422,7 @@ def build_gisp_mlp_mask_artifact_qwen3(
             masks,
             normed,
             target_ratio=float(ratio) * float(step + 1) / float(iterations),
+            protected_layers=protected_layers,
         )
 
     summary = _summarize_masks(
@@ -403,6 +439,8 @@ def build_gisp_mlp_mask_artifact_qwen3(
         score_normalization=str(score_normalization),
         matched_rasp_reference=str(matched_rasp_reference),
         target_matched_to_rasp_actual_mlp_pruning=target_matched_to_rasp_actual_mlp_pruning,
+        prune_skip=bool(prune_skip),
+        protected_layers=protected_layers,
         source=(
             "GISP-style global iterative structured MLP-channel pruning for Qwen3; "
             "first-order |W * grad(W)| saliency aggregated over gate/up/down projections."
@@ -432,10 +470,25 @@ def apply_gisp_mlp_artifact_qwen3(
         raise ValueError(f"Unsupported GISP artifact schema: {artifact.get('schema')}")
     summary = GispMlpSummary(**dict(artifact["summary"]))
     masks: dict[int, torch.Tensor] = {}
+    layers = get_decoder_layers(model)
     for layer_key, keep_indices in artifact["keep_indices_by_layer"].items():
         layer_id = int(layer_key)
+        if layer_id < 0 or layer_id >= len(layers):
+            raise ValueError(f"GISP artifact layer {layer_id} is out of range for {len(layers)} decoder layers")
+        actual_intermediate_size = _intermediate_size(_qwen3_mlp(layers[layer_id]))
+        if actual_intermediate_size != int(summary.original_intermediate_size):
+            raise ValueError(
+                "GISP artifact intermediate size mismatch: "
+                f"artifact={summary.original_intermediate_size}, model layer {layer_id}={actual_intermediate_size}"
+            )
         keep_mask = torch.zeros(summary.original_intermediate_size, dtype=torch.bool)
-        keep_mask[torch.tensor([int(i) for i in keep_indices], dtype=torch.long)] = True
+        keep_tensor = torch.tensor([int(i) for i in keep_indices], dtype=torch.long)
+        if keep_tensor.numel() and (
+            int(keep_tensor.min().item()) < 0
+            or int(keep_tensor.max().item()) >= int(summary.original_intermediate_size)
+        ):
+            raise ValueError(f"GISP artifact keep indices out of bounds for layer {layer_id}")
+        keep_mask[keep_tensor] = True
         masks[layer_id] = keep_mask
     handles = _install_logical_mlp_masks(model, masks)
     return summary, handles
@@ -458,6 +511,7 @@ def prepare_gisp_mlp_qwen3(
     precomputed_masks_path: str | None = None,
     matched_rasp_reference: str = "",
     target_matched_to_rasp_actual_mlp_pruning: float | None = None,
+    prune_skip: bool = True,
 ) -> tuple[GispMlpSummary, list[Any]]:
     if precomputed_masks_path:
         return apply_gisp_mlp_artifact_qwen3(model, precomputed_masks_path)
@@ -476,6 +530,7 @@ def prepare_gisp_mlp_qwen3(
         layers=layers,
         matched_rasp_reference=str(matched_rasp_reference),
         target_matched_to_rasp_actual_mlp_pruning=target_matched_to_rasp_actual_mlp_pruning,
+        prune_skip=bool(prune_skip),
     )
     return apply_gisp_mlp_artifact_qwen3(model, artifact)
 

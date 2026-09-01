@@ -1776,6 +1776,8 @@ def flap_mlp_official_methods(cfg: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _gisp_mlp_calibration_path(row: dict[str, Any]) -> str:
+    if os.environ.get("C4_CALIBRATION_PATH"):
+        return str(os.environ["C4_CALIBRATION_PATH"])
     if row.get("calibration_path"):
         return str(row["calibration_path"])
     source_root = os.environ.get(
@@ -1808,6 +1810,7 @@ def _gisp_mlp_method_from_cfg(row: dict[str, Any], prompt: dict[str, Any]) -> di
         calibration_text_field=str(row.get("calibration_text_field", "text")),
         iterations=int(row.get("iterations", 4)),
         score_normalization=str(row.get("score_normalization", "layer_mean")),
+        prune_skip=bool(row.get("prune_skip", True)),
         baseline_type="gisp_global_iterative_structured_mlp_qwen3_port",
         pruning_granularity="mlp_channel_structured",
         matched_rasp_reference=str(row.get("matched_rasp_reference", "")),

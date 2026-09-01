@@ -23,6 +23,8 @@ def _gisp_variant(cfg: dict[str, Any], method_name: str) -> dict[str, Any]:
 
 
 def _calibration_path(row: dict[str, Any]) -> str:
+    if os.environ.get("C4_CALIBRATION_PATH"):
+        return str(os.environ["C4_CALIBRATION_PATH"])
     if row.get("calibration_path"):
         return str(row["calibration_path"])
     source_root = os.environ.get(
@@ -64,6 +66,7 @@ def main() -> None:
         score_normalization=str(row.get("score_normalization", "layer_mean")),
         layers=row.get("layers"),
         matched_rasp_reference=str(row.get("matched_rasp_reference", "")),
+        prune_skip=bool(row.get("prune_skip", True)),
         target_matched_to_rasp_actual_mlp_pruning=(
             float(row["target_pruning_ratio"])
             if "target_pruning_ratio" in row

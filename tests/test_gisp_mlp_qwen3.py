@@ -78,6 +78,27 @@ class GispMlpQwen3Test(unittest.TestCase):
         self.assertFalse(bool(output[0][1]))
         self.assertFalse(bool(output[1][2]))
 
+    def test_global_iterative_respects_protected_layers(self) -> None:
+        masks = {
+            0: torch.ones(4, dtype=torch.bool),
+            1: torch.ones(4, dtype=torch.bool),
+        }
+        scores = [
+            {
+                0: torch.tensor([0.1, 0.2, 0.3, 0.4]),
+                1: torch.tensor([5.0, 6.0, 7.0, 8.0]),
+            }
+        ]
+        output = build_gisp_mlp_mask_artifact_from_scores(
+            scores,
+            ratio=0.25,
+            initial_masks=masks,
+            score_normalization="none",
+            protected_layers=[0],
+        )
+        self.assertTrue(bool(output[0].all()))
+        self.assertEqual(int((~output[1]).sum().item()), 2)
+
     def test_logical_artifact_masks_down_projection_input_and_closes(self) -> None:
         model = TinyModel()
         down = model.model.layers[0].mlp.down_proj

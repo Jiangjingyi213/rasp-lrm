@@ -9,16 +9,21 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
 PYTHON_BIN="${PYTHON:-/home/cike/jjy/envs/rasp_qwen3_eval/bin/python}"
-CONFIG_PATH="${CONFIG:-configs/generated_additional_baselines/gisp_mlp_t30_t35_qwen3_1p7b_gsm8k_full.yaml}"
+CONFIG_PATH="${CONFIG:-configs/generated_additional_baselines/gisp_mlp_t30_mixed_qwen3_1p7b_gsm8k_full.yaml}"
 PROFILE="${PROFILE:-pilot}"
-RUN_ROOT="${RUN_ROOT:-runs/12_additional_baselines/04_gisp_mlp/01_t30_t35_gsm8k_full}"
-FINAL_METHODS="${STAGE_FINAL_METHODS:-gisp_mlp_t30,gisp_mlp_t35}"
+RUN_ROOT="${RUN_ROOT:-runs/12_additional_baselines/04_gisp_mlp/03_t30_mixed_gsm8k_full}"
+FINAL_METHODS="${STAGE_FINAL_METHODS:-gisp_mlp_t30_mixed}"
 FINAL_EVAL_LIMIT="${STAGE_FINAL_EVAL_LIMIT:--1}"
 LOG_DIR="${LOG_DIR:-logs/12_additional_baselines/04_gisp_mlp}"
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 SEED="${STAGE_SEED:-3}"
-RUN_LABEL="${RUN_LABEL:-gisp_mlp_qwen3_1p7b_gsm8k_full}"
+RUN_LABEL="${RUN_LABEL:-gisp_mlp_t30_mixed_qwen3_1p7b_gsm8k_full}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
+C4_CALIBRATION_PATH="${C4_CALIBRATION_PATH:-runs/12_additional_baselines/04_gisp_mlp/02_t35_c4_gsm8k_full/00_c4_calibration/c4_2000_seed3.jsonl}"
+C4_CALIBRATION_SAMPLES="${C4_CALIBRATION_SAMPLES:-2000}"
+C4_CALIBRATION_MIN_CHARS="${C4_CALIBRATION_MIN_CHARS:-64}"
+C4_CALIBRATION_BUFFER_SIZE="${C4_CALIBRATION_BUFFER_SIZE:-10000}"
+GISP_BUILD_C4="${GISP_BUILD_C4:-0}"
 
 read -r -a GPUS <<< "${FINAL_GPUS:-0 1 2 3 4 5 6 7}"
 SHARD_COUNT="${STAGE_FINAL_SHARD_COUNT:-${#GPUS[@]}}"
@@ -27,15 +32,37 @@ if [[ "${#GPUS[@]}" -lt "${SHARD_COUNT}" ]]; then
   exit 2
 fi
 
-SOURCE_ROOT="${SOURCE_ROOT:-runs/08_stage_calibrated_pruning/main_pilot_mixed_reasoning_seed3}"
-if [[ ! -f "${SOURCE_ROOT}/03_selected/calibration.jsonl" ]]; then
-  echo "Missing GISP calibration file: ${SOURCE_ROOT}/03_selected/calibration.jsonl" >&2
-  echo "Set SOURCE_ROOT to an existing mixed pilot run with 03_selected/calibration.jsonl." >&2
-  exit 2
-fi
-export SOURCE_ROOT
+mkdir -p "${LOG_DIR}" "${RUN_ROOT}" "${RUN_ROOT}/00_preflight" "$(dirname "${C4_CALIBRATION_PATH}")"
 
-mkdir -p "${LOG_DIR}" "${RUN_ROOT}" "${RUN_ROOT}/00_preflight"
+if [[ "${GISP_BUILD_C4}" == "1" ]]; then
+  needs_c4=1
+  if [[ -f "${C4_CALIBRATION_PATH}" ]]; then
+    line_count="$(wc -l < "${C4_CALIBRATION_PATH}" | tr -d ' ')"
+    if [[ "${line_count}" == "${C4_CALIBRATION_SAMPLES}" ]]; then
+      needs_c4=0
+      echo "SKIP C4 calibration artifact; existing ${C4_CALIBRATION_PATH} has ${line_count} rows."
+    else
+      echo "Regenerating C4 calibration artifact; ${C4_CALIBRATION_PATH} has ${line_count} rows, expected ${C4_CALIBRATION_SAMPLES}."
+    fi
+  fi
+
+  if [[ "${needs_c4}" == "1" ]]; then
+    echo "START build C4 calibration artifact: ${C4_CALIBRATION_PATH}"
+    HF_ENDPOINT="${HF_ENDPOINT}" \
+    HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
+    HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
+    HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}" \
+    "${PYTHON_BIN}" -m src.data.build_c4_calibration \
+      --output "${C4_CALIBRATION_PATH}" \
+      --samples "${C4_CALIBRATION_SAMPLES}" \
+      --seed "${SEED}" \
+      --min-chars "${C4_CALIBRATION_MIN_CHARS}" \
+      --buffer-size "${C4_CALIBRATION_BUFFER_SIZE}"
+    echo "DONE build C4 calibration artifact"
+  fi
+else
+  echo "SKIP C4 calibration artifact; GISP_BUILD_C4=${GISP_BUILD_C4}"
+fi
 
 echo "START preflight for ${RUN_ROOT}"
 HF_ENDPOINT="${HF_ENDPOINT}" \
@@ -66,7 +93,6 @@ prepare_artifact() {
     HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
     HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
     HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}" \
-    SOURCE_ROOT="${SOURCE_ROOT}" \
     "${PYTHON_BIN}" -m src.baselines.prepare_gisp_mlp_artifact \
       --config "${CONFIG_PATH}" \
       --method "${method}" \
@@ -80,6 +106,7 @@ prepare_artifact() {
 
 prepare_artifact "gisp_mlp_t30" "${RUN_ROOT}/00_preflight/gisp_mlp_t30_artifact.json"
 prepare_artifact "gisp_mlp_t35" "${RUN_ROOT}/00_preflight/gisp_mlp_t35_artifact.json"
+prepare_artifact "gisp_mlp_t30_mixed" "${RUN_ROOT}/00_preflight/gisp_mlp_t30_mixed_artifact.json"
 
 echo "START ${RUN_LABEL}; methods=${FINAL_METHODS}; shards=${SHARD_COUNT}; global_limit=${FINAL_EVAL_LIMIT}"
 pids=()
