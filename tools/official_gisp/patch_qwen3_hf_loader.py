@@ -26,6 +26,7 @@ ATTENTION_ATTR_MARKER = "# RASP-LRM Qwen attention attribute compatibility patch
 ATTENTION_MASK_MARKER = "# RASP-LRM Qwen attention mask shape compatibility patch"
 QWEN3_LOADER_MARKER = "# RASP-LRM explicit Qwen3 HF loader compatibility patch"
 ATTENTION_OUTPUT_RESHAPE_MARKER = "# RASP-LRM Qwen attention output reshape compatibility patch"
+ATTENTION_RETURN_MARKER = "# RASP-LRM Qwen3 attention return arity compatibility patch"
 
 LOCAL_C4_HELPER = r'''
 # RASP-LRM local C4 JSONL patch for offline official GISP runs
@@ -285,6 +286,7 @@ def patch_python_file(path: Path) -> bool:
         "Attention mask should be of size",
         "query_states = self.q_proj(hidden_states)",
         "attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)",
+        "return attn_output, attn_weights, past_key_value",
     )
     if not any(token in source for token in interesting_tokens):
         return False
@@ -294,6 +296,7 @@ def patch_python_file(path: Path) -> bool:
     patched = _patch_qwen3_norms_in_attention_hooks(patched)
     patched = _patch_attention_mask_shape_check(patched)
     patched = _patch_attention_output_reshape(patched)
+    patched = _patch_attention_return_arity(patched)
     if needs_auto_import:
         patched = _ensure_auto_import(patched)
     if patched != source:
@@ -426,6 +429,34 @@ def _patch_attention_output_reshape(source: str) -> str:
             )
         output.append(
             line.replace("self.hidden_size", "_rasp_lrm_attn_output_size")
+        )
+
+    return "\n".join(output) + ("\n" if source.endswith("\n") else "")
+
+
+def _patch_attention_return_arity(source: str) -> str:
+    target = "return attn_output, attn_weights, past_key_value"
+    if target not in source:
+        return source
+
+    lines = source.splitlines()
+    output = []
+    for line in lines:
+        if target not in line:
+            output.append(line)
+            continue
+        lookbehind = "\n".join(output[-8:])
+        indent = line[: len(line) - len(line.lstrip())]
+        if ATTENTION_RETURN_MARKER in lookbehind:
+            output.append(line)
+            continue
+        output.extend(
+            [
+                f"{indent}{ATTENTION_RETURN_MARKER}",
+                f"{indent}if getattr(getattr(self, \"config\", None), \"model_type\", None) == \"qwen3\":",
+                f"{indent}    return attn_output, attn_weights",
+                line,
+            ]
         )
 
     return "\n".join(output) + ("\n" if source.endswith("\n") else "")

@@ -30,6 +30,7 @@ def main() -> None:
     unpatched_mask_hits = []
     missing_qwen3_norm_hits = []
     missing_output_reshape_hits = []
+    missing_return_arity_hits = []
     for path in sorted(repo_dir.rglob("*.py")):
         try:
             source = _read(path)
@@ -50,6 +51,11 @@ def main() -> None:
             and "RASP-LRM Qwen attention output reshape compatibility patch" not in source
         ):
             missing_output_reshape_hits.append(path)
+        if (
+            "return attn_output, attn_weights, past_key_value" in source
+            and "RASP-LRM Qwen3 attention return arity compatibility patch" not in source
+        ):
+            missing_return_arity_hits.append(path)
     if qwen2_hits:
         errors.append("Qwen2ForCausalLM remains in: " + ", ".join(str(path) for path in qwen2_hits))
     if unpatched_mask_hits:
@@ -66,6 +72,11 @@ def main() -> None:
         errors.append(
             "Qwen attention hooks remain with hidden_size reshape in: "
             + ", ".join(str(path) for path in missing_output_reshape_hits)
+        )
+    if missing_return_arity_hits:
+        errors.append(
+            "Qwen attention hooks remain without Qwen3 return arity compatibility in: "
+            + ", ".join(str(path) for path in missing_return_arity_hits)
         )
 
     hf_source = _read(required_files["hf_loader"])
