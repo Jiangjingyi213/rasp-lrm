@@ -79,6 +79,11 @@ def _rasp_lrm_load_local_c4_jsonl(path, nsamples, seed, seqlen, tokenizer):
 
 ATTENTION_ATTR_HELPER = r'''
 # RASP-LRM Qwen attention attribute compatibility patch
+rank = 0
+local_rank = 0
+world_size = 1
+
+
 class _RaspLrmLegacyRotaryEmbedding:
     def __init__(self, dim, max_position_embeddings=131072, base=10000.0):
         import torch
@@ -248,11 +253,10 @@ def patch_system(path: Path) -> bool:
     source = path.read_text(encoding="utf-8")
     patched = source
     if ATTENTION_ATTR_MARKER in patched:
-        helper_pattern = re.compile(
-            rf"{re.escape(ATTENTION_ATTR_MARKER)}\n.*?(?=\ndef\s+\w+|\nclass\s+\w+|\Z)",
-            flags=re.DOTALL,
-        )
-        patched = helper_pattern.sub(ATTENTION_ATTR_HELPER.strip("\n") + "\n", patched, count=1)
+        start = patched.index(ATTENTION_ATTR_MARKER)
+        match = re.search(r"\ndef\s+(?!_rasp_lrm_|_RaspLrm)\w+", patched[start:])
+        end = start + match.start() if match else len(patched)
+        patched = patched[:start] + ATTENTION_ATTR_HELPER.strip("\n") + "\n" + patched[end:]
     else:
         insert_at = 0
         lines = patched.splitlines()

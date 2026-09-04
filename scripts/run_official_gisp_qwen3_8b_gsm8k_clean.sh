@@ -153,6 +153,8 @@ if grep -RIn "Qwen2ForCausalLM" "${GISP_REPO_DIR}" --include="*.py"; then
   echo "Qwen2ForCausalLM remains in official GISP Python files after patch; aborting." >&2
   exit 10
 fi
+"${PYTHON_BIN}" tools/official_gisp/check_gisp_patch_state.py \
+  --gisp-repo-dir "${GISP_REPO_DIR}"
 
 if [[ "${CHECK_QWEN3_AUTO_CLASS}" == "1" ]]; then
   echo "START check Qwen3 AutoModelForCausalLM mapping"
