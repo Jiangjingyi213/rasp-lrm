@@ -23,6 +23,7 @@ SYSTEM_RELATIVE_FILES = (
 
 LOCAL_C4_MARKER = "# RASP-LRM local C4 JSONL patch for offline official GISP runs"
 ATTENTION_ATTR_MARKER = "# RASP-LRM Qwen attention attribute compatibility patch"
+ATTENTION_MASK_MARKER = "# RASP-LRM Qwen attention mask shape compatibility patch"
 
 LOCAL_C4_HELPER = r'''
 # RASP-LRM local C4 JSONL patch for offline official GISP runs
@@ -214,11 +215,14 @@ def patch_hf_loader(path: Path) -> bool:
 
 def patch_python_file(path: Path) -> bool:
     source = path.read_text(encoding="utf-8")
-    if "Qwen2ForCausalLM" not in source:
+    if "Qwen2ForCausalLM" not in source and "Attention mask should be of size" not in source:
         return False
+    needs_auto_import = "Qwen2ForCausalLM" in source
     patched = _force_auto_model_calls(source)
     patched = _ensure_trust_remote_code_for_auto_model(patched)
-    patched = _ensure_auto_import(patched)
+    patched = _patch_attention_mask_shape_check(patched)
+    if needs_auto_import:
+        patched = _ensure_auto_import(patched)
     if patched != source:
         path.write_text(patched, encoding="utf-8")
         return True
@@ -247,6 +251,46 @@ def patch_data_prune(path: Path) -> bool:
     patched = source[: match.start()] + LOCAL_C4_HELPER + wrapper + source[match.end() :]
     path.write_text(patched, encoding="utf-8")
     return True
+
+
+def _patch_attention_mask_shape_check(source: str) -> str:
+    if "Attention mask should be of size" not in source or ATTENTION_MASK_MARKER in source:
+        return source
+
+    lines = source.splitlines()
+    output = []
+    inserted = False
+    for line in lines:
+        stripped = line.strip()
+        if (
+            not inserted
+            and "attention_mask.size() !=" in stripped
+            and "(bsz, 1, q_len, kv_seq_len)" in stripped
+        ):
+            indent = line[: len(line) - len(line.lstrip())]
+            output.extend(
+                [
+                    f"{indent}{ATTENTION_MASK_MARKER}",
+                    f"{indent}if attention_mask.size(-1) != kv_seq_len:",
+                    f"{indent}    if attention_mask.size(-1) > kv_seq_len:",
+                    f"{indent}        attention_mask = attention_mask[..., :kv_seq_len]",
+                    f"{indent}    else:",
+                    f"{indent}        attention_mask = torch.nn.functional.pad(",
+                    f"{indent}            attention_mask, (0, kv_seq_len - attention_mask.size(-1))",
+                    f"{indent}        )",
+                    f"{indent}if attention_mask.size(-2) != q_len:",
+                    f"{indent}    if attention_mask.size(-2) > q_len:",
+                    f"{indent}        attention_mask = attention_mask[..., -q_len:, :]",
+                    f"{indent}    else:",
+                    f"{indent}        attention_mask = torch.nn.functional.pad(",
+                    f"{indent}            attention_mask, (0, 0, q_len - attention_mask.size(-2), 0)",
+                    f"{indent}        )",
+                ]
+            )
+            inserted = True
+        output.append(line)
+
+    return "\n".join(output) + ("\n" if source.endswith("\n") else "")
 
 
 def patch_system(path: Path) -> bool:
@@ -374,7 +418,7 @@ def main() -> None:
         print(f"Checked without changes: {path}")
 
     if recursive_changed:
-        print("Patched additional official GISP Python files containing Qwen2ForCausalLM:")
+        print("Patched additional official GISP Python files for Qwen3 compatibility:")
         for path in recursive_changed:
             print(f"  {path}")
     if system_changed:

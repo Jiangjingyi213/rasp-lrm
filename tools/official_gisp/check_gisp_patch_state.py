@@ -27,6 +27,7 @@ def main() -> None:
 
     errors = []
     qwen2_hits = []
+    unpatched_mask_hits = []
     for path in sorted(repo_dir.rglob("*.py")):
         try:
             source = _read(path)
@@ -34,8 +35,15 @@ def main() -> None:
             continue
         if "Qwen2ForCausalLM" in source:
             qwen2_hits.append(path)
+        if "Attention mask should be of size" in source and "RASP-LRM Qwen attention mask shape compatibility patch" not in source:
+            unpatched_mask_hits.append(path)
     if qwen2_hits:
         errors.append("Qwen2ForCausalLM remains in: " + ", ".join(str(path) for path in qwen2_hits))
+    if unpatched_mask_hits:
+        errors.append(
+            "attention mask shape checks remain unpatched in: "
+            + ", ".join(str(path) for path in unpatched_mask_hits)
+        )
 
     hf_source = _read(required_files["hf_loader"])
     if "AutoModelForCausalLM" not in hf_source:
