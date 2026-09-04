@@ -158,6 +158,8 @@ def _rasp_lrm_patch_qwen_attention_attrs(model):
 QWEN3_LOADER_HELPER = r'''
 # RASP-LRM explicit Qwen3 HF loader compatibility patch
 def _rasp_lrm_from_pretrained(model_name_or_path, *args, **kwargs):
+    import os
+
     name = str(model_name_or_path).lower()
     kwargs.setdefault("trust_remote_code", True)
     loader = AutoModelForCausalLM
@@ -176,6 +178,12 @@ def _rasp_lrm_from_pretrained(model_name_or_path, *args, **kwargs):
             "Qwen3 checkpoint was not loaded by a Qwen3 model class. "
             f"Got {class_name}; refusing to run GISP because pruning would be invalid."
         )
+    if os.environ.get("GISP_GRADIENT_CHECKPOINTING", "1") != "0":
+        if hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable()
+            print("RASP-LRM enabled gradient checkpointing for official GISP", flush=True)
+        if hasattr(model, "config"):
+            model.config.use_cache = False
     return model
 
 '''
