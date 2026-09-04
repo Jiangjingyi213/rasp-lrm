@@ -9,7 +9,8 @@ GISP_REPO_DIR="${GISP_REPO_DIR:-external_repos/GISP}"
 LOG_DIR="${LOG_DIR:-logs/12_additional_baselines/04_gisp_mlp/official_gisp_qwen3_8b}"
 PIP_EXTRA_ARGS="${PIP_EXTRA_ARGS:-}"
 INSTALL_GISP_REQUIREMENTS="${INSTALL_GISP_REQUIREMENTS:-0}"
-GISP_MINIMAL_PACKAGES="${GISP_MINIMAL_PACKAGES:-fire deepspeed jsonlines omegaconf hydra-core einops}"
+GISP_DEEPSPEED_PACKAGE="${GISP_DEEPSPEED_PACKAGE:-deepspeed==0.14.4}"
+GISP_MINIMAL_PACKAGES="${GISP_MINIMAL_PACKAGES:-fire ${GISP_DEEPSPEED_PACKAGE} setuptools jsonlines omegaconf hydra-core einops}"
 
 mkdir -p "${LOG_DIR}"
 
