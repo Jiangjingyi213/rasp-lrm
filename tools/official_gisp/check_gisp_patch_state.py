@@ -60,6 +60,13 @@ def main() -> None:
     hf_source = _read(required_files["hf_loader"])
     if "AutoModelForCausalLM" not in hf_source:
         errors.append("modules/model/hf.py does not use AutoModelForCausalLM")
+    for token in (
+        "RASP-LRM explicit Qwen3 HF loader compatibility patch",
+        "_rasp_lrm_from_pretrained(",
+        "Qwen3 checkpoint was not loaded by a Qwen3 model class",
+    ):
+        if token not in hf_source:
+            errors.append(f"modules/model/hf.py missing patch token: {token}")
 
     data_source = _read(required_files["data_prune"])
     if "GISP_LOCAL_C4_JSONL" not in data_source:

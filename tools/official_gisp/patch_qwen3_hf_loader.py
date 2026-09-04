@@ -24,6 +24,7 @@ SYSTEM_RELATIVE_FILES = (
 LOCAL_C4_MARKER = "# RASP-LRM local C4 JSONL patch for offline official GISP runs"
 ATTENTION_ATTR_MARKER = "# RASP-LRM Qwen attention attribute compatibility patch"
 ATTENTION_MASK_MARKER = "# RASP-LRM Qwen attention mask shape compatibility patch"
+QWEN3_LOADER_MARKER = "# RASP-LRM explicit Qwen3 HF loader compatibility patch"
 
 LOCAL_C4_HELPER = r'''
 # RASP-LRM local C4 JSONL patch for offline official GISP runs
@@ -152,6 +153,32 @@ def _rasp_lrm_patch_qwen_attention_attrs(model):
 '''
 
 
+QWEN3_LOADER_HELPER = r'''
+# RASP-LRM explicit Qwen3 HF loader compatibility patch
+def _rasp_lrm_from_pretrained(model_name_or_path, *args, **kwargs):
+    name = str(model_name_or_path).lower()
+    kwargs.setdefault("trust_remote_code", True)
+    loader = AutoModelForCausalLM
+    if "qwen3" in name:
+        try:
+            from transformers import Qwen3ForCausalLM
+
+            loader = Qwen3ForCausalLM
+        except Exception:
+            loader = AutoModelForCausalLM
+    model = loader.from_pretrained(model_name_or_path, *args, **kwargs)
+    class_name = type(model).__name__
+    print(f"RASP-LRM loaded HF class: {class_name}", flush=True)
+    if "qwen3" in name and "Qwen3" not in class_name:
+        raise RuntimeError(
+            "Qwen3 checkpoint was not loaded by a Qwen3 model class. "
+            f"Got {class_name}; refusing to run GISP because pruning would be invalid."
+        )
+    return model
+
+'''
+
+
 def _ensure_auto_import(source: str) -> str:
     lines = source.splitlines()
     for index, line in enumerate(lines):
@@ -176,7 +203,12 @@ def _ensure_auto_import(source: str) -> str:
 
 
 def _force_auto_model_calls(source: str) -> str:
-    patched = re.sub(r"\bcustom_package_module\.Qwen2ForCausalLM\b", "AutoModelForCausalLM", source)
+    patched = re.sub(
+        r"from\s+transformers\.models\.qwen2\.[^\n]+\s+import\s+(Qwen2ForCausalLM|AutoModelForCausalLM)",
+        "from transformers import AutoModelForCausalLM",
+        source,
+    )
+    patched = re.sub(r"\bcustom_package_module\.Qwen2ForCausalLM\b", "AutoModelForCausalLM", patched)
     patched = re.sub(r"\bQwen2ForCausalLM\b", "AutoModelForCausalLM", patched)
     patched = re.sub(r"\bAutoModelForCausalLM\s*,\s*AutoModelForCausalLM\b", "AutoModelForCausalLM", patched)
     return patched
@@ -211,13 +243,35 @@ def _ensure_trust_remote_code_for_auto_model(source: str) -> str:
     return "\n".join(output) + ("\n" if source.endswith("\n") else "")
 
 
+def _ensure_qwen3_loader_helper(source: str) -> str:
+    if QWEN3_LOADER_MARKER in source:
+        return source
+    lines = source.splitlines()
+    insert_at = 0
+    for index, line in enumerate(lines):
+        if line.startswith("import ") or line.startswith("from "):
+            insert_at = index + 1
+    lines.insert(insert_at, QWEN3_LOADER_HELPER.strip("\n"))
+    return "\n".join(lines) + ("\n" if source.endswith("\n") else "")
+
+
+def _route_auto_model_calls_through_qwen3_helper(source: str) -> str:
+    return re.sub(
+        r"(?<![\w.])AutoModelForCausalLM\.from_pretrained\(",
+        "_rasp_lrm_from_pretrained(",
+        source,
+    )
+
+
 def patch_hf_loader(path: Path) -> bool:
     source = path.read_text(encoding="utf-8")
     patched = _force_auto_model_calls(source)
     patched = _ensure_trust_remote_code_for_auto_model(patched)
+    patched = _ensure_auto_import(patched)
+    patched = _ensure_qwen3_loader_helper(patched)
+    patched = _route_auto_model_calls_through_qwen3_helper(patched)
 
     if patched != source:
-        patched = _ensure_auto_import(patched)
         path.write_text(patched, encoding="utf-8")
         return True
     return False
