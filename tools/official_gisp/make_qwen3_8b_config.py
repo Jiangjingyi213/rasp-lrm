@@ -82,12 +82,168 @@ def _set_default(data: dict[str, Any], key: str, value: Any) -> None:
         data[key] = value
 
 
+def _as_mapping(parent: dict[str, Any], key: str) -> dict[str, Any]:
+    value = parent.get(key)
+    if not isinstance(value, dict):
+        value = {}
+        parent[key] = value
+    return value
+
+
+def _patch_model_config(model_config: dict[str, Any], model_name: str) -> None:
+    model_key_fragments = (
+        "model",
+        "tokenizer",
+        "pretrained",
+        "checkpoint",
+        "path",
+        "name_or_path",
+    )
+    known_model_values = ("llama", "meta-llama", "qwen", "mistral", "deepseek")
+    for key, value in list(model_config.items()):
+        if isinstance(value, dict):
+            _patch_model_config(value, model_name)
+            continue
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _patch_model_config(item, model_name)
+            continue
+        if not isinstance(value, str):
+            continue
+        key_l = str(key).lower()
+        value_l = value.lower()
+        if any(fragment in key_l for fragment in model_key_fragments) or any(
+            fragment in value_l for fragment in known_model_values
+        ):
+            if key_l not in {"struct", "type", "model_type", "dtype", "torch_dtype", "device", "device_map"}:
+                model_config[key] = model_name
+
+
+def _replace_model_name_in_strings(data: Any, model_name: str) -> None:
+    if isinstance(data, dict):
+        for key, value in list(data.items()):
+            if isinstance(value, str) and any(token in value for token in ("Llama", "llama", "Meta-Llama")):
+                data[key] = value.replace("meta-llama/Meta-Llama-3-8B", model_name)
+                data[key] = data[key].replace("Meta-Llama-3-8B", model_name.split("/")[-1])
+                data[key] = data[key].replace("llama3_8b", "qwen3_8b")
+            else:
+                _replace_model_name_in_strings(value, model_name)
+    elif isinstance(data, list):
+        for value in data:
+            _replace_model_name_in_strings(value, model_name)
+
+
+def _apply_official_gisp_overrides(cfg: dict[str, Any], args: argparse.Namespace, repo_dir: Path) -> None:
+    if isinstance(cfg.get("model"), dict):
+        _patch_model_config(cfg["model"], args.model)
+    else:
+        cfg["model"] = {
+            "struct": "hf",
+            "name_or_path": args.model,
+            "model_name_or_path": args.model,
+            "tokenizer_name_or_path": args.model,
+        }
+
+    task = _as_mapping(cfg, "task")
+    task["task_mode"] = "prune"
+    task["seed"] = int(task.get("seed", 0))
+    task["project"] = str(task.get("project", "GISPv2"))
+    task["datasets_folder"] = str(repo_dir / "data")
+    prune = _as_mapping(task, "prune")
+    prune_dataset = _as_mapping(prune, "prune_dataset")
+    prune_dataset["type"] = str(prune_dataset.get("type", "open_domain"))
+    prune_dataset["name"] = "c4"
+    prune_dataset["path"] = args.calibration_path
+    prune_dataset["seq_len"] = int(args.seq_len)
+    prune_dataset["n_samples"] = int(args.samples)
+    # The official GISP templates name this field `ratio` and use values like
+    # 0.7 for a 30% prune run, so for a T20 run we set the keep ratio to 0.8.
+    prune["ratio"] = 1.0 - float(args.pruning_ratio)
+    prune["target_pruning_ratio"] = float(args.pruning_ratio)
+    prune["batch_size"] = int(prune.get("batch_size", 2))
+    prune["prune_metric"] = "grad_sp_global"
+    prune["func_name"] = "global_grad_sp"
+    prune["prune_modules"] = "all"
+    prune["prune_separate"] = False
+    prune["prune_skip"] = True
+    prune["taylor"] = "param_first"
+    prune["real_metrics"] = "first"
+    prune["iterative"] = True
+    prune["iteration"] = int(args.iterations)
+    prune["iterative_scheduling"] = "linear"
+    custom_config = _as_mapping(prune, "custom_config")
+    pruner_dir = repo_dir / "external_code" / "GISP" / "pruners"
+    custom_config["custom_package_location"] = str(pruner_dir)
+    prune["custom_pruner"] = True
+
+    safe_model_slug = args.model.rstrip("/").split("/")[-1].replace("/", "_")
+    task["name"] = (
+        f"official_gisp_{safe_model_slug}_c4_prune{float(args.pruning_ratio):.2f}_"
+        f"iter{int(args.iterations)}_seq{int(args.seq_len)}_n{int(args.samples)}"
+    )
+    task["output_folder"] = str(Path(args.output_model_dir).parent / "00_official_gisp" / "upstream_outputs")
+
+    evaluation = _as_mapping(cfg, "evaluation")
+    evaluation["lm_eval"] = False
+    evaluation["commonsense_eval"] = False
+    evaluation["ppl"] = False
+    for key in ("lm_eval_options", "commonsense_eval_options", "ppl_options"):
+        options = _as_mapping(evaluation, key)
+        options["output_path"] = args.output_model_dir
+
+    report = _as_mapping(cfg, "report")
+    report["use_wandb"] = False
+    logger = _as_mapping(report, "logger")
+    logger["log_file_path"] = str(Path(task["output_folder"]) / f"{task['name']}.txt")
+
+    cfg["dataset"] = "c4"
+    cfg["calibration_path"] = args.calibration_path
+    cfg["seq_len"] = int(args.seq_len)
+    cfg["n_samples"] = int(args.samples)
+    cfg["pruning_ratio"] = float(args.pruning_ratio)
+    cfg["official_keep_ratio"] = 1.0 - float(args.pruning_ratio)
+    cfg["save_model"] = True
+    cfg["save_model_path"] = args.output_model_dir
+    _replace_model_name_in_strings(cfg, args.model)
+
+
+def _validate_generated_config(cfg: dict[str, Any], args: argparse.Namespace) -> None:
+    model_config = cfg.get("model")
+    if not isinstance(model_config, dict):
+        raise TypeError("Generated official GISP config must keep `model` as a mapping, not a scalar.")
+    if str(model_config.get("struct", "hf")) != "hf":
+        raise ValueError(f"Generated official GISP config expected model.struct='hf', got {model_config.get('struct')!r}")
+    task = cfg.get("task")
+    if not isinstance(task, dict):
+        raise TypeError("Generated official GISP config must contain task mapping.")
+    prune = task.get("prune")
+    if not isinstance(prune, dict):
+        raise TypeError("Generated official GISP config must contain task.prune mapping.")
+    prune_dataset = prune.get("prune_dataset")
+    if not isinstance(prune_dataset, dict):
+        raise TypeError("Generated official GISP config must contain task.prune.prune_dataset mapping.")
+    expected_keep_ratio = 1.0 - float(args.pruning_ratio)
+    actual_keep_ratio = float(prune.get("ratio"))
+    if abs(actual_keep_ratio - expected_keep_ratio) > 1e-9:
+        raise ValueError(
+            "Generated official GISP config has wrong task.prune.ratio: "
+            f"expected keep ratio {expected_keep_ratio}, got {actual_keep_ratio}"
+        )
+    if str(prune_dataset.get("path")) != str(args.calibration_path):
+        raise ValueError(
+            "Generated official GISP config has wrong C4 calibration path: "
+            f"expected {args.calibration_path}, got {prune_dataset.get('path')}"
+        )
+    if bool(cfg.get("evaluation", {}).get("lm_eval", False)):
+        raise ValueError("Generated official GISP config should disable upstream lm_eval; downstream eval is local.")
+
+
 def build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
     repo_dir = Path(args.gisp_repo_dir).resolve()
     template, template_path = _load_template(repo_dir)
     cfg = deepcopy(template)
     replacements = {
-        "model": args.model,
         "model_name": args.model,
         "model_name_or_path": args.model,
         "pretrained_model": args.model,
@@ -120,11 +276,13 @@ def build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
         "output_dir": args.output_model_dir,
         "output_path": args.output_model_dir,
     }
-    _patch_existing_keys(cfg, replacements)
+    if not template:
+        _patch_existing_keys(cfg, replacements)
+    _apply_official_gisp_overrides(cfg, args, repo_dir)
+    _validate_generated_config(cfg, args)
 
     # These defaults make the generated YAML self-describing if the official
     # template layout changes or is not present in the cloned repository.
-    _set_default(cfg, "model", args.model)
     _set_default(cfg, "dataset", "c4")
     _set_default(cfg, "calibration_path", args.calibration_path)
     _set_default(cfg, "seq_len", int(args.seq_len))
@@ -155,6 +313,7 @@ def build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
             "clean: C4 calibration only; no GSM8K train/test examples are used for pruning"
         ),
         "pruning_ratio": float(args.pruning_ratio),
+        "official_task_prune_ratio_keep": 1.0 - float(args.pruning_ratio),
         "iterations": int(args.iterations),
         "seq_len": int(args.seq_len),
         "samples": int(args.samples),
