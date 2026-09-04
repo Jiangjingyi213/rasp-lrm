@@ -90,6 +90,15 @@ def _as_mapping(parent: dict[str, Any], key: str) -> dict[str, Any]:
     return value
 
 
+def _parse_pipeline_nodes(raw: str) -> list[int]:
+    if not raw.strip():
+        return []
+    nodes = []
+    for item in raw.replace(",", " ").split():
+        nodes.append(int(item))
+    return nodes
+
+
 def _patch_model_config(model_config: dict[str, Any], model_name: str) -> None:
     model_key_fragments = (
         "model",
@@ -135,6 +144,18 @@ def _replace_model_name_in_strings(data: Any, model_name: str) -> None:
 
 
 def _apply_official_gisp_overrides(cfg: dict[str, Any], args: argparse.Namespace, repo_dir: Path) -> None:
+    enable_pipeline = bool(getattr(args, "enable_pipeline", False))
+    pipeline_nodes_raw = str(getattr(args, "pipeline_nodes", ""))
+
+    system = _as_mapping(cfg, "system")
+    system["device"] = "cuda"
+    pipeline = _as_mapping(system, "pipeline")
+    pipeline["enable_pipeline"] = enable_pipeline
+    pipeline_nodes = _parse_pipeline_nodes(pipeline_nodes_raw)
+    if pipeline_nodes:
+        pipeline["pipeline_nodes"] = pipeline_nodes
+    pipeline["size_mbs"] = int(pipeline.get("size_mbs", 2))
+
     if isinstance(cfg.get("model"), dict):
         _patch_model_config(cfg["model"], args.model)
     else:
@@ -245,6 +266,14 @@ def _validate_generated_config(cfg: dict[str, Any], args: argparse.Namespace) ->
         )
     if bool(cfg.get("evaluation", {}).get("lm_eval", False)):
         raise ValueError("Generated official GISP config should disable upstream lm_eval; downstream eval is local.")
+    system = cfg.get("system")
+    if not isinstance(system, dict):
+        raise TypeError("Generated official GISP config must contain system mapping.")
+    pipeline = system.get("pipeline")
+    if not isinstance(pipeline, dict):
+        raise TypeError("Generated official GISP config must contain system.pipeline mapping.")
+    if bool(getattr(args, "enable_pipeline", False)) and len(pipeline.get("pipeline_nodes", [])) < 2:
+        raise ValueError("GISP pipeline mode requires at least two logical CUDA pipeline nodes.")
 
 
 def build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -326,6 +355,8 @@ def build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
         "seq_len": int(args.seq_len),
         "samples": int(args.samples),
         "output_model_dir": args.output_model_dir,
+        "pipeline_enabled": bool(getattr(args, "enable_pipeline", False)),
+        "pipeline_nodes": _parse_pipeline_nodes(str(getattr(args, "pipeline_nodes", ""))),
         "notes": [
             "The launcher still validates the official GISP entrypoint before running pruning.",
             "If the upstream CLI uses a non-standard argument name, set GISP_PRUNE_CMD explicitly.",
@@ -346,6 +377,8 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=112)
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--samples", type=int, default=2000)
+    parser.add_argument("--enable-pipeline", action="store_true")
+    parser.add_argument("--pipeline-nodes", default="")
     args = parser.parse_args()
 
     cfg, manifest = build_config(args)

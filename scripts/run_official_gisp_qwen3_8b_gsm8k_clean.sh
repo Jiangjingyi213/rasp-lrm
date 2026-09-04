@@ -44,6 +44,24 @@ INSTALL_GISP_REQUIREMENTS="${INSTALL_GISP_REQUIREMENTS:-0}"
 GISP_CONFIG_ARG="${GISP_CONFIG_ARG:---config_path}"
 GISP_PRUNE_GPUS="${GISP_PRUNE_GPUS:-0,1,2,3,4}"
 PATCH_GISP_QWEN3_LOADER="${PATCH_GISP_QWEN3_LOADER:-1}"
+CHECK_QWEN3_AUTO_CLASS="${CHECK_QWEN3_AUTO_CLASS:-1}"
+
+IFS=',' read -r -a GISP_PRUNE_GPU_ARRAY <<< "${GISP_PRUNE_GPUS}"
+GISP_PRUNE_GPU_COUNT="${#GISP_PRUNE_GPU_ARRAY[@]}"
+if [[ -z "${GISP_ENABLE_PIPELINE:-}" ]]; then
+  if [[ "${GISP_PRUNE_GPU_COUNT}" -gt 1 ]]; then
+    GISP_ENABLE_PIPELINE=1
+  else
+    GISP_ENABLE_PIPELINE=0
+  fi
+fi
+if [[ -z "${GISP_PIPELINE_NODES:-}" ]]; then
+  GISP_PIPELINE_NODES="$(seq -s, 0 $((GISP_PRUNE_GPU_COUNT - 1)))"
+fi
+GISP_PIPELINE_ARGS=()
+if [[ "${GISP_ENABLE_PIPELINE}" == "1" ]]; then
+  GISP_PIPELINE_ARGS+=(--enable-pipeline)
+fi
 
 read -r -a GPUS <<< "${FINAL_GPUS:-0 1 2 3 4}"
 SHARD_COUNT="${STAGE_FINAL_SHARD_COUNT:-${#GPUS[@]}}"
@@ -130,6 +148,19 @@ else
   echo "SKIP patch official GISP Qwen3 HF loader; PATCH_GISP_QWEN3_LOADER=${PATCH_GISP_QWEN3_LOADER}"
 fi
 
+if [[ "${CHECK_QWEN3_AUTO_CLASS}" == "1" ]]; then
+  echo "START check Qwen3 AutoModelForCausalLM mapping"
+  HF_ENDPOINT="${HF_ENDPOINT}" \
+  HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
+  HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
+  HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}" \
+  "${PYTHON_BIN}" tools/official_gisp/check_qwen3_auto_model.py \
+    --model "${BASE_MODEL}"
+  echo "DONE check Qwen3 AutoModelForCausalLM mapping"
+else
+  echo "SKIP check Qwen3 AutoModelForCausalLM mapping; CHECK_QWEN3_AUTO_CLASS=${CHECK_QWEN3_AUTO_CLASS}"
+fi
+
 if [[ -f "${C4_CALIBRATION_PATH}" ]]; then
   line_count="$(wc -l < "${C4_CALIBRATION_PATH}" | tr -d ' ')"
   if [[ "${line_count}" == "${GISP_CALIBRATION_SAMPLES}" ]]; then
@@ -164,7 +195,9 @@ echo "START make official GISP config: ${OFFICIAL_CONFIG_PATH}"
   --pruning-ratio "${PRUNING_RATIO}" \
   --iterations "${GISP_ITERATIONS}" \
   --seq-len "${GISP_SEQ_LEN}" \
-  --samples "${GISP_CALIBRATION_SAMPLES}"
+  --samples "${GISP_CALIBRATION_SAMPLES}" \
+  "${GISP_PIPELINE_ARGS[@]}" \
+  --pipeline-nodes "${GISP_PIPELINE_NODES}"
 echo "DONE make official GISP config"
 
 if [[ "${SKIP_GISP_PRUNE}" != "1" ]]; then

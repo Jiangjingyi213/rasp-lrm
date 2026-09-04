@@ -11,7 +11,8 @@ PIP_EXTRA_ARGS="${PIP_EXTRA_ARGS:-}"
 INSTALL_GISP_REQUIREMENTS="${INSTALL_GISP_REQUIREMENTS:-0}"
 GISP_DEEPSPEED_PACKAGE="${GISP_DEEPSPEED_PACKAGE:-deepspeed==0.14.4}"
 GISP_SETUPTOOLS_PACKAGE="${GISP_SETUPTOOLS_PACKAGE:-setuptools==69.5.1}"
-GISP_MINIMAL_PACKAGES="${GISP_MINIMAL_PACKAGES:-fire ${GISP_DEEPSPEED_PACKAGE} ${GISP_SETUPTOOLS_PACKAGE} jsonlines omegaconf hydra-core einops}"
+GISP_TRANSFORMERS_PACKAGE="${GISP_TRANSFORMERS_PACKAGE:-transformers>=4.51.0}"
+GISP_MINIMAL_PACKAGES="${GISP_MINIMAL_PACKAGES:-fire ${GISP_DEEPSPEED_PACKAGE} ${GISP_SETUPTOOLS_PACKAGE} ${GISP_TRANSFORMERS_PACKAGE} accelerate jsonlines omegaconf hydra-core einops}"
 
 mkdir -p "${LOG_DIR}"
 
@@ -54,6 +55,7 @@ DS_BUILD_OPS="${DS_BUILD_OPS:-0}" \
 echo "START official GISP import smoke check"
 "${PYTHON_BIN}" - <<'PY'
 import importlib
+import importlib.metadata
 import sys
 
 checks = [
@@ -94,6 +96,16 @@ if optional_missing:
     print("Optional imports missing; only install them if official GISP later requires them:")
     for module_name, package_name, exc in optional_missing:
         print(f"  {module_name} ({package_name}): {exc}")
+version = importlib.metadata.version("transformers")
+parts = tuple(int(part) for part in version.split(".")[:3] if part.isdigit())
+print(f"transformers version: {version}")
+if parts < (4, 51, 0):
+    print(
+        "transformers is too old for trustworthy Qwen3 AutoModel loading; "
+        "install transformers>=4.51.0.",
+        file=sys.stderr,
+    )
+    sys.exit(4)
 print("official GISP dependency smoke check passed")
 PY
 
