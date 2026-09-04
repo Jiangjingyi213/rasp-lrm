@@ -142,6 +142,19 @@ def patch_hf_loader(path: Path) -> bool:
     return False
 
 
+def patch_python_file(path: Path) -> bool:
+    source = path.read_text(encoding="utf-8")
+    if "Qwen2ForCausalLM" not in source:
+        return False
+    patched = _force_auto_model_calls(source)
+    patched = _ensure_trust_remote_code_for_auto_model(patched)
+    patched = _ensure_auto_import(patched)
+    if patched != source:
+        path.write_text(patched, encoding="utf-8")
+        return True
+    return False
+
+
 def patch_data_prune(path: Path) -> bool:
     source = path.read_text(encoding="utf-8")
     if LOCAL_C4_MARKER in source:
@@ -206,6 +219,22 @@ def main() -> None:
         else:
             data_untouched.append(path)
 
+    recursive_changed = []
+    for path in sorted(repo_dir.rglob("*.py")):
+        if path in hf_existing:
+            continue
+        if patch_python_file(path):
+            recursive_changed.append(path)
+
+    remaining_qwen2 = []
+    for path in sorted(repo_dir.rglob("*.py")):
+        try:
+            source = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if "Qwen2ForCausalLM" in source:
+            remaining_qwen2.append(path)
+
     if hf_changed:
         print("Patched official GISP HF loader for Qwen3:")
         for path in hf_changed:
@@ -223,6 +252,16 @@ def main() -> None:
         print("Official GISP C4 loader already has local JSONL calibration patch.")
     for path in data_untouched:
         print(f"Checked without changes: {path}")
+
+    if recursive_changed:
+        print("Patched additional official GISP Python files containing Qwen2ForCausalLM:")
+        for path in recursive_changed:
+            print(f"  {path}")
+    if remaining_qwen2:
+        raise RuntimeError(
+            "Qwen2ForCausalLM still remains in official GISP Python files after patch: "
+            + ", ".join(str(path) for path in remaining_qwen2)
+        )
 
 
 if __name__ == "__main__":

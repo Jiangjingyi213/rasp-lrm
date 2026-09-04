@@ -9,20 +9,15 @@ def main() -> None:
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
     args = parser.parse_args()
 
+    from accelerate import init_empty_weights
     from transformers import AutoConfig, AutoModelForCausalLM
     from transformers.utils import logging as hf_logging
 
     hf_logging.set_verbosity_error()
     config = AutoConfig.from_pretrained(args.model, trust_remote_code=True)
-    try:
-        model_class = AutoModelForCausalLM._model_mapping[type(config)]
-    except Exception as exc:
-        raise RuntimeError(
-            f"AutoModelForCausalLM cannot resolve a model class for {args.model} "
-            f"with config type {type(config).__name__}."
-        ) from exc
-
-    class_name = getattr(model_class, "__name__", str(model_class))
+    with init_empty_weights():
+        model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    class_name = type(model).__name__
     print(f"{args.model} config model_type={getattr(config, 'model_type', None)} auto_class={class_name}")
     if class_name == "Qwen2ForCausalLM":
         print(
