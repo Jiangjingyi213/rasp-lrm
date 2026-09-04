@@ -28,10 +28,11 @@ def main() -> None:
         sys.exit(3)
     if "Qwen3" not in class_name:
         print(
-            f"WARNING: expected a Qwen3 model class, got {class_name}. "
-            "Verify this before trusting pruning results.",
+            f"ERROR: expected a Qwen3 model class, got {class_name}. "
+            "Do not trust pruning results from this environment.",
             file=sys.stderr,
         )
+        sys.exit(4)
 
 
 if __name__ == "__main__":

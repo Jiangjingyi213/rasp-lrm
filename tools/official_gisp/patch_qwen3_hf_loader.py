@@ -79,13 +79,36 @@ def _rasp_lrm_load_local_c4_jsonl(path, nsamples, seed, seqlen, tokenizer):
 
 ATTENTION_ATTR_HELPER = r'''
 # RASP-LRM Qwen attention attribute compatibility patch
+class _RaspLrmLegacyRotaryEmbedding:
+    def __init__(self, dim, max_position_embeddings=131072, base=10000.0):
+        import torch
+
+        self.dim = int(dim)
+        self.max_position_embeddings = int(max_position_embeddings)
+        self.base = float(base)
+        inv_freq = 1.0 / (
+            self.base ** (torch.arange(0, self.dim, 2, dtype=torch.float32) / self.dim)
+        )
+        self.inv_freq = inv_freq
+
+    def __call__(self, x, seq_len=None):
+        import torch
+
+        seq_len = int(seq_len or x.shape[-2])
+        inv_freq = self.inv_freq.to(device=x.device)
+        t = torch.arange(seq_len, device=x.device, dtype=inv_freq.dtype)
+        freqs = torch.outer(t, inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
+
+
 def _rasp_lrm_patch_qwen_attention_attrs(model):
     for module in model.modules():
         if not all(hasattr(module, name) for name in ("q_proj", "k_proj", "v_proj")):
             continue
         head_dim = getattr(module, "head_dim", None)
+        config = getattr(module, "config", None)
         if head_dim is None:
-            config = getattr(module, "config", None)
             hidden_size = getattr(config, "hidden_size", None)
             num_attention_heads = getattr(config, "num_attention_heads", None)
             if hidden_size and num_attention_heads:
@@ -101,6 +124,14 @@ def _rasp_lrm_patch_qwen_attention_attrs(model):
         if not hasattr(module, "num_key_value_groups") and hasattr(module, "num_heads"):
             kv_heads = int(getattr(module, "num_key_value_heads", module.num_heads))
             module.num_key_value_groups = max(1, int(module.num_heads) // max(1, kv_heads))
+        if not hasattr(module, "rotary_emb"):
+            max_position_embeddings = getattr(config, "max_position_embeddings", 131072)
+            rope_theta = getattr(config, "rope_theta", 10000.0)
+            module.rotary_emb = _RaspLrmLegacyRotaryEmbedding(
+                int(head_dim),
+                max_position_embeddings=max_position_embeddings,
+                base=rope_theta,
+            )
 
 '''
 
@@ -216,7 +247,13 @@ def patch_data_prune(path: Path) -> bool:
 def patch_system(path: Path) -> bool:
     source = path.read_text(encoding="utf-8")
     patched = source
-    if ATTENTION_ATTR_MARKER not in patched:
+    if ATTENTION_ATTR_MARKER in patched:
+        helper_pattern = re.compile(
+            rf"{re.escape(ATTENTION_ATTR_MARKER)}\n.*?(?=\ndef\s+\w+|\nclass\s+\w+|\Z)",
+            flags=re.DOTALL,
+        )
+        patched = helper_pattern.sub(ATTENTION_ATTR_HELPER.strip("\n") + "\n", patched, count=1)
+    else:
         insert_at = 0
         lines = patched.splitlines()
         for index, line in enumerate(lines):

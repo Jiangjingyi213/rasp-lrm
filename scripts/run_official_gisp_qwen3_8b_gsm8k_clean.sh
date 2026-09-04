@@ -258,6 +258,10 @@ if [[ "${SKIP_GISP_PRUNE}" != "1" ]]; then
         > "${LOG_DIR}/${RUN_LABEL}_prune.log" 2>&1
     fi
     echo "DONE official GISP prune"
+    if grep -E "Qwen2ForCausalLM|model of type qwen3 to instantiate a model of type qwen2" "${LOG_DIR}/${RUN_LABEL}_prune.log"; then
+      echo "Official GISP prune log shows Qwen3 was loaded through Qwen2; aborting before evaluation." >&2
+      exit 11
+    fi
   fi
 else
   echo "SKIP official GISP prune; SKIP_GISP_PRUNE=${SKIP_GISP_PRUNE}"
