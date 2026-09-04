@@ -171,6 +171,7 @@ if [[ "${SKIP_GISP_PRUNE}" != "1" ]]; then
   if [[ -n "${GISP_PRUNE_CMD:-}" ]]; then
     echo "START official GISP prune via GISP_PRUNE_CMD"
     export GISP_REPO_DIR OFFICIAL_CONFIG_PATH PRUNED_MODEL_DIR BASE_MODEL C4_CALIBRATION_PATH
+    export GISP_LOCAL_C4_JSONL="${C4_CALIBRATION_PATH}"
     bash -lc "${GISP_PRUNE_CMD}" > "${LOG_DIR}/${RUN_LABEL}_prune.log" 2>&1
     echo "DONE official GISP prune via GISP_PRUNE_CMD"
   else
@@ -194,6 +195,7 @@ if [[ "${SKIP_GISP_PRUNE}" != "1" ]]; then
     fi
     echo "START official GISP prune: ${entrypoint} ${GISP_CONFIG_ARG} ${OFFICIAL_CONFIG_PATH}"
     CUDA_VISIBLE_DEVICES="${GISP_PRUNE_GPUS}" \
+    GISP_LOCAL_C4_JSONL="${C4_CALIBRATION_PATH}" \
     HF_ENDPOINT="${HF_ENDPOINT}" \
     HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
     HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
