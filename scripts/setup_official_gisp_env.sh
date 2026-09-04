@@ -26,8 +26,13 @@ echo "START install official GISP requirements"
 mapfile -t requirement_files < <(find "${GISP_REPO_DIR}" -maxdepth 4 -type f \( -iname 'requirements.txt' -o -iname 'requirements*.txt' \) | sort)
 if [[ "${#requirement_files[@]}" -gt 0 ]]; then
   for req in "${requirement_files[@]}"; do
-    echo "pip install -r ${req}"
-    "${PYTHON_BIN}" -m pip install ${PIP_EXTRA_ARGS} -r "${req}"
+    req_dir="$(dirname "${req}")"
+    req_file="$(basename "${req}")"
+    echo "pip install -r ${req} from cwd=${req_dir}"
+    (
+      cd "${req_dir}"
+      "${PYTHON_BIN}" -m pip install ${PIP_EXTRA_ARGS} -r "${req_file}"
+    )
   done
 else
   echo "No requirements.txt found under ${GISP_REPO_DIR}; installing known official-GISP runtime dependencies."
