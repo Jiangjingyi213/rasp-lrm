@@ -8,8 +8,12 @@ from typing import Any
 
 try:
     import yaml
+    from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 except ModuleNotFoundError:  # pragma: no cover - exercised in minimal local envs.
     yaml = None
+    MappingNode = None
+    ScalarNode = None
+    SequenceNode = None
 
 
 DEFAULT_TEMPLATE_CANDIDATES = (
@@ -19,6 +23,34 @@ DEFAULT_TEMPLATE_CANDIDATES = (
 )
 
 
+if yaml is not None:
+    class GispYamlLoader(yaml.SafeLoader):
+        pass
+
+    def _construct_join(loader: yaml.Loader, node: Any) -> str:
+        if isinstance(node, SequenceNode):
+            return "".join(str(value) for value in loader.construct_sequence(node))
+        if isinstance(node, ScalarNode):
+            return str(loader.construct_scalar(node))
+        if isinstance(node, MappingNode):
+            return "".join(f"{key}{value}" for key, value in loader.construct_mapping(node).items())
+        return ""
+
+    def _construct_unknown(loader: yaml.Loader, tag_suffix: str, node: Any) -> Any:
+        if isinstance(node, SequenceNode):
+            return loader.construct_sequence(node)
+        if isinstance(node, MappingNode):
+            return loader.construct_mapping(node)
+        if isinstance(node, ScalarNode):
+            return loader.construct_scalar(node)
+        return None
+
+    GispYamlLoader.add_constructor("!join", _construct_join)
+    GispYamlLoader.add_multi_constructor("!", _construct_unknown)
+else:
+    GispYamlLoader = None
+
+
 def _load_template(repo_dir: Path) -> tuple[dict[str, Any], str | None]:
     if yaml is None:
         return {}, None
@@ -26,7 +58,7 @@ def _load_template(repo_dir: Path) -> tuple[dict[str, Any], str | None]:
         path = repo_dir / relative
         if path.exists():
             with path.open("r", encoding="utf-8") as handle:
-                data = yaml.safe_load(handle) or {}
+                data = yaml.load(handle, Loader=GispYamlLoader) or {}
             if not isinstance(data, dict):
                 raise TypeError(f"Official GISP template is not a YAML mapping: {path}")
             return data, str(path)
