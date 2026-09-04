@@ -45,6 +45,7 @@ GISP_CONFIG_ARG="${GISP_CONFIG_ARG:---config_path}"
 GISP_PRUNE_GPUS="${GISP_PRUNE_GPUS:-0,1,2,3,4}"
 PATCH_GISP_QWEN3_LOADER="${PATCH_GISP_QWEN3_LOADER:-1}"
 CHECK_QWEN3_AUTO_CLASS="${CHECK_QWEN3_AUTO_CLASS:-1}"
+GISP_TORCHRUN_ARGS="${GISP_TORCHRUN_ARGS:---standalone --nnodes=1}"
 
 IFS=',' read -r -a GISP_PRUNE_GPU_ARRAY <<< "${GISP_PRUNE_GPUS}"
 GISP_PRUNE_GPU_COUNT="${#GISP_PRUNE_GPU_ARRAY[@]}"
@@ -226,15 +227,30 @@ if [[ "${SKIP_GISP_PRUNE}" != "1" ]]; then
       find "${GISP_REPO_DIR}" -maxdepth 3 -type f \( -name 'main.py' -o -name 'run.py' -o -name '*.sh' \) | sort >&2
       exit 4
     fi
-    echo "START official GISP prune: ${entrypoint} ${GISP_CONFIG_ARG} ${OFFICIAL_CONFIG_PATH}"
-    CUDA_VISIBLE_DEVICES="${GISP_PRUNE_GPUS}" \
-    GISP_LOCAL_C4_JSONL="${C4_CALIBRATION_PATH}" \
-    HF_ENDPOINT="${HF_ENDPOINT}" \
-    HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
-    HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
-    HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}" \
-    "${PYTHON_BIN}" "${entrypoint}" "${GISP_CONFIG_ARG}" "${OFFICIAL_CONFIG_PATH}" \
-      > "${LOG_DIR}/${RUN_LABEL}_prune.log" 2>&1
+    if [[ "${GISP_ENABLE_PIPELINE}" == "1" ]]; then
+      echo "START official GISP prune with torchrun: nproc=${GISP_PRUNE_GPU_COUNT}; ${entrypoint} ${GISP_CONFIG_ARG} ${OFFICIAL_CONFIG_PATH}"
+      CUDA_VISIBLE_DEVICES="${GISP_PRUNE_GPUS}" \
+      GISP_LOCAL_C4_JSONL="${C4_CALIBRATION_PATH}" \
+      HF_ENDPOINT="${HF_ENDPOINT}" \
+      HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
+      HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
+      HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}" \
+      OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}" \
+      "${PYTHON_BIN}" -m torch.distributed.run ${GISP_TORCHRUN_ARGS} \
+        --nproc_per_node "${GISP_PRUNE_GPU_COUNT}" \
+        "${entrypoint}" "${GISP_CONFIG_ARG}" "${OFFICIAL_CONFIG_PATH}" \
+        > "${LOG_DIR}/${RUN_LABEL}_prune.log" 2>&1
+    else
+      echo "START official GISP prune: ${entrypoint} ${GISP_CONFIG_ARG} ${OFFICIAL_CONFIG_PATH}"
+      CUDA_VISIBLE_DEVICES="${GISP_PRUNE_GPUS}" \
+      GISP_LOCAL_C4_JSONL="${C4_CALIBRATION_PATH}" \
+      HF_ENDPOINT="${HF_ENDPOINT}" \
+      HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
+      HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
+      HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}" \
+      "${PYTHON_BIN}" "${entrypoint}" "${GISP_CONFIG_ARG}" "${OFFICIAL_CONFIG_PATH}" \
+        > "${LOG_DIR}/${RUN_LABEL}_prune.log" 2>&1
+    fi
     echo "DONE official GISP prune"
   fi
 else
