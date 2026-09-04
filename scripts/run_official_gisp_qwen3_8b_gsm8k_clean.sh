@@ -43,6 +43,7 @@ SETUP_GISP_ENV="${SETUP_GISP_ENV:-1}"
 INSTALL_GISP_REQUIREMENTS="${INSTALL_GISP_REQUIREMENTS:-0}"
 GISP_CONFIG_ARG="${GISP_CONFIG_ARG:---config_path}"
 GISP_PRUNE_GPUS="${GISP_PRUNE_GPUS:-0,1,2,3,4}"
+PATCH_GISP_QWEN3_LOADER="${PATCH_GISP_QWEN3_LOADER:-1}"
 
 read -r -a GPUS <<< "${FINAL_GPUS:-0 1 2 3 4}"
 SHARD_COUNT="${STAGE_FINAL_SHARD_COUNT:-${#GPUS[@]}}"
@@ -118,6 +119,15 @@ if [[ "${SETUP_GISP_ENV}" == "1" ]]; then
   echo "DONE setup official GISP env"
 else
   echo "SKIP setup official GISP env; SETUP_GISP_ENV=${SETUP_GISP_ENV}"
+fi
+
+if [[ "${PATCH_GISP_QWEN3_LOADER}" == "1" ]]; then
+  echo "START patch official GISP Qwen3 HF loader"
+  "${PYTHON_BIN}" tools/official_gisp/patch_qwen3_hf_loader.py \
+    --gisp-repo-dir "${GISP_REPO_DIR}"
+  echo "DONE patch official GISP Qwen3 HF loader"
+else
+  echo "SKIP patch official GISP Qwen3 HF loader; PATCH_GISP_QWEN3_LOADER=${PATCH_GISP_QWEN3_LOADER}"
 fi
 
 if [[ -f "${C4_CALIBRATION_PATH}" ]]; then
