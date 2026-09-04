@@ -185,7 +185,7 @@ def _apply_official_gisp_overrides(cfg: dict[str, Any], args: argparse.Namespace
     # 0.7 for a 30% prune run, so for a T20 run we set the keep ratio to 0.8.
     prune["ratio"] = 1.0 - float(args.pruning_ratio)
     prune["target_pruning_ratio"] = float(args.pruning_ratio)
-    prune["batch_size"] = int(prune.get("batch_size", 2))
+    prune["batch_size"] = int(args.batch_size)
     prune["prune_metric"] = "grad_sp_global"
     prune["func_name"] = "global_grad_sp"
     prune["prune_modules"] = "all"
@@ -354,6 +354,7 @@ def build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
         "iterations": int(args.iterations),
         "seq_len": int(args.seq_len),
         "samples": int(args.samples),
+        "batch_size": int(args.batch_size),
         "output_model_dir": args.output_model_dir,
         "pipeline_enabled": bool(getattr(args, "enable_pipeline", False)),
         "pipeline_nodes": _parse_pipeline_nodes(str(getattr(args, "pipeline_nodes", ""))),
@@ -377,6 +378,7 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=112)
     parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument("--samples", type=int, default=2000)
+    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--enable-pipeline", action="store_true")
     parser.add_argument("--pipeline-nodes", default="")
     args = parser.parse_args()
