@@ -8,7 +8,7 @@ export EVAL_CONFIG="${EVAL_CONFIG:-configs/generated_additional_baselines/offici
 export OFFICIAL_CONFIG_PATH="${OFFICIAL_CONFIG_PATH:-${RUN_ROOT}/00_official_gisp/gisp_qwen3_4b_c4_t20.yaml}"
 export OFFICIAL_CONFIG_MANIFEST="${OFFICIAL_CONFIG_MANIFEST:-${RUN_ROOT}/00_official_gisp/gisp_qwen3_4b_c4_t20.config_manifest.json}"
 export RUN_LABEL="${RUN_LABEL:-official_gisp_qwen3_4b_c4_t20_gsm8k_full}"
-export GISP_ENABLE_PIPELINE="${GISP_ENABLE_PIPELINE:-0}"
+export GISP_ENABLE_PIPELINE="${GISP_ENABLE_PIPELINE:-}"
 export GISP_PRUNE_BATCH_SIZE="${GISP_PRUNE_BATCH_SIZE:-1}"
 
 bash scripts/run_official_gisp_qwen3_8b_gsm8k_clean.sh

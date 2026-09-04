@@ -168,6 +168,7 @@ def _apply_official_gisp_overrides(cfg: dict[str, Any], args: argparse.Namespace
     model_config = cfg["model"]
     model_config["custom_modeling"] = False
     model_config["trust_remote_code"] = True
+    model_config.pop("custom_config", None)
 
     task = _as_mapping(cfg, "task")
     task["task_mode"] = "prune"
@@ -242,6 +243,11 @@ def _validate_generated_config(cfg: dict[str, Any], args: argparse.Namespace) ->
         raise ValueError(
             "Generated official GISP config must disable model.custom_modeling for Qwen3. "
             "The upstream custom modeling package used by the Llama template does not provide Qwen classes."
+        )
+    if "custom_config" in model_config:
+        raise ValueError(
+            "Generated official GISP config must remove model.custom_config for Qwen3. "
+            "Leaving the Llama-template custom modeling path can route loading through stale classes."
         )
     task = cfg.get("task")
     if not isinstance(task, dict):

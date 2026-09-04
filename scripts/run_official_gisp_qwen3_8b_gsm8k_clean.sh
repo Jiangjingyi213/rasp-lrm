@@ -74,6 +74,20 @@ fi
 
 mkdir -p "${LOG_DIR}" "${RUN_ROOT}" "$(dirname "${C4_CALIBRATION_PATH}")" "$(dirname "${OFFICIAL_CONFIG_PATH}")"
 
+check_official_gisp_prune_log() {
+  local prune_status="$1"
+  local prune_log="${LOG_DIR}/${RUN_LABEL}_prune.log"
+  if grep -E "Qwen2ForCausalLM|model of type qwen3 to instantiate a model of type qwen2" "${prune_log}"; then
+    echo "Official GISP prune log shows Qwen3 was loaded through Qwen2; aborting before evaluation." >&2
+    exit 11
+  fi
+  if [[ "${prune_status}" -ne 0 ]]; then
+    echo "Official GISP prune failed with exit code ${prune_status}. Last log lines:" >&2
+    tail -n 80 "${prune_log}" >&2 || true
+    exit "${prune_status}"
+  fi
+}
+
 if [[ ! -d "${GISP_REPO_DIR}/.git" ]]; then
   if [[ -n "${GISP_ARCHIVE_PATH}" ]]; then
     echo "START extract official GISP archive: ${GISP_ARCHIVE_PATH} -> ${GISP_REPO_DIR}"
@@ -214,7 +228,11 @@ if [[ "${SKIP_GISP_PRUNE}" != "1" ]]; then
     echo "START official GISP prune via GISP_PRUNE_CMD"
     export GISP_REPO_DIR OFFICIAL_CONFIG_PATH PRUNED_MODEL_DIR BASE_MODEL C4_CALIBRATION_PATH
     export GISP_LOCAL_C4_JSONL="${C4_CALIBRATION_PATH}"
+    set +e
     bash -lc "${GISP_PRUNE_CMD}" > "${LOG_DIR}/${RUN_LABEL}_prune.log" 2>&1
+    prune_status="$?"
+    set -e
+    check_official_gisp_prune_log "${prune_status}"
     echo "DONE official GISP prune via GISP_PRUNE_CMD"
   else
     entrypoint=""
@@ -237,6 +255,7 @@ if [[ "${SKIP_GISP_PRUNE}" != "1" ]]; then
     fi
     if [[ "${GISP_ENABLE_PIPELINE}" == "1" ]]; then
       echo "START official GISP prune with torchrun: nproc=${GISP_PRUNE_GPU_COUNT}; ${entrypoint} ${GISP_CONFIG_ARG} ${OFFICIAL_CONFIG_PATH}"
+      set +e
       CUDA_VISIBLE_DEVICES="${GISP_PRUNE_GPUS}" \
       GISP_LOCAL_C4_JSONL="${C4_CALIBRATION_PATH}" \
       HF_ENDPOINT="${HF_ENDPOINT}" \
@@ -248,8 +267,11 @@ if [[ "${SKIP_GISP_PRUNE}" != "1" ]]; then
         --nproc_per_node "${GISP_PRUNE_GPU_COUNT}" \
         "${entrypoint}" "${GISP_CONFIG_ARG}" "${OFFICIAL_CONFIG_PATH}" \
         > "${LOG_DIR}/${RUN_LABEL}_prune.log" 2>&1
+      prune_status="$?"
+      set -e
     else
       echo "START official GISP prune: ${entrypoint} ${GISP_CONFIG_ARG} ${OFFICIAL_CONFIG_PATH}"
+      set +e
       CUDA_VISIBLE_DEVICES="${GISP_PRUNE_GPUS}" \
       GISP_LOCAL_C4_JSONL="${C4_CALIBRATION_PATH}" \
       HF_ENDPOINT="${HF_ENDPOINT}" \
@@ -258,12 +280,11 @@ if [[ "${SKIP_GISP_PRUNE}" != "1" ]]; then
       HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}" \
       "${PYTHON_BIN}" "${entrypoint}" "${GISP_CONFIG_ARG}" "${OFFICIAL_CONFIG_PATH}" \
         > "${LOG_DIR}/${RUN_LABEL}_prune.log" 2>&1
+      prune_status="$?"
+      set -e
     fi
+    check_official_gisp_prune_log "${prune_status}"
     echo "DONE official GISP prune"
-    if grep -E "Qwen2ForCausalLM|model of type qwen3 to instantiate a model of type qwen2" "${LOG_DIR}/${RUN_LABEL}_prune.log"; then
-      echo "Official GISP prune log shows Qwen3 was loaded through Qwen2; aborting before evaluation." >&2
-      exit 11
-    fi
   fi
 else
   echo "SKIP official GISP prune; SKIP_GISP_PRUNE=${SKIP_GISP_PRUNE}"

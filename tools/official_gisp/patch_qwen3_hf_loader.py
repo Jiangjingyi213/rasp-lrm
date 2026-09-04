@@ -109,18 +109,22 @@ class _RaspLrmLegacyRotaryEmbedding:
 
 
 def _rasp_lrm_patch_qwen_attention_attrs(model):
-    for module in model.modules():
+    for layer_index, module in enumerate(model.modules()):
         if not all(hasattr(module, name) for name in ("q_proj", "k_proj", "v_proj")):
             continue
         head_dim = getattr(module, "head_dim", None)
         config = getattr(module, "config", None)
+        hidden_size = getattr(config, "hidden_size", None)
         if head_dim is None:
-            hidden_size = getattr(config, "hidden_size", None)
             num_attention_heads = getattr(config, "num_attention_heads", None)
             if hidden_size and num_attention_heads:
                 head_dim = int(hidden_size) // int(num_attention_heads)
         if not head_dim:
             continue
+        if hidden_size is None:
+            hidden_size = int(getattr(module.q_proj, "out_features", 0))
+        if not hasattr(module, "hidden_size") and hidden_size:
+            module.hidden_size = int(hidden_size)
         q_out = int(getattr(module.q_proj, "out_features", 0))
         k_out = int(getattr(module.k_proj, "out_features", 0))
         if not hasattr(module, "num_heads") and q_out:
@@ -138,6 +142,12 @@ def _rasp_lrm_patch_qwen_attention_attrs(model):
                 max_position_embeddings=max_position_embeddings,
                 base=rope_theta,
             )
+        if not hasattr(module, "attention_dropout"):
+            module.attention_dropout = float(getattr(config, "attention_dropout", 0.0))
+        if not hasattr(module, "layer_idx"):
+            module.layer_idx = getattr(module, "layer_idx", layer_index)
+        if not hasattr(module, "is_causal"):
+            module.is_causal = True
 
 '''
 
@@ -215,11 +225,17 @@ def patch_hf_loader(path: Path) -> bool:
 
 def patch_python_file(path: Path) -> bool:
     source = path.read_text(encoding="utf-8")
-    if "Qwen2ForCausalLM" not in source and "Attention mask should be of size" not in source:
+    interesting_tokens = (
+        "Qwen2ForCausalLM",
+        "Attention mask should be of size",
+        "query_states = self.q_proj(hidden_states)",
+    )
+    if not any(token in source for token in interesting_tokens):
         return False
     needs_auto_import = "Qwen2ForCausalLM" in source
     patched = _force_auto_model_calls(source)
     patched = _ensure_trust_remote_code_for_auto_model(patched)
+    patched = _patch_qwen3_norms_in_attention_hooks(patched)
     patched = _patch_attention_mask_shape_check(patched)
     if needs_auto_import:
         patched = _ensure_auto_import(patched)
@@ -254,18 +270,17 @@ def patch_data_prune(path: Path) -> bool:
 
 
 def _patch_attention_mask_shape_check(source: str) -> str:
-    if "Attention mask should be of size" not in source or ATTENTION_MASK_MARKER in source:
+    if "Attention mask should be of size" not in source:
         return source
 
     lines = source.splitlines()
     output = []
-    inserted = False
     for line in lines:
         stripped = line.strip()
         if (
-            not inserted
-            and "attention_mask.size() !=" in stripped
+            "attention_mask.size() !=" in stripped
             and "(bsz, 1, q_len, kv_seq_len)" in stripped
+            and (not output or ATTENTION_MASK_MARKER not in "\n".join(output[-16:]))
         ):
             indent = line[: len(line) - len(line.lstrip())]
             output.extend(
@@ -287,9 +302,44 @@ def _patch_attention_mask_shape_check(source: str) -> str:
                     f"{indent}        )",
                 ]
             )
-            inserted = True
         output.append(line)
 
+    return "\n".join(output) + ("\n" if source.endswith("\n") else "")
+
+
+QWEN3_NORM_MARKER = "# RASP-LRM Qwen3 q/k norm compatibility patch"
+
+
+def _patch_qwen3_norms_in_attention_hooks(source: str) -> str:
+    if "query_states = self.q_proj(hidden_states)" not in source:
+        return source
+
+    lines = source.splitlines()
+    output = []
+    inserted_count = 0
+    for index, line in enumerate(lines):
+        output.append(line)
+        if "value_states = self.v_proj(hidden_states)" not in line:
+            continue
+        lookahead = "\n".join(lines[index + 1 : index + 8])
+        if QWEN3_NORM_MARKER in lookahead:
+            continue
+        indent = line[: len(line) - len(line.lstrip())]
+        output.extend(
+            [
+                f"{indent}{QWEN3_NORM_MARKER}",
+                f"{indent}if hasattr(self, \"q_norm\"):",
+                f"{indent}    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim)",
+                f"{indent}    query_states = self.q_norm(query_states).reshape(bsz, q_len, -1)",
+                f"{indent}if hasattr(self, \"k_norm\"):",
+                f"{indent}    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim)",
+                f"{indent}    key_states = self.k_norm(key_states).reshape(bsz, q_len, -1)",
+            ]
+        )
+        inserted_count += 1
+
+    if inserted_count == 0:
+        return source
     return "\n".join(output) + ("\n" if source.endswith("\n") else "")
 
 

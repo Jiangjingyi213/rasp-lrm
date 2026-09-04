@@ -28,6 +28,7 @@ def main() -> None:
     errors = []
     qwen2_hits = []
     unpatched_mask_hits = []
+    missing_qwen3_norm_hits = []
     for path in sorted(repo_dir.rglob("*.py")):
         try:
             source = _read(path)
@@ -37,12 +38,23 @@ def main() -> None:
             qwen2_hits.append(path)
         if "Attention mask should be of size" in source and "RASP-LRM Qwen attention mask shape compatibility patch" not in source:
             unpatched_mask_hits.append(path)
+        if (
+            "query_states = self.q_proj(hidden_states)" in source
+            and "value_states = self.v_proj(hidden_states)" in source
+            and "RASP-LRM Qwen3 q/k norm compatibility patch" not in source
+        ):
+            missing_qwen3_norm_hits.append(path)
     if qwen2_hits:
         errors.append("Qwen2ForCausalLM remains in: " + ", ".join(str(path) for path in qwen2_hits))
     if unpatched_mask_hits:
         errors.append(
             "attention mask shape checks remain unpatched in: "
             + ", ".join(str(path) for path in unpatched_mask_hits)
+        )
+    if missing_qwen3_norm_hits:
+        errors.append(
+            "Qwen attention hooks remain without q/k norm compatibility in: "
+            + ", ".join(str(path) for path in missing_qwen3_norm_hits)
         )
 
     hf_source = _read(required_files["hf_loader"])
@@ -60,6 +72,9 @@ def main() -> None:
         "local_rank = 0",
         "_RaspLrmLegacyRotaryEmbedding",
         "_rasp_lrm_patch_qwen_attention_attrs(model)",
+        "module.hidden_size",
+        "module.attention_dropout",
+        "module.is_causal",
     ):
         if token not in system_source:
             errors.append(f"modules/system/system.py missing patch token: {token}")
@@ -69,7 +84,7 @@ def main() -> None:
             print(f"ERROR: {error}", file=sys.stderr)
         sys.exit(3)
 
-    print("official GISP patch state looks ready for Qwen3 + local C4 single-process pruning")
+    print("official GISP patch state looks ready for Qwen3 + local C4 pruning")
 
 
 if __name__ == "__main__":
