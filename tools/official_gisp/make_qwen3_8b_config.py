@@ -144,6 +144,9 @@ def _apply_official_gisp_overrides(cfg: dict[str, Any], args: argparse.Namespace
             "model_name_or_path": args.model,
             "tokenizer_name_or_path": args.model,
         }
+    model_config = cfg["model"]
+    model_config["custom_modeling"] = False
+    model_config["trust_remote_code"] = True
 
     task = _as_mapping(cfg, "task")
     task["task_mode"] = "prune"
@@ -214,6 +217,11 @@ def _validate_generated_config(cfg: dict[str, Any], args: argparse.Namespace) ->
         raise TypeError("Generated official GISP config must keep `model` as a mapping, not a scalar.")
     if str(model_config.get("struct", "hf")) != "hf":
         raise ValueError(f"Generated official GISP config expected model.struct='hf', got {model_config.get('struct')!r}")
+    if bool(model_config.get("custom_modeling", False)):
+        raise ValueError(
+            "Generated official GISP config must disable model.custom_modeling for Qwen3. "
+            "The upstream custom modeling package used by the Llama template does not provide Qwen classes."
+        )
     task = cfg.get("task")
     if not isinstance(task, dict):
         raise TypeError("Generated official GISP config must contain task mapping.")
