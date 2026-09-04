@@ -47,6 +47,7 @@ GISP_PRUNE_GPUS="${GISP_PRUNE_GPUS:-0,1,2,3,4}"
 PATCH_GISP_QWEN3_LOADER="${PATCH_GISP_QWEN3_LOADER:-1}"
 CHECK_QWEN3_AUTO_CLASS="${CHECK_QWEN3_AUTO_CLASS:-1}"
 GISP_TORCHRUN_ARGS="${GISP_TORCHRUN_ARGS:---standalone --nnodes=1}"
+GISP_ALLOW_PIPELINE_FALLBACK="${GISP_ALLOW_PIPELINE_FALLBACK:-1}"
 
 IFS=',' read -r -a GISP_PRUNE_GPU_ARRAY <<< "${GISP_PRUNE_GPUS}"
 GISP_PRUNE_GPU_COUNT="${#GISP_PRUNE_GPU_ARRAY[@]}"
@@ -59,6 +60,25 @@ if [[ -z "${GISP_ENABLE_PIPELINE:-}" ]]; then
 fi
 if [[ -z "${GISP_PIPELINE_NODES:-}" ]]; then
   GISP_PIPELINE_NODES="$(seq -s, 0 $((GISP_PRUNE_GPU_COUNT - 1)))"
+fi
+if [[ "${GISP_ENABLE_PIPELINE}" == "1" ]]; then
+  if ! "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import torch.distributed.pipelining  # noqa: F401
+PY
+  then
+    if [[ "${GISP_ALLOW_PIPELINE_FALLBACK}" == "1" ]]; then
+      echo "WARN torch.distributed.pipelining is unavailable in this Python env; falling back to single-process GISP pruning."
+      echo "WARN GSM8K downstream evaluation will still use FINAL_GPUS/STAGE_FINAL_SHARD_COUNT for shard parallelism."
+      GISP_ENABLE_PIPELINE=0
+      first_prune_gpu="${GISP_PRUNE_GPU_ARRAY[0]}"
+      GISP_PRUNE_GPUS="${first_prune_gpu}"
+      GISP_PRUNE_GPU_COUNT=1
+      GISP_PIPELINE_NODES="0"
+    else
+      echo "torch.distributed.pipelining is unavailable. Install a compatible newer torch or rerun with GISP_ENABLE_PIPELINE=0." >&2
+      exit 12
+    fi
+  fi
 fi
 GISP_PIPELINE_ARGS=()
 if [[ "${GISP_ENABLE_PIPELINE}" == "1" ]]; then
