@@ -25,6 +25,7 @@ LOCAL_C4_MARKER = "# RASP-LRM local C4 JSONL patch for offline official GISP run
 ATTENTION_ATTR_MARKER = "# RASP-LRM Qwen attention attribute compatibility patch"
 ATTENTION_MASK_MARKER = "# RASP-LRM Qwen attention mask shape compatibility patch"
 QWEN3_LOADER_MARKER = "# RASP-LRM explicit Qwen3 HF loader compatibility patch"
+ATTENTION_OUTPUT_RESHAPE_MARKER = "# RASP-LRM Qwen attention output reshape compatibility patch"
 
 LOCAL_C4_HELPER = r'''
 # RASP-LRM local C4 JSONL patch for offline official GISP runs
@@ -283,6 +284,7 @@ def patch_python_file(path: Path) -> bool:
         "Qwen2ForCausalLM",
         "Attention mask should be of size",
         "query_states = self.q_proj(hidden_states)",
+        "attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)",
     )
     if not any(token in source for token in interesting_tokens):
         return False
@@ -291,6 +293,7 @@ def patch_python_file(path: Path) -> bool:
     patched = _ensure_trust_remote_code_for_auto_model(patched)
     patched = _patch_qwen3_norms_in_attention_hooks(patched)
     patched = _patch_attention_mask_shape_check(patched)
+    patched = _patch_attention_output_reshape(patched)
     if needs_auto_import:
         patched = _ensure_auto_import(patched)
     if patched != source:
@@ -394,6 +397,37 @@ def _patch_qwen3_norms_in_attention_hooks(source: str) -> str:
 
     if inserted_count == 0:
         return source
+    return "\n".join(output) + ("\n" if source.endswith("\n") else "")
+
+
+def _patch_attention_output_reshape(source: str) -> str:
+    target = "attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)"
+    if target not in source:
+        return source
+
+    lines = source.splitlines()
+    output = []
+    for index, line in enumerate(lines):
+        if target not in line:
+            output.append(line)
+            continue
+        lookbehind = "\n".join(output[-8:])
+        indent = line[: len(line) - len(line.lstrip())]
+        if ATTENTION_OUTPUT_RESHAPE_MARKER not in lookbehind:
+            output.extend(
+                [
+                    f"{indent}{ATTENTION_OUTPUT_RESHAPE_MARKER}",
+                    f"{indent}_rasp_lrm_attn_output_size = int(",
+                    f"{indent}    getattr(getattr(self, \"o_proj\", None), \"in_features\", 0)",
+                    f"{indent}    or getattr(getattr(self, \"q_proj\", None), \"out_features\", 0)",
+                    f"{indent}    or (int(self.num_heads) * int(self.head_dim))",
+                    f"{indent})",
+                ]
+            )
+        output.append(
+            line.replace("self.hidden_size", "_rasp_lrm_attn_output_size")
+        )
+
     return "\n".join(output) + ("\n" if source.endswith("\n") else "")
 
 

@@ -97,9 +97,15 @@ mkdir -p "${LOG_DIR}" "${RUN_ROOT}" "$(dirname "${C4_CALIBRATION_PATH}")" "$(dir
 check_official_gisp_prune_log() {
   local prune_status="$1"
   local prune_log="${LOG_DIR}/${RUN_LABEL}_prune.log"
-  if grep -E "Qwen2ForCausalLM|model of type qwen3 to instantiate a model of type qwen2" "${prune_log}"; then
+  if grep -E "Qwen2ForCausalLM" "${prune_log}"; then
     echo "Official GISP prune log shows Qwen3 was loaded through Qwen2; aborting before evaluation." >&2
     exit 11
+  fi
+  if ! grep -E "RASP-LRM loaded HF class: Qwen3ForCausalLM" "${prune_log}" >/dev/null; then
+    if grep -E "model of type qwen3 to instantiate a model of type qwen2" "${prune_log}"; then
+      echo "Official GISP prune log has a qwen3/qwen2 warning and no confirmed Qwen3ForCausalLM load; aborting." >&2
+      exit 11
+    fi
   fi
   if [[ "${prune_status}" -ne 0 ]]; then
     echo "Official GISP prune failed with exit code ${prune_status}. Last log lines:" >&2
