@@ -39,6 +39,7 @@ FINAL_METHODS="${STAGE_FINAL_METHODS:-structured_dense}"
 FINAL_EVAL_LIMIT="${STAGE_FINAL_EVAL_LIMIT:--1}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
 SKIP_GISP_PRUNE="${SKIP_GISP_PRUNE:-0}"
+SETUP_GISP_ENV="${SETUP_GISP_ENV:-1}"
 GISP_CONFIG_ARG="${GISP_CONFIG_ARG:---config}"
 GISP_PRUNE_GPUS="${GISP_PRUNE_GPUS:-0,1,2,3,4}"
 
@@ -104,6 +105,17 @@ if [[ ! -d "${GISP_REPO_DIR}/.git" ]]; then
   fi
 else
   echo "SKIP clone official GISP; existing ${GISP_REPO_DIR}"
+fi
+
+if [[ "${SETUP_GISP_ENV}" == "1" ]]; then
+  echo "START setup official GISP env"
+  PYTHON="${PYTHON_BIN}" \
+  GISP_REPO_DIR="${GISP_REPO_DIR}" \
+  LOG_DIR="${LOG_DIR}" \
+  bash scripts/setup_official_gisp_env.sh > "${LOG_DIR}/${RUN_LABEL}_setup_env.log" 2>&1
+  echo "DONE setup official GISP env"
+else
+  echo "SKIP setup official GISP env; SETUP_GISP_ENV=${SETUP_GISP_ENV}"
 fi
 
 if [[ -f "${C4_CALIBRATION_PATH}" ]]; then
