@@ -11,6 +11,9 @@ cd "${ROOT_DIR}"
 PYTHON_BIN="${PYTHON:-/home/cike/jjy/envs/rasp_qwen3_eval/bin/python}"
 GISP_REPO_URL="${GISP_REPO_URL:-https://github.com/uncc-efficient-ai/GISP.git}"
 GISP_REPO_DIR="${GISP_REPO_DIR:-external_repos/GISP}"
+GISP_CLONE_RETRIES="${GISP_CLONE_RETRIES:-3}"
+GISP_ARCHIVE_PATH="${GISP_ARCHIVE_PATH:-}"
+GISP_TARBALL_URL="${GISP_TARBALL_URL:-}"
 RUN_ROOT="${RUN_ROOT:-runs/12_additional_baselines/04_gisp_mlp/05_official_gisp_qwen3_8b_c4_t20_gsm8k_full}"
 LOG_DIR="${LOG_DIR:-logs/12_additional_baselines/04_gisp_mlp/official_gisp_qwen3_8b}"
 EVAL_CONFIG="${EVAL_CONFIG:-configs/generated_additional_baselines/official_gisp_qwen3_8b_gsm8k_clean_eval.yaml}"
@@ -49,9 +52,56 @@ fi
 mkdir -p "${LOG_DIR}" "${RUN_ROOT}" "$(dirname "${C4_CALIBRATION_PATH}")" "$(dirname "${OFFICIAL_CONFIG_PATH}")"
 
 if [[ ! -d "${GISP_REPO_DIR}/.git" ]]; then
-  echo "START clone official GISP: ${GISP_REPO_URL} -> ${GISP_REPO_DIR}"
-  git clone --depth 1 "${GISP_REPO_URL}" "${GISP_REPO_DIR}"
-  echo "DONE clone official GISP"
+  if [[ -n "${GISP_ARCHIVE_PATH}" ]]; then
+    echo "START extract official GISP archive: ${GISP_ARCHIVE_PATH} -> ${GISP_REPO_DIR}"
+    tmp_extract="${RUN_ROOT}/00_official_gisp/gisp_archive_extract"
+    rm -rf "${tmp_extract}"
+    mkdir -p "${tmp_extract}" "$(dirname "${GISP_REPO_DIR}")"
+    tar -xf "${GISP_ARCHIVE_PATH}" -C "${tmp_extract}"
+    extracted_root="$(find "${tmp_extract}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+    if [[ -z "${extracted_root}" ]]; then
+      echo "GISP_ARCHIVE_PATH did not contain a top-level directory: ${GISP_ARCHIVE_PATH}" >&2
+      exit 7
+    fi
+    rm -rf "${GISP_REPO_DIR}"
+    mv "${extracted_root}" "${GISP_REPO_DIR}"
+    echo "DONE extract official GISP archive"
+  elif [[ -n "${GISP_TARBALL_URL}" ]]; then
+    echo "START download official GISP tarball: ${GISP_TARBALL_URL}"
+    tmp_tar="${RUN_ROOT}/00_official_gisp/gisp_source.tar.gz"
+    curl -L --connect-timeout 30 --max-time 300 -o "${tmp_tar}" "${GISP_TARBALL_URL}"
+    tmp_extract="${RUN_ROOT}/00_official_gisp/gisp_tarball_extract"
+    rm -rf "${tmp_extract}"
+    mkdir -p "${tmp_extract}" "$(dirname "${GISP_REPO_DIR}")"
+    tar -xf "${tmp_tar}" -C "${tmp_extract}"
+    extracted_root="$(find "${tmp_extract}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+    if [[ -z "${extracted_root}" ]]; then
+      echo "GISP_TARBALL_URL did not contain a top-level directory: ${GISP_TARBALL_URL}" >&2
+      exit 8
+    fi
+    rm -rf "${GISP_REPO_DIR}"
+    mv "${extracted_root}" "${GISP_REPO_DIR}"
+    echo "DONE download official GISP tarball"
+  else
+    echo "START clone official GISP: ${GISP_REPO_URL} -> ${GISP_REPO_DIR}"
+    cloned=0
+    for attempt in $(seq 1 "${GISP_CLONE_RETRIES}"); do
+      echo "Clone attempt ${attempt}/${GISP_CLONE_RETRIES}"
+      rm -rf "${GISP_REPO_DIR}"
+      if git -c http.version=HTTP/1.1 clone --depth 1 "${GISP_REPO_URL}" "${GISP_REPO_DIR}"; then
+        cloned=1
+        break
+      fi
+      sleep 5
+    done
+    if [[ "${cloned}" != "1" ]]; then
+      echo "Failed to clone official GISP after ${GISP_CLONE_RETRIES} attempts." >&2
+      echo "Retry with GISP_TARBALL_URL=https://github.com/uncc-efficient-ai/GISP/archive/refs/heads/main.tar.gz" >&2
+      echo "or place a downloaded archive on the server and set GISP_ARCHIVE_PATH=/path/to/GISP-main.tar.gz." >&2
+      exit 9
+    fi
+    echo "DONE clone official GISP"
+  fi
 else
   echo "SKIP clone official GISP; existing ${GISP_REPO_DIR}"
 fi
