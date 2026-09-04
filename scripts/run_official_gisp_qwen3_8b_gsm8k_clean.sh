@@ -149,6 +149,10 @@ if [[ "${PATCH_GISP_QWEN3_LOADER}" == "1" ]]; then
 else
   echo "SKIP patch official GISP Qwen3 HF loader; PATCH_GISP_QWEN3_LOADER=${PATCH_GISP_QWEN3_LOADER}"
 fi
+if grep -RIn "Qwen2ForCausalLM" "${GISP_REPO_DIR}" --include="*.py"; then
+  echo "Qwen2ForCausalLM remains in official GISP Python files after patch; aborting." >&2
+  exit 10
+fi
 
 if [[ "${CHECK_QWEN3_AUTO_CLASS}" == "1" ]]; then
   echo "START check Qwen3 AutoModelForCausalLM mapping"

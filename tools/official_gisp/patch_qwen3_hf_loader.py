@@ -15,8 +15,14 @@ DATA_PRUNE_RELATIVE_FILES = (
     "external_code/GISP/modules/data/data_prune.py",
 )
 
+SYSTEM_RELATIVE_FILES = (
+    "modules/system/system.py",
+    "external_code/GISP/modules/system/system.py",
+)
+
 
 LOCAL_C4_MARKER = "# RASP-LRM local C4 JSONL patch for offline official GISP runs"
+ATTENTION_ATTR_MARKER = "# RASP-LRM Qwen attention attribute compatibility patch"
 
 LOCAL_C4_HELPER = r'''
 # RASP-LRM local C4 JSONL patch for offline official GISP runs
@@ -70,6 +76,34 @@ def _rasp_lrm_load_local_c4_jsonl(path, nsamples, seed, seqlen, tokenizer):
     return trainloader, None
 
 '''
+
+ATTENTION_ATTR_HELPER = r'''
+# RASP-LRM Qwen attention attribute compatibility patch
+def _rasp_lrm_patch_qwen_attention_attrs(model):
+    for module in model.modules():
+        if not all(hasattr(module, name) for name in ("q_proj", "k_proj", "v_proj")):
+            continue
+        head_dim = getattr(module, "head_dim", None)
+        if head_dim is None:
+            config = getattr(module, "config", None)
+            hidden_size = getattr(config, "hidden_size", None)
+            num_attention_heads = getattr(config, "num_attention_heads", None)
+            if hidden_size and num_attention_heads:
+                head_dim = int(hidden_size) // int(num_attention_heads)
+        if not head_dim:
+            continue
+        q_out = int(getattr(module.q_proj, "out_features", 0))
+        k_out = int(getattr(module.k_proj, "out_features", 0))
+        if not hasattr(module, "num_heads") and q_out:
+            module.num_heads = max(1, q_out // int(head_dim))
+        if not hasattr(module, "num_key_value_heads") and k_out:
+            module.num_key_value_heads = max(1, k_out // int(head_dim))
+        if not hasattr(module, "num_key_value_groups") and hasattr(module, "num_heads"):
+            kv_heads = int(getattr(module, "num_key_value_heads", module.num_heads))
+            module.num_key_value_groups = max(1, int(module.num_heads) // max(1, kv_heads))
+
+'''
+
 
 def _ensure_auto_import(source: str) -> str:
     lines = source.splitlines()
@@ -179,6 +213,35 @@ def patch_data_prune(path: Path) -> bool:
     return True
 
 
+def patch_system(path: Path) -> bool:
+    source = path.read_text(encoding="utf-8")
+    patched = source
+    if ATTENTION_ATTR_MARKER not in patched:
+        insert_at = 0
+        lines = patched.splitlines()
+        for index, line in enumerate(lines):
+            if line.startswith("import ") or line.startswith("from "):
+                insert_at = index + 1
+        lines.insert(insert_at, ATTENTION_ATTR_HELPER.strip("\n"))
+        patched = "\n".join(lines) + ("\n" if source.endswith("\n") else "")
+
+    lines = patched.splitlines()
+    output = []
+    for index, line in enumerate(lines):
+        output.append(line)
+        if line.strip() == "model.to(device)":
+            indent = line[: len(line) - len(line.lstrip())]
+            next_line = lines[index + 1] if index + 1 < len(lines) else ""
+            if "_rasp_lrm_patch_qwen_attention_attrs(model)" not in next_line:
+                output.append(f"{indent}_rasp_lrm_patch_qwen_attention_attrs(model)")
+    patched = "\n".join(output) + ("\n" if source.endswith("\n") else "")
+
+    if patched != source:
+        path.write_text(patched, encoding="utf-8")
+        return True
+    return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Patch official GISP for Qwen3 and local C4 calibration."
@@ -203,6 +266,14 @@ def main() -> None:
             + ", ".join(str(path) for path in data_candidates)
         )
 
+    system_candidates = [repo_dir / relative for relative in SYSTEM_RELATIVE_FILES]
+    system_existing = [path for path in system_candidates if path.exists()]
+    if not system_existing:
+        raise FileNotFoundError(
+            "Could not find official GISP system.py. Checked: "
+            + ", ".join(str(path) for path in system_candidates)
+        )
+
     hf_changed = []
     hf_untouched = []
     for path in hf_existing:
@@ -218,6 +289,14 @@ def main() -> None:
             data_changed.append(path)
         else:
             data_untouched.append(path)
+
+    system_changed = []
+    system_untouched = []
+    for path in system_existing:
+        if patch_system(path):
+            system_changed.append(path)
+        else:
+            system_untouched.append(path)
 
     recursive_changed = []
     for path in sorted(repo_dir.rglob("*.py")):
@@ -257,6 +336,14 @@ def main() -> None:
         print("Patched additional official GISP Python files containing Qwen2ForCausalLM:")
         for path in recursive_changed:
             print(f"  {path}")
+    if system_changed:
+        print("Patched official GISP system setup for Qwen attention attributes:")
+        for path in system_changed:
+            print(f"  {path}")
+    else:
+        print("Official GISP system setup already has Qwen attention attribute patch.")
+    for path in system_untouched:
+        print(f"Checked without changes: {path}")
     if remaining_qwen2:
         raise RuntimeError(
             "Qwen2ForCausalLM still remains in official GISP Python files after patch: "
