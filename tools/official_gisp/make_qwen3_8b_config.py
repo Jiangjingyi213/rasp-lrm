@@ -99,6 +99,15 @@ def _parse_pipeline_nodes(raw: str) -> list[int]:
     return nodes
 
 
+def _parse_float_list(raw: str) -> list[float]:
+    if not raw.strip():
+        return []
+    values = []
+    for item in raw.replace(",", " ").split():
+        values.append(float(item))
+    return values
+
+
 def _patch_model_config(model_config: dict[str, Any], model_name: str) -> None:
     model_key_fragments = (
         "model",
@@ -198,6 +207,10 @@ def _apply_official_gisp_overrides(cfg: dict[str, Any], args: argparse.Namespace
     prune["iterative"] = True
     prune["iteration"] = int(args.iterations)
     prune["iterative_scheduling"] = "linear"
+    # Disable official GISP intermediate PPL probes by default. They try to load
+    # wikitext/PTB through the upstream eval stack, while our baseline is judged
+    # by the downstream GSM8K evaluation launched after pruning.
+    prune["eval_intermediate"] = _parse_float_list(args.eval_intermediate)
     custom_config = _as_mapping(prune, "custom_config")
     pruner_dir = repo_dir / "external_code" / "GISP" / "pruners"
     custom_config["custom_package_location"] = str(pruner_dir)
@@ -270,6 +283,12 @@ def _validate_generated_config(cfg: dict[str, Any], args: argparse.Namespace) ->
         raise ValueError(
             "Generated official GISP config has wrong C4 calibration path: "
             f"expected {args.calibration_path}, got {prune_dataset.get('path')}"
+        )
+    expected_eval_intermediate = _parse_float_list(args.eval_intermediate)
+    if prune.get("eval_intermediate", []) != expected_eval_intermediate:
+        raise ValueError(
+            "Generated official GISP config has wrong task.prune.eval_intermediate: "
+            f"expected {expected_eval_intermediate}, got {prune.get('eval_intermediate')}"
         )
     if bool(cfg.get("evaluation", {}).get("lm_eval", False)):
         raise ValueError("Generated official GISP config should disable upstream lm_eval; downstream eval is local.")
@@ -366,6 +385,7 @@ def build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
         "output_model_dir": args.output_model_dir,
         "pipeline_enabled": bool(getattr(args, "enable_pipeline", False)),
         "pipeline_nodes": _parse_pipeline_nodes(str(getattr(args, "pipeline_nodes", ""))),
+        "eval_intermediate": _parse_float_list(args.eval_intermediate),
         "notes": [
             "The launcher still validates the official GISP entrypoint before running pruning.",
             "If the upstream CLI uses a non-standard argument name, set GISP_PRUNE_CMD explicitly.",
@@ -390,6 +410,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--enable-pipeline", action="store_true")
     parser.add_argument("--pipeline-nodes", default="")
+    parser.add_argument("--eval-intermediate", default="")
     args = parser.parse_args()
 
     cfg, manifest = build_config(args)
