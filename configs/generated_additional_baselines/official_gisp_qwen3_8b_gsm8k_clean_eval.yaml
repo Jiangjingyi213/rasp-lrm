@@ -1,0 +1,60 @@
+seed: 3
+
+workflow:
+  profile: pilot
+  root: runs/12_additional_baselines/04_gisp_mlp/05_official_gisp_qwen3_8b_c4_t20_gsm8k_full
+
+stages: [setup, reasoning, verify, final]
+
+model:
+  name_or_path: Qwen/Qwen3-8B
+  dtype: bfloat16
+  device_map: auto
+  trust_remote_code: true
+  attn_implementation: eager
+
+prompt:
+  ordinary:
+    use_chat_template: true
+    enable_thinking: true
+    answer_format: boxed
+  structured:
+    use_chat_template: true
+    enable_thinking: true
+    explicit_stage_protocol: true
+    forced_assistant_prefix: "[[STAGE_SETUP]]\n"
+
+generation:
+  max_input_tokens: 4096
+  max_new_tokens: 16384
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+
+masks:
+  metric: WIFV
+  structure: UL-UM
+  ratios: [0.00]
+  c4_samples: 0
+  bias_compensation: true
+
+evaluation:
+  allow_final_without_dev: true
+  official_external_pruned_model: true
+  official_external_method: official_gisp_qwen3_8b_c4_t20
+  calibration_contamination_policy: "C4-only pruning calibration; GSM8K train/test are not used during pruning."
+  final_datasets:
+    - dataset: gsm8k
+      split: test
+
+profiles:
+  smoke:
+    final_eval_limit: 128
+    final_seeds: [3]
+    reuse_existing_method_summaries: true
+    final_methods: [structured_dense]
+  pilot:
+    final_eval_limit: -1
+    final_seeds: [3]
+    reuse_existing_method_summaries: true
+    final_methods: [structured_dense]

@@ -2834,6 +2834,17 @@ def command_prepare_sparsegpt(cfg: dict[str, Any], p: dict[str, Path]) -> None:
 
 def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     allow_final_without_dev = bool(_evaluation_threshold(cfg, "allow_final_without_dev", False))
+    requested_final_methods = set()
+    env_final_methods = os.environ.get("STAGE_FINAL_METHODS")
+    if env_final_methods:
+        requested_final_methods.update(
+            name.strip() for name in env_final_methods.split(",") if name.strip()
+        )
+    elif "final_methods" in profile(cfg):
+        requested_final_methods.update(str(name) for name in profile(cfg)["final_methods"])
+    dense_only_final_requested = bool(requested_final_methods) and requested_final_methods.issubset(
+        {"ordinary_dense", "structured_dense"}
+    )
     final_without_dev_allowed = allow_final_without_dev and (
         _adaptive_griffin_enabled(cfg)
         or _griffin_prompt_enabled(cfg)
@@ -2844,6 +2855,7 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         or _flap_mlp_official_enabled(cfg)
         or _gisp_mlp_enabled(cfg)
         or _llm_pruner_mlp_enabled(cfg)
+        or dense_only_final_requested
     )
     if p["dev_summary"].exists():
         dev_summary = read_json(p["dev_summary"])
@@ -2891,15 +2903,8 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         or _flap_mlp_official_enabled(cfg)
         or _gisp_mlp_enabled(cfg)
         or _llm_pruner_mlp_enabled(cfg)
+        or dense_only_final_requested
     ):
-        requested_final_methods = set()
-        env_final_methods = os.environ.get("STAGE_FINAL_METHODS")
-        if env_final_methods:
-            requested_final_methods.update(
-                name.strip() for name in env_final_methods.split(",") if name.strip()
-            )
-        elif "final_methods" in profile(cfg):
-            requested_final_methods.update(str(name) for name in profile(cfg)["final_methods"])
         dense_methods = []
         if bool(_evaluation_threshold(cfg, "include_ordinary_dense_in_final", False)) or (
             "ordinary_dense" in requested_final_methods
