@@ -22,6 +22,7 @@ SEED="${STAGE_SEED:-3}"
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
 BASE_MODEL="${BASE_MODEL:-Qwen/Qwen3-8B}"
+GISP_MODEL_DTYPE="${GISP_MODEL_DTYPE:-bfloat16}"
 PRUNING_RATIO="${PRUNING_RATIO:-0.20}"
 GISP_ITERATIONS="${GISP_ITERATIONS:-112}"
 GISP_SEQ_LEN="${GISP_SEQ_LEN:-256}"
@@ -241,6 +242,7 @@ echo "START make official GISP config: ${OFFICIAL_CONFIG_PATH}"
   --output-config "${OFFICIAL_CONFIG_PATH}" \
   --manifest "${OFFICIAL_CONFIG_MANIFEST}" \
   --model "${BASE_MODEL}" \
+  --torch-dtype "${GISP_MODEL_DTYPE}" \
   --calibration-path "${C4_CALIBRATION_PATH}" \
   --output-model-dir "${PRUNED_MODEL_DIR}" \
   --pruning-ratio "${PRUNING_RATIO}" \

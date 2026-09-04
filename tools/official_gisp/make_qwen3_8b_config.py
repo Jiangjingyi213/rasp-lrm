@@ -168,6 +168,7 @@ def _apply_official_gisp_overrides(cfg: dict[str, Any], args: argparse.Namespace
     model_config = cfg["model"]
     model_config["custom_modeling"] = False
     model_config["trust_remote_code"] = True
+    model_config["torch_dtype"] = args.torch_dtype
     model_config.pop("custom_config", None)
 
     task = _as_mapping(cfg, "task")
@@ -350,6 +351,7 @@ def build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
         "template_path": template_path,
         "template_found": template_path is not None,
         "model": args.model,
+        "torch_dtype": args.torch_dtype,
         "calibration_dataset": "c4",
         "calibration_path": args.calibration_path,
         "downstream_contamination_policy": (
@@ -378,6 +380,7 @@ def main() -> None:
     parser.add_argument("--output-config", required=True)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
+    parser.add_argument("--torch-dtype", default="bfloat16")
     parser.add_argument("--calibration-path", required=True)
     parser.add_argument("--output-model-dir", required=True)
     parser.add_argument("--pruning-ratio", type=float, default=0.20)
