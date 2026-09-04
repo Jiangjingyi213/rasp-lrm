@@ -8,6 +8,8 @@ PYTHON_BIN="${PYTHON:-/home/cike/jjy/envs/rasp_qwen3_eval/bin/python}"
 GISP_REPO_DIR="${GISP_REPO_DIR:-external_repos/GISP}"
 LOG_DIR="${LOG_DIR:-logs/12_additional_baselines/04_gisp_mlp/official_gisp_qwen3_8b}"
 PIP_EXTRA_ARGS="${PIP_EXTRA_ARGS:-}"
+INSTALL_GISP_REQUIREMENTS="${INSTALL_GISP_REQUIREMENTS:-0}"
+GISP_MINIMAL_PACKAGES="${GISP_MINIMAL_PACKAGES:-fire deepspeed jsonlines omegaconf hydra-core einops}"
 
 mkdir -p "${LOG_DIR}"
 
@@ -23,34 +25,29 @@ print(sys.version)
 PY
 
 echo "START install official GISP requirements"
-mapfile -t requirement_files < <(find "${GISP_REPO_DIR}" -maxdepth 4 -type f \( -iname 'requirements.txt' -o -iname 'requirements*.txt' \) | sort)
-if [[ "${#requirement_files[@]}" -gt 0 ]]; then
-  for req in "${requirement_files[@]}"; do
-    req_dir="$(dirname "${req}")"
-    req_file="$(basename "${req}")"
-    echo "pip install -r ${req} from cwd=${req_dir}"
-    (
-      cd "${req_dir}"
-      "${PYTHON_BIN}" -m pip install ${PIP_EXTRA_ARGS} -r "${req_file}"
-    )
-  done
+if [[ "${INSTALL_GISP_REQUIREMENTS}" == "1" ]]; then
+  mapfile -t requirement_files < <(find "${GISP_REPO_DIR}" -maxdepth 4 -type f \( -iname 'requirements.txt' -o -iname 'requirements*.txt' \) | sort)
+  if [[ "${#requirement_files[@]}" -gt 0 ]]; then
+    for req in "${requirement_files[@]}"; do
+      req_dir="$(dirname "${req}")"
+      req_file="$(basename "${req}")"
+      echo "pip install -r ${req} from cwd=${req_dir}"
+      (
+        cd "${req_dir}"
+        "${PYTHON_BIN}" -m pip install ${PIP_EXTRA_ARGS} -r "${req_file}"
+      )
+    done
+  else
+    echo "No requirements.txt found under ${GISP_REPO_DIR}."
+  fi
 else
-  echo "No requirements.txt found under ${GISP_REPO_DIR}; installing known official-GISP runtime dependencies."
+  echo "SKIP official requirements; INSTALL_GISP_REQUIREMENTS=${INSTALL_GISP_REQUIREMENTS}"
+  echo "Using the existing environment and installing only minimal GISP entrypoint packages."
 fi
 
-echo "START install known official-GISP runtime dependencies"
+echo "START install minimal official-GISP runtime dependencies"
 DS_BUILD_OPS="${DS_BUILD_OPS:-0}" \
-"${PYTHON_BIN}" -m pip install ${PIP_EXTRA_ARGS} \
-  fire \
-  deepspeed \
-  accelerate \
-  datasets \
-  sentencepiece \
-  protobuf \
-  jsonlines \
-  omegaconf \
-  hydra-core \
-  einops
+"${PYTHON_BIN}" -m pip install ${PIP_EXTRA_ARGS} ${GISP_MINIMAL_PACKAGES}
 
 echo "START official GISP import smoke check"
 "${PYTHON_BIN}" - <<'PY'
@@ -60,17 +57,19 @@ import sys
 checks = [
     ("fire", "fire"),
     ("deepspeed", "deepspeed"),
-    ("accelerate", "accelerate"),
-    ("datasets", "datasets"),
-    ("yaml", "pyyaml"),
     ("torch", "torch"),
     ("transformers", "transformers"),
-    ("sentencepiece", "sentencepiece"),
-    ("google.protobuf", "protobuf"),
     ("jsonlines", "jsonlines"),
     ("omegaconf", "omegaconf"),
     ("hydra", "hydra-core"),
     ("einops", "einops"),
+]
+optional_checks = [
+    ("accelerate", "accelerate"),
+    ("datasets", "datasets"),
+    ("yaml", "pyyaml"),
+    ("sentencepiece", "sentencepiece"),
+    ("google.protobuf", "protobuf"),
 ]
 missing = []
 for module_name, package_name in checks:
@@ -83,6 +82,16 @@ if missing:
     for module_name, package_name, exc in missing:
         print(f"  {module_name} ({package_name}): {exc}", file=sys.stderr)
     sys.exit(3)
+optional_missing = []
+for module_name, package_name in optional_checks:
+    try:
+        importlib.import_module(module_name)
+    except Exception as exc:
+        optional_missing.append((module_name, package_name, repr(exc)))
+if optional_missing:
+    print("Optional imports missing; only install them if official GISP later requires them:")
+    for module_name, package_name, exc in optional_missing:
+        print(f"  {module_name} ({package_name}): {exc}")
 print("official GISP dependency smoke check passed")
 PY
 
