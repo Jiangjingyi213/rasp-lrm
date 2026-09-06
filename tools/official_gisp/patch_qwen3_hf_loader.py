@@ -27,6 +27,7 @@ ATTENTION_MASK_MARKER = "# RASP-LRM Qwen attention mask shape compatibility patc
 QWEN3_LOADER_MARKER = "# RASP-LRM explicit Qwen3 HF loader compatibility patch"
 ATTENTION_OUTPUT_RESHAPE_MARKER = "# RASP-LRM Qwen attention output reshape compatibility patch"
 ATTENTION_RETURN_MARKER = "# RASP-LRM Qwen3 attention return arity compatibility patch"
+DISABLE_UPSTREAM_EVAL_MARKER = "# RASP-LRM disable official GISP upstream evaluation patch"
 
 LOCAL_C4_HELPER = r'''
 # RASP-LRM local C4 JSONL patch for offline official GISP runs
@@ -295,6 +296,7 @@ def patch_python_file(path: Path) -> bool:
         "query_states = self.q_proj(hidden_states)",
         "attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)",
         "return attn_output, attn_weights, past_key_value",
+        "self.evaluation(",
     )
     if not any(token in source for token in interesting_tokens):
         return False
@@ -305,6 +307,7 @@ def patch_python_file(path: Path) -> bool:
     patched = _patch_attention_mask_shape_check(patched)
     patched = _patch_attention_output_reshape(patched)
     patched = _patch_attention_return_arity(patched)
+    patched = _patch_disable_upstream_evaluation(patched)
     if needs_auto_import:
         patched = _ensure_auto_import(patched)
     if patched != source:
@@ -467,6 +470,43 @@ def _patch_attention_return_arity(source: str) -> str:
             ]
         )
 
+    return "\n".join(output) + ("\n" if source.endswith("\n") else "")
+
+
+def _patch_disable_upstream_evaluation(source: str) -> str:
+    if "self.evaluation(" not in source:
+        return source
+
+    lines = source.splitlines()
+    output = []
+    changed = False
+    for line in lines:
+        stripped = line.strip()
+        is_call = (
+            stripped.startswith("self.evaluation(")
+            and not stripped.startswith("def ")
+            and DISABLE_UPSTREAM_EVAL_MARKER not in "\n".join(output[-8:])
+        )
+        if not is_call:
+            output.append(line)
+            continue
+
+        indent = line[: len(line) - len(line.lstrip())]
+        output.extend(
+            [
+                f"{indent}{DISABLE_UPSTREAM_EVAL_MARKER}",
+                f"{indent}if __import__(\"os\").environ.get(\"GISP_DISABLE_UPSTREAM_EVAL\", \"1\") != \"1\":",
+                f"{indent}    {stripped}",
+                f"{indent}else:",
+                f"{indent}    getattr(self, \"logger\", __import__(\"logging\").getLogger(__name__)).info(",
+                f"{indent}        \"RASP-LRM skipped official GISP upstream evaluation\"",
+                f"{indent}    )",
+            ]
+        )
+        changed = True
+
+    if not changed:
+        return source
     return "\n".join(output) + ("\n" if source.endswith("\n") else "")
 
 

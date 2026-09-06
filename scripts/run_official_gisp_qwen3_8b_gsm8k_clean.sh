@@ -51,11 +51,15 @@ CHECK_QWEN3_AUTO_CLASS="${CHECK_QWEN3_AUTO_CLASS:-1}"
 GISP_TORCHRUN_ARGS="${GISP_TORCHRUN_ARGS:---standalone --nnodes=1}"
 GISP_ALLOW_PIPELINE_FALLBACK="${GISP_ALLOW_PIPELINE_FALLBACK:-1}"
 GISP_GRADIENT_CHECKPOINTING="${GISP_GRADIENT_CHECKPOINTING:-1}"
+GISP_DISABLE_UPSTREAM_EVAL="${GISP_DISABLE_UPSTREAM_EVAL:-1}"
+GISP_RESTORE_SP_PATH="${GISP_RESTORE_SP_PATH:-}"
+GISP_RESTORE_DEVICE="${GISP_RESTORE_DEVICE:-cuda}"
 PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:64}"
-export GISP_GRADIENT_CHECKPOINTING PYTORCH_CUDA_ALLOC_CONF
+export GISP_GRADIENT_CHECKPOINTING GISP_DISABLE_UPSTREAM_EVAL PYTORCH_CUDA_ALLOC_CONF
 
 IFS=',' read -r -a GISP_PRUNE_GPU_ARRAY <<< "${GISP_PRUNE_GPUS}"
 GISP_PRUNE_GPU_COUNT="${#GISP_PRUNE_GPU_ARRAY[@]}"
+GISP_RESTORE_GPUS="${GISP_RESTORE_GPUS:-${GISP_PRUNE_GPU_ARRAY[0]}}"
 if [[ -z "${GISP_ENABLE_PIPELINE:-}" ]]; then
   if [[ "${GISP_PRUNE_GPU_COUNT}" -gt 1 ]]; then
     GISP_ENABLE_PIPELINE=1
@@ -257,7 +261,26 @@ echo "START make official GISP config: ${OFFICIAL_CONFIG_PATH}"
 echo "DONE make official GISP config"
 
 if [[ "${SKIP_GISP_PRUNE}" != "1" ]]; then
-  if [[ -n "${GISP_PRUNE_CMD:-}" ]]; then
+  if [[ -n "${GISP_RESTORE_SP_PATH}" ]]; then
+    echo "START materialize official GISP sp bundle: ${GISP_RESTORE_SP_PATH} -> ${PRUNED_MODEL_DIR}"
+    set +e
+    CUDA_VISIBLE_DEVICES="${GISP_RESTORE_GPUS}" \
+    HF_ENDPOINT="${HF_ENDPOINT}" \
+    HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
+    HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
+    HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}" \
+    "${PYTHON_BIN}" tools/official_gisp/materialize_qwen3_from_gisp_sp.py \
+      --sp-path "${GISP_RESTORE_SP_PATH}" \
+      --base-model "${BASE_MODEL}" \
+      --output-dir "${PRUNED_MODEL_DIR}" \
+      --torch-dtype "${GISP_MODEL_DTYPE}" \
+      --device "${GISP_RESTORE_DEVICE}" \
+      > "${LOG_DIR}/${RUN_LABEL}_prune.log" 2>&1
+    prune_status="$?"
+    set -e
+    check_official_gisp_prune_log "${prune_status}"
+    echo "DONE materialize official GISP sp bundle"
+  elif [[ -n "${GISP_PRUNE_CMD:-}" ]]; then
     echo "START official GISP prune via GISP_PRUNE_CMD"
     export GISP_REPO_DIR OFFICIAL_CONFIG_PATH PRUNED_MODEL_DIR BASE_MODEL C4_CALIBRATION_PATH
     export GISP_LOCAL_C4_JSONL="${C4_CALIBRATION_PATH}"

@@ -31,6 +31,7 @@ def main() -> None:
     missing_qwen3_norm_hits = []
     missing_output_reshape_hits = []
     missing_return_arity_hits = []
+    upstream_eval_hits = []
     for path in sorted(repo_dir.rglob("*.py")):
         try:
             source = _read(path)
@@ -56,6 +57,15 @@ def main() -> None:
             and "RASP-LRM Qwen3 attention return arity compatibility patch" not in source
         ):
             missing_return_arity_hits.append(path)
+        if "self.evaluation(" in source:
+            lines = source.splitlines()
+            for index, line in enumerate(lines):
+                if not line.strip().startswith("self.evaluation("):
+                    continue
+                lookbehind = "\n".join(lines[max(0, index - 4) : index])
+                if "RASP-LRM disable official GISP upstream evaluation patch" not in lookbehind:
+                    upstream_eval_hits.append(path)
+                    break
     if qwen2_hits:
         errors.append("Qwen2ForCausalLM remains in: " + ", ".join(str(path) for path in qwen2_hits))
     if unpatched_mask_hits:
@@ -77,6 +87,11 @@ def main() -> None:
         errors.append(
             "Qwen attention hooks remain without Qwen3 return arity compatibility in: "
             + ", ".join(str(path) for path in missing_return_arity_hits)
+        )
+    if upstream_eval_hits:
+        errors.append(
+            "official GISP upstream evaluation calls remain enabled in: "
+            + ", ".join(str(path) for path in upstream_eval_hits)
         )
 
     hf_source = _read(required_files["hf_loader"])
