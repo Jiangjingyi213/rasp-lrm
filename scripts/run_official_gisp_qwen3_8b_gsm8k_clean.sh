@@ -42,6 +42,7 @@ FINAL_METHODS="${STAGE_FINAL_METHODS:-structured_dense}"
 FINAL_EVAL_LIMIT="${STAGE_FINAL_EVAL_LIMIT:--1}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
 SKIP_GISP_PRUNE="${SKIP_GISP_PRUNE:-0}"
+SKIP_GISP_DOWNSTREAM_EVAL="${SKIP_GISP_DOWNSTREAM_EVAL:-0}"
 SETUP_GISP_ENV="${SETUP_GISP_ENV:-1}"
 INSTALL_GISP_REQUIREMENTS="${INSTALL_GISP_REQUIREMENTS:-0}"
 GISP_CONFIG_ARG="${GISP_CONFIG_ARG:---config_path}"
@@ -350,6 +351,12 @@ if [[ ! -f "${PRUNED_MODEL_DIR}/config.json" ]]; then
   echo "Missing HuggingFace config.json in PRUNED_MODEL_DIR=${PRUNED_MODEL_DIR}" >&2
   echo "If official GISP saved elsewhere, rerun with PRUNED_MODEL_DIR=/path/to/saved/model and SKIP_GISP_PRUNE=1." >&2
   exit 5
+fi
+
+if [[ "${SKIP_GISP_DOWNSTREAM_EVAL}" == "1" ]]; then
+  echo "SKIP official GISP downstream evaluation; SKIP_GISP_DOWNSTREAM_EVAL=${SKIP_GISP_DOWNSTREAM_EVAL}"
+  echo "PRUNED MODEL READY: ${PRUNED_MODEL_DIR}"
+  exit 0
 fi
 
 echo "START preflight for evaluation: ${RUN_ROOT}"
