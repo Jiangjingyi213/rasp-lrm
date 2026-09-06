@@ -31,6 +31,10 @@ generation:
   top_p: 0.95
   top_k: 20
 
+calibration_pool:
+  allowed_sources: [c4]
+  excluded_sources: [GSM8k, GSM8K, MATH, Omni-MATH, amc_aime, cn_k12]
+
 masks:
   metric: WIFV
   structure: UL-UM

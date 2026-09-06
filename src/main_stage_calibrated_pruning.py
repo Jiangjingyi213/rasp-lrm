@@ -241,6 +241,13 @@ def expected_bank_metadata(cfg: dict[str, Any], p: dict[str, Path]) -> dict[str,
 def command_preflight(cfg: dict[str, Any], p: dict[str, Path]) -> None:
     import transformers
 
+    calibration_pool = cfg.get("calibration_pool")
+    if not isinstance(calibration_pool, dict):
+        calibration_pool = {}
+    allowed_sources = {
+        str(value).lower()
+        for value in calibration_pool.get("allowed_sources", [])
+    }
     checks = {
         "math_verify_available": math_verify_available(),
         "cuda_available": torch.cuda.is_available(),
@@ -248,7 +255,7 @@ def command_preflight(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         "test_sets_not_calibration_sources": not {
             "gsm8k",
             "math500",
-        } & {str(value).lower() for value in cfg["calibration_pool"]["allowed_sources"]},
+        } & allowed_sources,
         "ratio_grid_valid": all(0.0 <= float(value) < 1.0 for value in cfg["masks"]["ratios"]),
     }
     result = {
