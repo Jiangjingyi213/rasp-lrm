@@ -87,6 +87,7 @@ ATTENTION_ATTR_HELPER = r'''
 rank = 0
 local_rank = 0
 world_size = 1
+ddp = False
 
 
 class _RaspLrmLegacyRotaryEmbedding:

@@ -53,6 +53,7 @@ GISP_TORCHRUN_ARGS="${GISP_TORCHRUN_ARGS:---standalone --nnodes=1}"
 GISP_ALLOW_PIPELINE_FALLBACK="${GISP_ALLOW_PIPELINE_FALLBACK:-1}"
 GISP_GRADIENT_CHECKPOINTING="${GISP_GRADIENT_CHECKPOINTING:-1}"
 GISP_DISABLE_UPSTREAM_EVAL="${GISP_DISABLE_UPSTREAM_EVAL:-1}"
+GISP_AUTO_MATERIALIZE_IF_MISSING="${GISP_AUTO_MATERIALIZE_IF_MISSING:-1}"
 GISP_RESTORE_SP_PATH="${GISP_RESTORE_SP_PATH:-}"
 GISP_RESTORE_DEVICE="${GISP_RESTORE_DEVICE:-cuda}"
 GISP_RESTORE_MLP_MASK_SEMANTICS="${GISP_RESTORE_MLP_MASK_SEMANTICS:-}"
@@ -356,6 +357,31 @@ if [[ "${SKIP_GISP_PRUNE}" != "1" ]]; then
   fi
 else
   echo "SKIP official GISP prune; SKIP_GISP_PRUNE=${SKIP_GISP_PRUNE}"
+fi
+
+if [[ ! -f "${PRUNED_MODEL_DIR}/config.json" && "${GISP_AUTO_MATERIALIZE_IF_MISSING}" == "1" ]]; then
+  echo "PRUNED_MODEL_DIR is missing config.json; trying to materialize latest official GISP sp_*.pth bundle."
+  latest_sp="$(find "${RUN_ROOT}/00_official_gisp/upstream_outputs" -maxdepth 1 -type f -name 'sp_*.pth' -print 2>/dev/null | sort | tail -n 1)"
+  if [[ -n "${latest_sp}" ]]; then
+    echo "START auto-materialize official GISP bundle: ${latest_sp} -> ${PRUNED_MODEL_DIR}"
+    CUDA_VISIBLE_DEVICES="${GISP_RESTORE_GPUS}" \
+    HF_ENDPOINT="${HF_ENDPOINT}" \
+    HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
+    HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}" \
+    HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}" \
+    "${PYTHON_BIN}" tools/official_gisp/materialize_qwen3_from_gisp_sp.py \
+      --sp-path "${latest_sp}" \
+      --base-model "${BASE_MODEL}" \
+      --output-dir "${PRUNED_MODEL_DIR}" \
+      --torch-dtype "${GISP_MODEL_DTYPE}" \
+      --device "${GISP_RESTORE_DEVICE}" \
+      --mlp-mask-semantics pruned \
+      --attention-mask-semantics pruned \
+      >> "${LOG_DIR}/${RUN_LABEL}_prune.log" 2>&1
+    echo "DONE auto-materialize official GISP bundle"
+  else
+    echo "No sp_*.pth bundle found under ${RUN_ROOT}/00_official_gisp/upstream_outputs." >&2
+  fi
 fi
 
 if [[ ! -f "${PRUNED_MODEL_DIR}/config.json" ]]; then

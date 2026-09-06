@@ -112,6 +112,7 @@ def main() -> None:
     system_source = _read(required_files["system"])
     for token in (
         "world_size = 1",
+        "ddp = False",
         "rank = 0",
         "local_rank = 0",
         "_RaspLrmLegacyRotaryEmbedding",
