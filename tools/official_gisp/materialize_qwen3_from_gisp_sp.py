@@ -128,17 +128,26 @@ def _materialize_masks(model: nn.Module, masks: dict[str, Any]) -> dict[str, Any
 
 
 def _patch_missing_torch_dtensor_for_transformers_save() -> None:
-    try:
-        import torch.distributed.tensor as dist_tensor
-    except Exception:
-        return
-    if hasattr(dist_tensor, "DTensor"):
-        return
-
     class _RaspLrmMissingDTensor:
         pass
 
-    dist_tensor.DTensor = _RaspLrmMissingDTensor
+    try:
+        import torch.distributed.tensor as dist_tensor
+    except Exception:
+        dist_tensor = None
+    if dist_tensor is not None and not hasattr(dist_tensor, "DTensor"):
+        dist_tensor.DTensor = _RaspLrmMissingDTensor
+
+    try:
+        import transformers.modeling_utils as modeling_utils
+    except Exception:
+        return
+    if not hasattr(modeling_utils, "DTensor"):
+        modeling_utils.DTensor = (
+            dist_tensor.DTensor
+            if dist_tensor is not None and hasattr(dist_tensor, "DTensor")
+            else _RaspLrmMissingDTensor
+        )
 
 
 def main() -> None:
@@ -184,7 +193,17 @@ def main() -> None:
     print(json.dumps(summary, indent=2), flush=True)
     print(f"Saving materialized model to: {output_dir}", flush=True)
     _patch_missing_torch_dtensor_for_transformers_save()
-    model.save_pretrained(output_dir, safe_serialization=bool(args.safe_serialization))
+    try:
+        model.save_pretrained(output_dir, safe_serialization=bool(args.safe_serialization))
+    except (ImportError, NameError) as exc:
+        if not bool(args.safe_serialization):
+            raise
+        print(
+            "WARN safe_serialization save hit a torch/transformers DTensor compatibility issue; "
+            f"retrying with PyTorch .bin serialization: {exc}",
+            flush=True,
+        )
+        model.save_pretrained(output_dir, safe_serialization=False)
 
     tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=bool(args.trust_remote_code))
     tokenizer.save_pretrained(output_dir)
