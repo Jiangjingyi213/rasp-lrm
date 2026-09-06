@@ -55,6 +55,9 @@ GISP_GRADIENT_CHECKPOINTING="${GISP_GRADIENT_CHECKPOINTING:-1}"
 GISP_DISABLE_UPSTREAM_EVAL="${GISP_DISABLE_UPSTREAM_EVAL:-1}"
 GISP_RESTORE_SP_PATH="${GISP_RESTORE_SP_PATH:-}"
 GISP_RESTORE_DEVICE="${GISP_RESTORE_DEVICE:-cuda}"
+GISP_RESTORE_MLP_MASK_SEMANTICS="${GISP_RESTORE_MLP_MASK_SEMANTICS:-}"
+GISP_RESTORE_ATTENTION_MASK_SEMANTICS="${GISP_RESTORE_ATTENTION_MASK_SEMANTICS:-}"
+GISP_RESTORE_EMPTY_KEEP_MASK_POLICY="${GISP_RESTORE_EMPTY_KEEP_MASK_POLICY:-error}"
 PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:64}"
 export GISP_GRADIENT_CHECKPOINTING GISP_DISABLE_UPSTREAM_EVAL PYTORCH_CUDA_ALLOC_CONF
 
@@ -263,6 +266,11 @@ echo "DONE make official GISP config"
 
 if [[ "${SKIP_GISP_PRUNE}" != "1" ]]; then
   if [[ -n "${GISP_RESTORE_SP_PATH}" ]]; then
+    if [[ -z "${GISP_RESTORE_MLP_MASK_SEMANTICS}" || -z "${GISP_RESTORE_ATTENTION_MASK_SEMANTICS}" ]]; then
+      echo "ERROR GISP_RESTORE_SP_PATH requires explicit mask semantics."
+      echo "Set GISP_RESTORE_MLP_MASK_SEMANTICS=keep|pruned and GISP_RESTORE_ATTENTION_MASK_SEMANTICS=keep|pruned after checking official GISP mask semantics."
+      exit 2
+    fi
     echo "START materialize official GISP sp bundle: ${GISP_RESTORE_SP_PATH} -> ${PRUNED_MODEL_DIR}"
     set +e
     CUDA_VISIBLE_DEVICES="${GISP_RESTORE_GPUS}" \
@@ -276,6 +284,9 @@ if [[ "${SKIP_GISP_PRUNE}" != "1" ]]; then
       --output-dir "${PRUNED_MODEL_DIR}" \
       --torch-dtype "${GISP_MODEL_DTYPE}" \
       --device "${GISP_RESTORE_DEVICE}" \
+      --mlp-mask-semantics "${GISP_RESTORE_MLP_MASK_SEMANTICS}" \
+      --attention-mask-semantics "${GISP_RESTORE_ATTENTION_MASK_SEMANTICS}" \
+      --empty-keep-mask-policy "${GISP_RESTORE_EMPTY_KEEP_MASK_POLICY}" \
       > "${LOG_DIR}/${RUN_LABEL}_prune.log" 2>&1
     prune_status="$?"
     set -e

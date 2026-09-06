@@ -31,14 +31,45 @@ def _decoder_layers(model: nn.Module) -> list[nn.Module]:
     return list(obj)
 
 
-def _as_pruned_mask(value: Any, *, expected: int, key: str) -> torch.Tensor:
+def _as_bool_mask(value: Any, *, expected: int, key: str) -> torch.Tensor:
     mask = torch.as_tensor(value, dtype=torch.bool, device="cpu").flatten()
     if int(mask.numel()) != int(expected):
         raise ValueError(f"Mask {key!r} has {mask.numel()} entries, expected {expected}")
     return mask
 
 
-def _zero_mlp(layer: nn.Module, pruned_mask: torch.Tensor) -> tuple[int, int]:
+def _to_pruned_mask(
+    value: Any,
+    *,
+    expected: int,
+    key: str,
+    semantics: str,
+    empty_keep_mask: str,
+) -> tuple[torch.Tensor, int]:
+    raw_mask = _as_bool_mask(value, expected=expected, key=key)
+    raw_true = int(raw_mask.sum().item())
+    if semantics == "pruned":
+        return raw_mask, raw_true
+    if semantics != "keep":
+        raise ValueError(f"Unsupported mask semantics for {key!r}: {semantics}")
+    if raw_true == 0:
+        if empty_keep_mask == "unpruned":
+            return torch.zeros_like(raw_mask), raw_true
+        raise ValueError(
+            f"Mask {key!r} is declared as a keep mask but has zero kept entries. "
+            "If this is an official GISP prune_skip/protected module, rerun with "
+            "--empty-keep-mask-policy unpruned."
+        )
+    return ~raw_mask, raw_true
+
+
+def _zero_mlp(
+    layer: nn.Module,
+    mask_value: torch.Tensor,
+    *,
+    mask_semantics: str,
+    empty_keep_mask: str,
+) -> tuple[int, int, int]:
     mlp = getattr(layer, "mlp", None)
     if not all(hasattr(mlp, name) for name in ("gate_proj", "up_proj", "down_proj")):
         raise ValueError("Expected Qwen3 MLP with gate_proj/up_proj/down_proj")
@@ -46,7 +77,13 @@ def _zero_mlp(layer: nn.Module, pruned_mask: torch.Tensor) -> tuple[int, int]:
     width = int(mlp.gate_proj.weight.shape[0])
     if int(mlp.up_proj.weight.shape[0]) != width or int(mlp.down_proj.weight.shape[1]) != width:
         raise ValueError("Qwen3 MLP projections do not share one intermediate width")
-    mask = _as_pruned_mask(pruned_mask, expected=width, key="mlp")
+    mask, raw_true = _to_pruned_mask(
+        mask_value,
+        expected=width,
+        key="mlp",
+        semantics=mask_semantics,
+        empty_keep_mask=empty_keep_mask,
+    )
     idx = torch.where(mask)[0].to(mlp.gate_proj.weight.device)
     if idx.numel():
         mlp.gate_proj.weight.data.index_fill_(0, idx, 0)
@@ -56,10 +93,16 @@ def _zero_mlp(layer: nn.Module, pruned_mask: torch.Tensor) -> tuple[int, int]:
             mlp.gate_proj.bias.data.index_fill_(0, idx, 0)
         if getattr(mlp.up_proj, "bias", None) is not None:
             mlp.up_proj.bias.data.index_fill_(0, idx, 0)
-    return int(idx.numel()), width
+    return int(idx.numel()), width, raw_true
 
 
-def _zero_attention(layer: nn.Module, pruned_mask: torch.Tensor) -> tuple[int, int]:
+def _zero_attention(
+    layer: nn.Module,
+    mask_value: torch.Tensor,
+    *,
+    mask_semantics: str,
+    empty_keep_mask: str,
+) -> tuple[int, int, int]:
     attn = getattr(layer, "self_attn", None)
     if not all(hasattr(attn, name) for name in ("q_proj", "o_proj")):
         raise ValueError("Expected Qwen3 attention with q_proj/o_proj")
@@ -68,10 +111,16 @@ def _zero_attention(layer: nn.Module, pruned_mask: torch.Tensor) -> tuple[int, i
     o_in = int(attn.o_proj.weight.shape[1])
     num_heads = int(getattr(attn, "num_heads", 0) or getattr(getattr(attn, "config", None), "num_attention_heads", 0))
     if not num_heads:
-        num_heads = int(pruned_mask.numel())
+        num_heads = int(torch.as_tensor(mask_value).numel())
     if q_out % num_heads != 0 or o_in % num_heads != 0:
         raise ValueError(f"Cannot split attention projections into {num_heads} heads")
-    mask = _as_pruned_mask(pruned_mask, expected=num_heads, key="self_attn")
+    mask, raw_true = _to_pruned_mask(
+        mask_value,
+        expected=num_heads,
+        key="self_attn",
+        semantics=mask_semantics,
+        empty_keep_mask=empty_keep_mask,
+    )
     head_idx = torch.where(mask)[0]
     if head_idx.numel():
         q_head_dim = q_out // num_heads
@@ -86,15 +135,24 @@ def _zero_attention(layer: nn.Module, pruned_mask: torch.Tensor) -> tuple[int, i
         attn.o_proj.weight.data.index_fill_(1, o_cols, 0)
         if getattr(attn.q_proj, "bias", None) is not None:
             attn.q_proj.bias.data.index_fill_(0, q_rows, 0)
-    return int(head_idx.numel()), num_heads
+    return int(head_idx.numel()), num_heads, raw_true
 
 
-def _materialize_masks(model: nn.Module, masks: dict[str, Any]) -> dict[str, Any]:
+def _materialize_masks(
+    model: nn.Module,
+    masks: dict[str, Any],
+    *,
+    mlp_mask_semantics: str,
+    attention_mask_semantics: str,
+    empty_keep_mask: str,
+) -> dict[str, Any]:
     layers = _decoder_layers(model)
     mlp_pruned = 0
     mlp_total = 0
+    mlp_raw_true = 0
     attn_pruned = 0
     attn_total = 0
+    attn_raw_true = 0
     per_layer: dict[str, dict[str, int]] = {}
 
     with torch.no_grad():
@@ -102,24 +160,45 @@ def _materialize_masks(model: nn.Module, masks: dict[str, Any]) -> dict[str, Any
             layer_summary: dict[str, int] = {}
             mlp_key = f"{layer_id}.mlp"
             if mlp_key in masks:
-                pruned, total = _zero_mlp(layer, masks[mlp_key])
+                pruned, total, raw_true = _zero_mlp(
+                    layer,
+                    masks[mlp_key],
+                    mask_semantics=mlp_mask_semantics,
+                    empty_keep_mask=empty_keep_mask,
+                )
                 mlp_pruned += pruned
                 mlp_total += total
+                mlp_raw_true += raw_true
                 layer_summary["mlp_pruned"] = pruned
                 layer_summary["mlp_total"] = total
+                layer_summary["mlp_raw_true"] = raw_true
             attn_key = f"{layer_id}.self_attn"
             if attn_key in masks:
-                pruned, total = _zero_attention(layer, masks[attn_key])
+                pruned, total, raw_true = _zero_attention(
+                    layer,
+                    masks[attn_key],
+                    mask_semantics=attention_mask_semantics,
+                    empty_keep_mask=empty_keep_mask,
+                )
                 attn_pruned += pruned
                 attn_total += total
+                attn_raw_true += raw_true
                 layer_summary["attention_heads_pruned"] = pruned
                 layer_summary["attention_heads_total"] = total
+                layer_summary["attention_heads_raw_true"] = raw_true
             per_layer[str(layer_id)] = layer_summary
 
     return {
+        "mlp_mask_semantics": mlp_mask_semantics,
+        "attention_mask_semantics": attention_mask_semantics,
+        "empty_keep_mask_policy": empty_keep_mask,
+        "mlp_raw_true": mlp_raw_true,
+        "mlp_raw_true_ratio": mlp_raw_true / mlp_total if mlp_total else 0.0,
         "mlp_pruned": mlp_pruned,
         "mlp_total": mlp_total,
         "mlp_pruned_ratio": mlp_pruned / mlp_total if mlp_total else 0.0,
+        "attention_heads_raw_true": attn_raw_true,
+        "attention_heads_raw_true_ratio": attn_raw_true / attn_total if attn_total else 0.0,
         "attention_heads_pruned": attn_pruned,
         "attention_heads_total": attn_total,
         "attention_heads_pruned_ratio": attn_pruned / attn_total if attn_total else 0.0,
@@ -161,6 +240,24 @@ def main() -> None:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--trust-remote-code", action="store_true", default=True)
     parser.add_argument("--safe-serialization", action="store_true", default=True)
+    parser.add_argument(
+        "--mlp-mask-semantics",
+        choices=("keep", "pruned"),
+        required=True,
+        help="Meaning of True entries in actual_mask[*].mlp from the official GISP bundle.",
+    )
+    parser.add_argument(
+        "--attention-mask-semantics",
+        choices=("keep", "pruned"),
+        required=True,
+        help="Meaning of True entries in actual_mask[*].self_attn from the official GISP bundle.",
+    )
+    parser.add_argument(
+        "--empty-keep-mask-policy",
+        choices=("error", "unpruned"),
+        default="error",
+        help="How to handle all-False masks when a module mask is declared as keep semantics.",
+    )
     args = parser.parse_args()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -188,7 +285,13 @@ def main() -> None:
     model.to(device)
     model.eval()
 
-    summary = _materialize_masks(model, dict(bundle["actual_mask"]))
+    summary = _materialize_masks(
+        model,
+        dict(bundle["actual_mask"]),
+        mlp_mask_semantics=str(args.mlp_mask_semantics),
+        attention_mask_semantics=str(args.attention_mask_semantics),
+        empty_keep_mask=str(args.empty_keep_mask_policy),
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     print(json.dumps(summary, indent=2), flush=True)
     print(f"Saving materialized model to: {output_dir}", flush=True)
@@ -213,7 +316,11 @@ def main() -> None:
         "sp_path": str(sp_path),
         "base_model": str(args.base_model),
         "torch_dtype": str(args.torch_dtype),
-        "mask_semantics": "official GISP actual_mask boolean True entries are zeroed as pruned structures",
+        "mask_semantics": {
+            "mlp": str(args.mlp_mask_semantics),
+            "attention": str(args.attention_mask_semantics),
+            "empty_keep_mask_policy": str(args.empty_keep_mask_policy),
+        },
         "materialization": "zeroed_weights_standard_hf_qwen3",
         "summary": summary,
         "block_wise_ratio": {

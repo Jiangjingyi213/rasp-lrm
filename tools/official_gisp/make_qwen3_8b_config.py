@@ -192,9 +192,10 @@ def _apply_official_gisp_overrides(cfg: dict[str, Any], args: argparse.Namespace
     prune_dataset["path"] = args.calibration_path
     prune_dataset["seq_len"] = int(args.seq_len)
     prune_dataset["n_samples"] = int(args.samples)
-    # The official GISP templates name this field `ratio` and use values like
-    # 0.7 for a 30% prune run, so for a T20 run we set the keep ratio to 0.8.
-    prune["ratio"] = 1.0 - float(args.pruning_ratio)
+    # Official GISP uses `task.prune.ratio` as the target pruning ratio. The
+    # pruner constructs masks from the lowest-scoring `ratio` fraction and then
+    # zeros entries selected by those masks.
+    prune["ratio"] = float(args.pruning_ratio)
     prune["target_pruning_ratio"] = float(args.pruning_ratio)
     prune["batch_size"] = int(args.batch_size)
     prune["prune_metric"] = "grad_sp_global"
@@ -241,7 +242,8 @@ def _apply_official_gisp_overrides(cfg: dict[str, Any], args: argparse.Namespace
     cfg["seq_len"] = int(args.seq_len)
     cfg["n_samples"] = int(args.samples)
     cfg["pruning_ratio"] = float(args.pruning_ratio)
-    cfg["official_keep_ratio"] = 1.0 - float(args.pruning_ratio)
+    cfg["official_prune_ratio"] = float(args.pruning_ratio)
+    cfg["official_remaining_ratio"] = 1.0 - float(args.pruning_ratio)
     cfg["save_model"] = True
     cfg["save_model_path"] = args.output_model_dir
     _replace_model_name_in_strings(cfg, args.model)
@@ -272,12 +274,12 @@ def _validate_generated_config(cfg: dict[str, Any], args: argparse.Namespace) ->
     prune_dataset = prune.get("prune_dataset")
     if not isinstance(prune_dataset, dict):
         raise TypeError("Generated official GISP config must contain task.prune.prune_dataset mapping.")
-    expected_keep_ratio = 1.0 - float(args.pruning_ratio)
-    actual_keep_ratio = float(prune.get("ratio"))
-    if abs(actual_keep_ratio - expected_keep_ratio) > 1e-9:
+    expected_prune_ratio = float(args.pruning_ratio)
+    actual_prune_ratio = float(prune.get("ratio"))
+    if abs(actual_prune_ratio - expected_prune_ratio) > 1e-9:
         raise ValueError(
             "Generated official GISP config has wrong task.prune.ratio: "
-            f"expected keep ratio {expected_keep_ratio}, got {actual_keep_ratio}"
+            f"expected pruning ratio {expected_prune_ratio}, got {actual_prune_ratio}"
         )
     if str(prune_dataset.get("path")) != str(args.calibration_path):
         raise ValueError(
@@ -377,7 +379,8 @@ def build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, An
             "clean: C4 calibration only; no GSM8K train/test examples are used for pruning"
         ),
         "pruning_ratio": float(args.pruning_ratio),
-        "official_task_prune_ratio_keep": 1.0 - float(args.pruning_ratio),
+        "official_task_prune_ratio": float(args.pruning_ratio),
+        "official_task_remaining_ratio": 1.0 - float(args.pruning_ratio),
         "iterations": int(args.iterations),
         "seq_len": int(args.seq_len),
         "samples": int(args.samples),
