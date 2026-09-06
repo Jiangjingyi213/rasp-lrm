@@ -127,6 +127,20 @@ def _materialize_masks(model: nn.Module, masks: dict[str, Any]) -> dict[str, Any
     }
 
 
+def _patch_missing_torch_dtensor_for_transformers_save() -> None:
+    try:
+        import torch.distributed.tensor as dist_tensor
+    except Exception:
+        return
+    if hasattr(dist_tensor, "DTensor"):
+        return
+
+    class _RaspLrmMissingDTensor:
+        pass
+
+    dist_tensor.DTensor = _RaspLrmMissingDTensor
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Materialize an official GISP sp_*.pth mask bundle into a standard Qwen3 HF model by zeroing pruned structures."
@@ -169,6 +183,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     print(json.dumps(summary, indent=2), flush=True)
     print(f"Saving materialized model to: {output_dir}", flush=True)
+    _patch_missing_torch_dtensor_for_transformers_save()
     model.save_pretrained(output_dir, safe_serialization=bool(args.safe_serialization))
 
     tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=bool(args.trust_remote_code))
