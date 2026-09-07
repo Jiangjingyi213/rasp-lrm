@@ -54,6 +54,8 @@ GISP_ALLOW_PIPELINE_FALLBACK="${GISP_ALLOW_PIPELINE_FALLBACK:-1}"
 GISP_GRADIENT_CHECKPOINTING="${GISP_GRADIENT_CHECKPOINTING:-1}"
 GISP_DISABLE_UPSTREAM_EVAL="${GISP_DISABLE_UPSTREAM_EVAL:-1}"
 GISP_AUTO_MATERIALIZE_IF_MISSING="${GISP_AUTO_MATERIALIZE_IF_MISSING:-1}"
+GISP_AUTO_MATERIALIZE_TARGET_RATIO="${GISP_AUTO_MATERIALIZE_TARGET_RATIO:-${PRUNING_RATIO}}"
+GISP_AUTO_MATERIALIZE_RATIO_TOLERANCE="${GISP_AUTO_MATERIALIZE_RATIO_TOLERANCE:-0.05}"
 GISP_RESTORE_SP_PATH="${GISP_RESTORE_SP_PATH:-}"
 GISP_RESTORE_DEVICE="${GISP_RESTORE_DEVICE:-cuda}"
 GISP_RESTORE_MLP_MASK_SEMANTICS="${GISP_RESTORE_MLP_MASK_SEMANTICS:-}"
@@ -360,8 +362,48 @@ else
 fi
 
 if [[ ! -f "${PRUNED_MODEL_DIR}/config.json" && "${GISP_AUTO_MATERIALIZE_IF_MISSING}" == "1" ]]; then
-  echo "PRUNED_MODEL_DIR is missing config.json; trying to materialize latest official GISP sp_*.pth bundle."
-  latest_sp="$(find "${RUN_ROOT}/00_official_gisp/upstream_outputs" -maxdepth 1 -type f -name 'sp_*.pth' -print 2>/dev/null | sort | tail -n 1)"
+  echo "PRUNED_MODEL_DIR is missing config.json; trying to materialize latest official GISP sp_*.pth bundle with actual_mask."
+  latest_sp="$(
+    RUN_ROOT="${RUN_ROOT}" GISP_AUTO_MATERIALIZE_TARGET_RATIO="${GISP_AUTO_MATERIALIZE_TARGET_RATIO}" GISP_AUTO_MATERIALIZE_RATIO_TOLERANCE="${GISP_AUTO_MATERIALIZE_RATIO_TOLERANCE}" "${PYTHON_BIN}" - <<'PY'
+from pathlib import Path
+import os
+import sys
+import torch
+
+root = Path(os.environ["RUN_ROOT"]) / "00_official_gisp" / "upstream_outputs"
+target = float(os.environ.get("GISP_AUTO_MATERIALIZE_TARGET_RATIO", "0.2"))
+tolerance = float(os.environ.get("GISP_AUTO_MATERIALIZE_RATIO_TOLERANCE", "0.05"))
+valid = []
+for path in sorted(root.glob("sp_*.pth")):
+    if path.name == "sp_gqa_mask.pth":
+        continue
+    try:
+        bundle = torch.load(path, map_location="cpu")
+    except Exception:
+        continue
+    if not isinstance(bundle, dict) or "actual_mask" not in bundle:
+        continue
+    total_true = 0
+    total = 0
+    for value in dict(bundle["actual_mask"]).values():
+        mask = torch.as_tensor(value, dtype=torch.bool, device="cpu").flatten()
+        total_true += int(mask.sum().item())
+        total += int(mask.numel())
+    ratio = total_true / total if total else 0.0
+    valid.append((abs(ratio - target), ratio, path))
+if valid:
+    valid.sort(key=lambda item: (item[0], -item[1], str(item[2])))
+    distance, ratio, path = valid[0]
+    if distance <= tolerance:
+        print(path)
+    else:
+        print(
+            f"No actual_mask sp bundle within tolerance {tolerance} of target {target}; "
+            f"closest is {path} with raw mask ratio {ratio}.",
+            file=sys.stderr,
+        )
+PY
+  )"
   if [[ -n "${latest_sp}" ]]; then
     echo "START auto-materialize official GISP bundle: ${latest_sp} -> ${PRUNED_MODEL_DIR}"
     CUDA_VISIBLE_DEVICES="${GISP_RESTORE_GPUS}" \
