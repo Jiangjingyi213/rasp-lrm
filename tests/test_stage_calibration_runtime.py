@@ -375,6 +375,36 @@ class StageCalibrationRuntimeTest(unittest.TestCase):
         self.assertIn(ratio, {0.0, 0.2, 0.3})
         self.assertLessEqual(ratio, 0.3)
 
+    def test_stage_budget_controller_stage_switch_only_decides_once_per_stage(self) -> None:
+        runtime = SafeDynamicStageGriffinRuntime(
+            tiny_bank(),
+            stage_ratios={stage: 0.3 for stage in STAGES},
+            protected_core_ratios={stage: 0.0 for stage in STAGES},
+            runtime_weight=1.0,
+            prior_weight=0.0,
+            stage_budget_controller={
+                "enabled": True,
+                "decision_mode": "stage_switch_only",
+                "decision_window_tokens": 1,
+                "target_actual_pruning": 0.34,
+                "action_ratios": [0.0, 0.2, 0.3, 0.4],
+            },
+        )
+        token = torch.tensor([[[0.0, 1.0, 2.0, 3.0]]])
+        runtime.set_stage("setup")
+        for _ in range(3):
+            runtime.observe_or_mask(0, token)
+        self.assertEqual(len(runtime.summary()["stage_budget_decisions"]), 1)
+
+        runtime.set_stage("reasoning")
+        runtime.observe_or_mask(0, token)
+        summary = runtime.summary()
+        self.assertEqual(len(summary["stage_budget_decisions"]), 2)
+        self.assertEqual(
+            summary["stage_budget_controller"]["decision_mode"],
+            "stage_switch_only",
+        )
+
     def test_stage_budget_controller_dense_and_catchup_actions(self) -> None:
         runtime = SafeDynamicStageGriffinRuntime(
             tiny_bank(),

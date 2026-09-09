@@ -982,6 +982,7 @@ class SafeDynamicStageGriffinRuntime:
             stage: self._initial_budget_ratio(stage) for stage in STAGES
         }
         self._budget_tokens_since_decision: Counter[str] = Counter()
+        self._budget_decision_done_by_stage: set[str] = set()
         self._budget_decision_log: list[dict[str, Any]] = []
         self._budget_ratio_tokens: Counter[str] = Counter()
         self._budget_base_risks: dict[str, list[float]] = {stage: [] for stage in STAGES}
@@ -1066,9 +1067,16 @@ class SafeDynamicStageGriffinRuntime:
                 "stage_budget_controller.ratio_selection_mode must be "
                 "'nominal' or 'estimated_actual'"
             )
+        decision_mode = str(cfg.get("decision_mode", "periodic"))
+        if decision_mode not in {"periodic", "stage_switch_only"}:
+            raise ValueError(
+                "stage_budget_controller.decision_mode must be "
+                "'periodic' or 'stage_switch_only'"
+            )
         return {
             "enabled": bool(cfg.get("enabled", False)),
             "target_actual_pruning": target,
+            "decision_mode": decision_mode,
             "decision_window_tokens": max(1, int(cfg.get("decision_window_tokens", 128))),
             "action_ratios": action_ratios,
             "stage_ratio_bounds": bounds,
@@ -1243,6 +1251,7 @@ class SafeDynamicStageGriffinRuntime:
             stage: self._initial_budget_ratio(stage) for stage in STAGES
         }
         self._budget_tokens_since_decision.clear()
+        self._budget_decision_done_by_stage.clear()
         self._budget_decision_log.clear()
         self._budget_ratio_tokens.clear()
         self._budget_base_risks = {stage: [] for stage in STAGES}
@@ -1287,9 +1296,13 @@ class SafeDynamicStageGriffinRuntime:
             self._current_single_stage = None
             self._current_single_observe = False
             if previous != stage and self.stage_budget_controller_enabled:
-                self._budget_tokens_since_decision[stage] = int(
-                    self.stage_budget_controller["decision_window_tokens"]
-                )
+                if self.stage_budget_controller["decision_mode"] == "stage_switch_only":
+                    self._budget_decision_done_by_stage.discard(stage)
+                    self._budget_tokens_since_decision[stage] = 0
+                else:
+                    self._budget_tokens_since_decision[stage] = int(
+                        self.stage_budget_controller["decision_window_tokens"]
+                    )
             if previous != stage and self.attention_head_pruning_enabled:
                 self._attention_tokens_since_decision[stage] = int(
                     self.attention_head_pruning["decision_window_tokens"]
@@ -1841,16 +1854,23 @@ class SafeDynamicStageGriffinRuntime:
     def _maybe_update_budget_decision(self, stage: str, layer_id: int) -> None:
         if not self.stage_budget_controller_enabled or layer_id != 0:
             return
-        self._budget_tokens_since_decision[stage] += 1
-        window = int(self.stage_budget_controller["decision_window_tokens"])
-        if self._budget_tokens_since_decision[stage] < window:
-            return
+        decision_mode = self.stage_budget_controller["decision_mode"]
+        if decision_mode == "stage_switch_only":
+            if stage in self._budget_decision_done_by_stage:
+                return
+        else:
+            self._budget_tokens_since_decision[stage] += 1
+            window = int(self.stage_budget_controller["decision_window_tokens"])
+            if self._budget_tokens_since_decision[stage] < window:
+                return
         decision = self._choose_budget_ratio(stage, layer_id)
         selected = float(decision["selected_ratio"])
         if selected != self._budget_selected_ratios.get(stage):
             self._clear_stage_cache(stage)
         self._budget_selected_ratios[stage] = selected
         self._budget_tokens_since_decision[stage] = 0
+        if decision_mode == "stage_switch_only":
+            self._budget_decision_done_by_stage.add(stage)
         self._budget_decision_log.append({"stage": stage, **decision})
         self._budget_base_risks[stage].append(float(decision.get("base_risk", 0.0)))
         self._budget_margin_risks[stage].append(float(decision.get("margin_risk", 0.0)))
@@ -2180,6 +2200,7 @@ class SafeDynamicStageGriffinRuntime:
                         "target_actual_pruning": self.stage_budget_controller[
                             "target_actual_pruning"
                         ],
+                        "decision_mode": self.stage_budget_controller["decision_mode"],
                         "decision_window_tokens": self.stage_budget_controller[
                             "decision_window_tokens"
                         ],
