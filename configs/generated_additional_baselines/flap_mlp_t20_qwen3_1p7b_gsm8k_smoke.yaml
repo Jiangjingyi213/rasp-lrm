@@ -69,7 +69,7 @@ profiles:
   smoke:
     final_eval_limit: 100
     final_seeds: [3]
-    reuse_existing_method_summaries: true
+    reuse_existing_method_summaries: false
     final_methods: [flap_mlp_t20_official]
   pilot:
     final_eval_limit: -1
