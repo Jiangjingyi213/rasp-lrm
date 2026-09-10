@@ -13,6 +13,7 @@ from .protocol import (
     illegal_stage_tag_reason,
     marker_token_sequences,
     stage_protocol_complete,
+    final_stage_repetition_detected,
 )
 from .runtime import StageMaskRuntime
 
@@ -112,6 +113,8 @@ def decode_with_stage_masks(
     eos_ids = {int(eos)} if isinstance(eos, int) else {int(value) for value in (eos or [])}
     ended_with_eos = False
     stopped_after_complete_stage_answer = False
+    stopped_after_repetition = False
+    generation_stop_reason = None
     sampled_tokens = 0
     decode_check_interval = 8
     illegal_check_window = 256
@@ -146,7 +149,12 @@ def decode_with_stage_masks(
                 final_decoded = tokenizer.decode(generated[final_start:], skip_special_tokens=True)
                 if _boxed_complete_after_final_marker(final_decoded):
                     stopped_after_complete_stage_answer = True
+                    generation_stop_reason = "complete_stage_answer"
                     break
+            if final_stage_repetition_detected(tokenizer.decode(generated, skip_special_tokens=True)):
+                stopped_after_repetition = True
+                generation_stop_reason = "repetition_after_final"
+                break
         if token_id in eos_ids:
             ended_with_eos = True
             break
@@ -162,7 +170,13 @@ def decode_with_stage_masks(
         "generated_tokens": len(generated),
         "ended_with_eos": ended_with_eos,
         "stopped_after_complete_stage_answer": stopped_after_complete_stage_answer,
-        "truncated": not ended_with_eos and sampled_tokens >= max_new_tokens,
+        "stopped_after_repetition": stopped_after_repetition,
+        "generation_stop_reason": generation_stop_reason,
+        "truncated": (
+            not ended_with_eos
+            and not stopped_after_complete_stage_answer
+            and sampled_tokens >= max_new_tokens
+        ),
         "stage_protocol": protocol,
         "runtime_stage_mask": runtime.summary(),
     }

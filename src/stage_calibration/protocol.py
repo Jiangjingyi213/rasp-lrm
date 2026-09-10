@@ -319,6 +319,29 @@ def decoded_text_has_complete_stage_answer(decoded_text: str) -> bool:
     return boxed_answer_complete(decoded_text)
 
 
+def final_stage_repetition_detected(decoded_text: str) -> bool:
+    """Detect a degenerate repeated-text loop after the final stage marker."""
+    final_index = decoded_text.rfind(MARKERS["final"])
+    if final_index < 0:
+        return False
+    tail = decoded_text[final_index + len(MARKERS["final"]) :]
+    lines = [re.sub(r"\s+", " ", line).strip() for line in tail.splitlines()]
+    lines = [line for line in lines if len(line) >= 16]
+    if len(lines) < 3:
+        return False
+
+    # FLAP/Qwen3 failure cases often prepend a changing number to the same
+    # sentence. Ignore that prefix while requiring three repeated lines.
+    normalized = [
+        re.sub(r"^[-+]?\d[\d,]*(?:\.\d+)?[.)]?\s*", "", line)
+        for line in lines[-24:]
+    ]
+    counts: dict[str, int] = {}
+    for line in normalized:
+        counts[line] = counts.get(line, 0) + 1
+    return any(count >= 3 for count in counts.values())
+
+
 def _last_complete_stage_block_start(stages: list[str]) -> int | None:
     for start in range(len(stages) - len(STAGES), -1, -1):
         if tuple(stages[start : start + len(STAGES)]) == STAGES:

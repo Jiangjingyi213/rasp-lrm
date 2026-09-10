@@ -9,6 +9,7 @@ from src.stage_calibration.protocol import (
     analyze_generated_ids,
     boxed_answer_complete,
     decoded_text_has_complete_stage_answer,
+    final_stage_repetition_detected,
     marker_token_sequences,
     should_stop_after_complete_stage_answer,
 )
@@ -110,6 +111,16 @@ class StageCalibrationProtocolTest(unittest.TestCase):
             "[[STAGE_VERIFY]] verify [[STAGE_FINAL]] \\boxed{7} [[STAGE_SETUP]]"
         )
         self.assertFalse(decoded_text_has_complete_stage_answer(decoded))
+
+    def test_final_stage_repetition_is_detected(self) -> None:
+        decoded = (
+            "[[STAGE_SETUP]] setup [[STAGE_REASONING]] reason "
+            "[[STAGE_VERIFY]] verify [[STAGE_FINAL]]\n"
+            "10. The problem involves the comic books and toys.\n"
+            "20. The problem involves the comic books and toys.\n"
+            "30. The problem involves the comic books and toys."
+        )
+        self.assertTrue(final_stage_repetition_detected(decoded))
 
     def test_transition_occurs_only_after_complete_multitoken_marker(self) -> None:
         sequences = dict(SEQUENCES)

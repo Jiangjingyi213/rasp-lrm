@@ -376,6 +376,11 @@ def summarize_rows(rows: list[dict[str, Any]], *, method: dict[str, Any], seed: 
         "fallback_rate": sum(fallback.values()) / len(rows) if rows else None,
         "fallback_reasons": dict(fallback),
         "truncation_rate": sum(int(row.get("truncated", False)) for row in rows) / len(rows) if rows else None,
+        "repetition_stop_rate": (
+            sum(int(row.get("stopped_after_repetition", False)) for row in rows) / len(rows)
+            if rows
+            else None
+        ),
         "mean_generated_tokens": (
             sum(float(row.get("generated_tokens", 0.0)) for row in rows) / len(rows)
             if rows

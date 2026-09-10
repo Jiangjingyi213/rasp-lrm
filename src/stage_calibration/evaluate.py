@@ -1128,6 +1128,11 @@ def evaluate_method(
         "fallback_rate": sum(fallback.values()) / len(rows) if rows else None,
         "fallback_reasons": dict(fallback),
         "truncation_rate": sum(int(row["truncated"]) for row in rows) / len(rows) if rows else None,
+        "repetition_stop_rate": (
+            sum(int(row.get("stopped_after_repetition", False)) for row in rows) / len(rows)
+            if rows
+            else None
+        ),
         "mean_generated_tokens": sum(row["generated_tokens"] for row in rows) / len(rows) if rows else None,
         "stage_tokens": dict(stage_tokens),
         "theoretical_average_mlp_pruning_ratio": sum(theoretical) / len(theoretical) if theoretical else 0.0,

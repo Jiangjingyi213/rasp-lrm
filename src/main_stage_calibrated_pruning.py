@@ -54,6 +54,7 @@ from src.stage_calibration.protocol import (
     STAGES,
     analyze_generated_ids,
     decoded_text_has_complete_stage_answer,
+    final_stage_repetition_detected,
 )
 from src.utils.io import append_jsonl, ensure_dir, read_json, read_jsonl, read_yaml, write_json, write_jsonl
 from src.utils.seed import set_seed
@@ -80,13 +81,19 @@ class CompleteStageAnswerStoppingCriteria(StoppingCriteria):
         self.tokenizer = tokenizer
         self.protocol_start_index = int(protocol_start_index)
         self.triggered = False
+        self.reason: str | None = None
 
     def __call__(self, input_ids, scores, **kwargs) -> bool:
         generated = input_ids[0, self.protocol_start_index :]
         if generated.numel() == 0:
             return False
         decoded = self.tokenizer.decode(generated, skip_special_tokens=True)
-        self.triggered = decoded_text_has_complete_stage_answer(decoded)
+        if decoded_text_has_complete_stage_answer(decoded):
+            self.triggered = True
+            self.reason = "complete_stage_answer"
+        elif final_stage_repetition_detected(decoded):
+            self.triggered = True
+            self.reason = "repetition_after_final"
         return self.triggered
 
 
@@ -663,10 +670,20 @@ def command_generate_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> No
                     "prediction": extract_answer(completion),
                     "correct": answer_match(completion, row["gold"], answer_type=row.get("answer_type")),
                     "ended_with_eos": ended_with_eos,
-                    "stopped_after_complete_stage_answer": stopping_criteria.triggered,
+                    "stopped_after_complete_stage_answer": (
+                        stopping_criteria.reason == "complete_stage_answer"
+                    ),
+                    "stopped_after_repetition": (
+                        stopping_criteria.reason == "repetition_after_final"
+                    ),
+                    "generation_stop_reason": stopping_criteria.reason,
                     # `max_new_tokens` counts sampled continuation tokens, while
                     # `generated` also contains the forced stage prefill.
-                    "truncated": not ended_with_eos and len(continuation) >= int(generation["max_new_tokens"]),
+                    "truncated": (
+                        not ended_with_eos
+                        and stopping_criteria.reason != "complete_stage_answer"
+                        and len(continuation) >= int(generation["max_new_tokens"])
+                    ),
                     "stage_protocol": stage_protocol,
                 },
             )

@@ -97,8 +97,15 @@ for tier in "${TIERS[@]}"; do
         "configs/generated_additional_baselines/flap_mlp_t20_qwen3_1p7b_gsm8k_smoke.yaml" \
         "${BASE_ROOT}/06_t20_gsm8k_full_smoke"
       ;;
+    t20_temp02)
+      run_smoke \
+        "t20_temp02" \
+        "flap_mlp_t20_temp02_official" \
+        "configs/generated_additional_baselines/flap_mlp_t20_temp02_qwen3_1p7b_gsm8k_smoke.yaml" \
+        "${BASE_ROOT}/07_t20_temp02_gsm8k_smoke"
+      ;;
     *)
-      echo "Unknown FLAP_SMOKE_TIERS value: ${tier}; expected t30 or t20." >&2
+      echo "Unknown FLAP_SMOKE_TIERS value: ${tier}; expected t30, t20, or t20_temp02." >&2
       exit 2
       ;;
   esac
