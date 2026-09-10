@@ -62,6 +62,13 @@ def main() -> None:
         raise ValueError("prepare_flap_mlp_artifact currently expects calibration.jsonl rows")
 
     bundle = load_model_bundle(cfg["model"])
+    dtype_name = str(cfg.get("model", {}).get("dtype", "auto")).lower()
+    if dtype_name in {"float16", "bfloat16"} and bundle.device.type != "cuda":
+        raise RuntimeError(
+            "FLAP artifact precomputation loaded a half/bfloat16 model on CPU. "
+            "Run with a CUDA-visible GPU and an explicit device_map=None/none; "
+            f"resolved device was {bundle.device}."
+        )
     sample_count = min(int(row.get("calibration_samples", 128)), len(read_jsonl(calibration_path)))
     texts = _calibration_texts(bundle.tokenizer, cfg, row, sample_count)
     payload = build_flap_mlp_mask_artifact_qwen3(
