@@ -71,6 +71,8 @@ run_smoke() {
   RUN_ROOT="${run_root}" \
   HF_ENDPOINT="${HF_ENDPOINT}" \
   STAGE_SEED="${SEED}" \
+  PROFILE="smoke" \
+  STAGE_FINAL_EVAL_LIMIT="${FLAP_SMOKE_LIMIT:-100}" \
   STAGE_FINAL_METHODS="${method}" \
   LOG_DIR="${LOG_ROOT}/05_gsm8k_full_smoke" \
   RUN_LABEL="flap_mlp_${tier}_qwen3_1p7b_gsm8k_full_smoke" \

@@ -20,13 +20,13 @@ prompt:
     answer_format: boxed
   structured:
     use_chat_template: true
-    enable_thinking: true
+    enable_thinking: false
     explicit_stage_protocol: true
     forced_assistant_prefix: "[[STAGE_SETUP]]\n"
 
 generation:
   max_input_tokens: 4096
-  max_new_tokens: 8192
+  max_new_tokens: 4096
   temperature: 0.6
   top_p: 0.95
   top_k: 20
@@ -67,7 +67,7 @@ evaluation:
 
 profiles:
   smoke:
-    final_eval_limit: 128
+    final_eval_limit: 100
     final_seeds: [3]
     reuse_existing_method_summaries: true
     final_methods: [flap_mlp_t20_official]

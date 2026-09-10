@@ -664,7 +664,9 @@ def command_generate_trajectories(cfg: dict[str, Any], p: dict[str, Path]) -> No
                     "correct": answer_match(completion, row["gold"], answer_type=row.get("answer_type")),
                     "ended_with_eos": ended_with_eos,
                     "stopped_after_complete_stage_answer": stopping_criteria.triggered,
-                    "truncated": not ended_with_eos and len(generated) >= int(generation["max_new_tokens"]),
+                    # `max_new_tokens` counts sampled continuation tokens, while
+                    # `generated` also contains the forced stage prefill.
+                    "truncated": not ended_with_eos and len(continuation) >= int(generation["max_new_tokens"]),
                     "stage_protocol": stage_protocol,
                 },
             )
