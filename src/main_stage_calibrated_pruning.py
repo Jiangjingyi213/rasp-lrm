@@ -3055,7 +3055,6 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         return
     if policy_selection is None and bool(frozen.get("final_evaluation_forbidden")):
         raise RuntimeError("Frozen policy is diagnostic only; final evaluation is forbidden")
-    bundle = load_model_bundle(cfg["model"])
     final_shard = _final_shard_from_env()
     output = {}
     dataset_output_dirs = {}
@@ -3092,18 +3091,27 @@ def command_evaluate_final(cfg: dict[str, Any], p: dict[str, Path]) -> None:
         dataset_output_dirs[name] = output_dir
         output[name] = []
         for seed in seeds:
-            output[name].extend(
-                _run_methods(
-                    cfg,
-                    p,
-                    tasks,
-                    bank,
-                    bundle,
-                    methods,
-                    output_dir,
-                    seed=seed,
+            # Several official baselines mutate the model in place (for example,
+            # FLAP physically removes MLP channels). Reload a clean base model for
+            # every dataset/seed so an artifact is never applied twice.
+            bundle = load_model_bundle(cfg["model"])
+            try:
+                output[name].extend(
+                    _run_methods(
+                        cfg,
+                        p,
+                        tasks,
+                        bank,
+                        bundle,
+                        methods,
+                        output_dir,
+                        seed=seed,
+                    )
                 )
-            )
+            finally:
+                del bundle
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         if final_shard is not None:
             for summary in output[name]:
                 summary["final_shard"] = {
